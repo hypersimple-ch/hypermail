@@ -1,0 +1,157 @@
+name: hypermail
+
+services:
+  proxy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_HOST: ${APP_HOST:?set APP_HOST to the public DNS name}
+    volumes:
+      - ./proxy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    networks: [edge]
+
+  web:
+    image: ${WEB_IMAGE:?set WEB_IMAGE to an immutable web image reference}
+    user: "10001:10001"
+    restart: unless-stopped
+    env_file: ["${WEB_ENV_FILE:?set WEB_ENV_FILE to a root-readable web secrets file}"]
+    environment:
+      ATTACHMENT_TEMP_DIRECTORY: /var/lib/hypermail-attachments
+    volumes:
+      - attachment-temp:/var/lib/hypermail-attachments
+    depends_on:
+      attachment-temp-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      hypermail:
+        condition: service_healthy
+    networks: [edge, private]
+
+  worker:
+    image: ${WORKER_IMAGE:?set WORKER_IMAGE to an immutable worker image reference}
+    restart: unless-stopped
+    env_file: ["${WORKER_ENV_FILE:?set WORKER_ENV_FILE to a root-readable worker secrets file}"]
+    environment:
+      HEALTH_PORT: 3001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hypermail:
+        condition: service_healthy
+    networks: [private]
+
+  backup:
+    image: ${BACKUP_IMAGE:?set BACKUP_IMAGE to an immutable backup image reference}
+    profiles: [backup]
+    restart: "no"
+    env_file: ["${BACKUP_ENV_FILE:?set BACKUP_ENV_FILE to a root-readable backup configuration file}"]
+    environment:
+      HYPERMAIL_STATE_DIRECTORY: /var/lib/hypermail
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/backup_aws_credentials
+    secrets:
+      - source: backup_database_key
+        target: backup-database-key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: backup_state_key
+        target: backup-state-key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: backup_aws_credentials
+        target: backup_aws_credentials
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: backup_alert_webhook
+        target: backup-alert-webhook
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    volumes:
+      - hypermail-data:/var/lib/hypermail:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hypermail:
+        condition: service_healthy
+    networks: [private]
+
+  postgres:
+    image: postgres:16.10-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hypermail
+      POSTGRES_USER: hypermail
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [private]
+
+  attachment-temp-init:
+    image: alpine:3.21
+    user: "0:0"
+    command: ["sh", "-c", "install -d -m 0700 -o 10001 -g 10001 /attachments"]
+    restart: "no"
+    volumes:
+      - attachment-temp:/attachments
+
+  hypermail:
+    image: ${HYPERMAIL_IMAGE:?set HYPERMAIL_IMAGE to the approved Hypermail v0.7.26 image}
+    user: "10001:10001"
+    restart: unless-stopped
+    env_file: ["${HYPERMAIL_ENV_FILE:?set HYPERMAIL_ENV_FILE to Hypermail-only secrets}"]
+    environment:
+      TMPDIR: /var/lib/hypermail-attachments
+    volumes:
+      - hypermail-data:/var/lib/hypermail
+      - attachment-temp:/var/lib/hypermail-attachments
+    depends_on:
+      attachment-temp-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD-SHELL, "wget -q --spider http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [private]
+
+networks:
+  edge: {}
+  private:
+    internal: true
+
+volumes:
+  caddy-data: {}
+  caddy-config: {}
+  postgres-data: {}
+  hypermail-data: {}
+  attachment-temp: {}
+
+secrets:
+  postgres_password:
+    file: "${POSTGRES_PASSWORD_FILE:?set POSTGRES_PASSWORD_FILE to a root-readable secret file}"
+  backup_database_key:
+    file: "${BACKUP_ENCRYPTION_KEY_FILE:?set BACKUP_ENCRYPTION_KEY_FILE to an age identity file}"
+  backup_state_key:
+    file: "${BACKUP_STATE_ENCRYPTION_KEY_FILE:?set BACKUP_STATE_ENCRYPTION_KEY_FILE to a distinct age identity file}"
+  backup_aws_credentials:
+    file: "${BACKUP_AWS_CREDENTIALS_FILE:?set BACKUP_AWS_CREDENTIALS_FILE to an AWS credentials file}"
+  backup_alert_webhook:
+    file: "${BACKUP_ALERT_WEBHOOK_FILE:?set BACKUP_ALERT_WEBHOOK_FILE to a failure-alert webhook URL file}"

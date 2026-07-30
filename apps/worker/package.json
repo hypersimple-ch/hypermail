@@ -1,0 +1,8 @@
+{
+  "name": "@hypermail/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run --root ../.. apps/worker/test", "test:container-smoke": "node --experimental-strip-types test/container-smoke.ts", "start": "node dist/main.js" },
+  "dependencies": { "@ai-sdk/anthropic": "4.0.24", "@ai-sdk/google": "4.0.28", "@ai-sdk/openai": "4.0.24", "@hypermail/agent": "workspace:*", "@hypermail/contracts": "workspace:*", "@hypermail/db": "workspace:*", "@hypermail/hypermail": "workspace:*", "@hypermail/notifications": "workspace:*", "@hypermail/policy": "workspace:*", "@hypermail/observability": "workspace:*", "@mastra/core": "1.54.0", "@mastra/memory": "1.24.0", "@mastra/pg": "1.18.0", "pg-boss": "10.1.5", "postgres": "3.4.9" }
+}

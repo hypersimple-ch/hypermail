@@ -1,0 +1,30 @@
+{
+  "name": "hypermail-pwa",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.11.0",
+  "engines": {
+    "node": ">=22.18.0 <25",
+    "pnpm": "11.11.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "eslint .",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "pnpm --filter @hypermail/db db:generate",
+    "db:migrate": "pnpm --filter @hypermail/db db:migrate",
+    "verify:deployment": "node infra/verify-deployment.mjs",
+    "security:scan": "node infra/security-scan.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm verify:deployment"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.1.2",
+    "eslint": "10.0.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "3.2.6"
+  }
+}

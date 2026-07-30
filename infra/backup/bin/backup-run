@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Creates one immutable, encrypted S3 generation. This program is intentionally a one-shot job.
+set -euo pipefail
+umask 077
+
+fail() { printf '{"timestamp":"%s","level":"error","event":"backup.failed"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exit 1; }
+alert_failure() {
+  local status=${1:-$?}
+  [ "$status" -eq 0 ] && return
+  # The webhook itself is read from a secret file and is never printed or passed on argv.
+  if [ -n "${BACKUP_ALERT_WEBHOOK_FILE:-}" ] && [ -r "$BACKUP_ALERT_WEBHOOK_FILE" ] && command -v curl >/dev/null 2>&1; then
+    curl --fail --silent --show-error --max-time 15 --request POST \
+      --header 'content-type: application/json' \
+      --data "{\"service\":\"hypermail-backup\",\"status\":\"failed\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+      --config - >/dev/null 2>&1 <<EOF || true
+url = "$(<"$BACKUP_ALERT_WEBHOOK_FILE")"
+EOF
+  fi
+}
+tmp=''
+cleanup() { local status=$?; [ -z "$tmp" ] || rm -rf "$tmp" 2>/dev/null || true; alert_failure "$status"; }
+trap cleanup EXIT
+for tool in pg_dump age age-keygen aws tar sha256sum stat head python3; do command -v "$tool" >/dev/null 2>&1 || fail "required tool unavailable: $tool"; done
+: "${DATABASE_URL:?DATABASE_URL is required}"
+: "${BACKUP_TARGET:?BACKUP_TARGET is required}"
+: "${BACKUP_ENCRYPTION_KEY_FILE:?BACKUP_ENCRYPTION_KEY_FILE is required}"
+: "${BACKUP_STATE_ENCRYPTION_KEY_FILE:?BACKUP_STATE_ENCRYPTION_KEY_FILE is required}"
+: "${BACKUP_RETENTION_DAYS:?BACKUP_RETENTION_DAYS is required}"
+: "${HYPERMAIL_STATE_DIRECTORY:?HYPERMAIL_STATE_DIRECTORY is required}"
+[[ "$BACKUP_TARGET" =~ ^s3://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]] || fail 'BACKUP_TARGET must be an s3:// bucket/prefix without whitespace'
+[[ "$BACKUP_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]] || fail 'BACKUP_RETENTION_DAYS must be a positive integer'
+for key in "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE"; do
+  [[ "$key" == /run/secrets/* && -f "$key" && -r "$key" ]] || fail 'encryption key files must be readable files under /run/secrets'
+  mode=$(stat -c '%a' "$key")
+  (( (8#$mode & 077) == 0 )) || fail 'encryption key file permissions are too broad'
+done
+cmp -s "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE" && fail 'database and state encryption keys must differ'
+[ -d "$HYPERMAIL_STATE_DIRECTORY" ] || fail 'Hypermail state directory is unavailable'
+
+tmp=$(mktemp -d)
+stamp=$(date -u +%s)
+generation="${stamp}-$(head -c 16 /dev/urandom | sha256sum | cut -c1-12)"
+# The random suffix prevents same-second collisions without exposing secret material.
+db_recipient=$(age-keygen -y "$BACKUP_ENCRYPTION_KEY_FILE")
+state_recipient=$(age-keygen -y "$BACKUP_STATE_ENCRYPTION_KEY_FILE")
+# Convert the secret URL from environment into libpq environment; never put it on argv.
+connection_parts=()
+while IFS= read -r -d '' value; do connection_parts+=("$value"); done < <(python3 - <<'PY'
+import os, sys
+from urllib.parse import unquote, urlparse
+u = urlparse(os.environ['DATABASE_URL'])
+if u.scheme not in ('postgresql', 'postgres') or not u.hostname or not u.path.strip('/'):
+    raise SystemExit(1)
+for value in (u.hostname, str(u.port or 5432), unquote(u.username or ''), unquote(u.password or ''), u.path.strip('/')):
+    sys.stdout.buffer.write(value.encode() + b'\0')
+PY
+) || fail 'DATABASE_URL cannot be parsed'
+[ "${#connection_parts[@]}" -eq 5 ] || fail 'DATABASE_URL cannot be parsed'
+export PGHOST="${connection_parts[0]}" PGPORT="${connection_parts[1]}" PGUSER="${connection_parts[2]}" PGPASSWORD="${connection_parts[3]}" PGDATABASE="${connection_parts[4]}"
+pg_dump --format=custom --no-owner --no-privileges | age --encrypt --recipient "$db_recipient" --output "$tmp/database.dump.age"
+tar --create --file - --numeric-owner --one-file-system -C "$HYPERMAIL_STATE_DIRECTORY" . | age --encrypt --recipient "$state_recipient" --output "$tmp/state.tar.age"
+db_hash=$(sha256sum "$tmp/database.dump.age" | awk '{print $1}')
+state_hash=$(sha256sum "$tmp/state.tar.age" | awk '{print $1}')
+printf '{"generation":"%s","createdAt":"%s","artifacts":{"database.dump.age":{"sha256":"%s","bytes":%s},"state.tar.age":{"sha256":"%s","bytes":%s}}}\n' \
+  "$generation" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$db_hash" "$(stat -c %s "$tmp/database.dump.age")" "$state_hash" "$(stat -c %s "$tmp/state.tar.age")" > "$tmp/manifest.json"
+age --encrypt --recipient "$db_recipient" --output "$tmp/manifest.age" "$tmp/manifest.json"
+base="${BACKUP_TARGET%/}/generations/$generation"
+for artifact in database.dump.age state.tar.age manifest.age; do aws s3 cp --only-show-errors "$tmp/$artifact" "$base/$artifact" >/dev/null; done
+# Only objects with our exact generation syntax and exact known filenames are eligible for pruning.
+target_path=${BACKUP_TARGET#s3://}; bucket=${target_path%%/*}; target_prefix=${target_path#*/}; [ "$target_prefix" = "$target_path" ] && target_prefix=''
+cutoff=$((stamp - BACKUP_RETENTION_DAYS * 86400))
+while IFS= read -r key; do
+  case "$key" in
+    generations/*) id=${key#generations/} ;;
+    */generations/*) id=${key##*/generations/} ;;
+    *) continue ;;
+  esac
+  id=${id%/manifest.age}
+  [[ "$id" =~ ^[0-9]{10}-[0-9a-f]{12}$ ]] || continue
+  [ "${id%%-*}" -lt "$cutoff" ] || continue
+  for artifact in database.dump.age state.tar.age manifest.age; do aws s3 rm --only-show-errors "${BACKUP_TARGET%/}/generations/$id/$artifact" >/dev/null; done
+done < <(aws s3api list-objects-v2 --bucket "$bucket" --prefix "${target_prefix:+$target_prefix/}generations/" --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | grep -E '(^|/)generations/[0-9]{10}-[0-9a-f]{12}/manifest.age$' || true)
+printf '{"timestamp":"%s","level":"info","event":"backup.succeeded","fields":{"generation":"%s","databaseBytes":%s,"stateBytes":%s}}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$generation" "$(stat -c %s "$tmp/database.dump.age")" "$(stat -c %s "$tmp/state.tar.age")"

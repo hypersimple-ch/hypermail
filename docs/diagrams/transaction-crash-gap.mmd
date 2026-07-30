@@ -1,0 +1,9 @@
+flowchart TD
+  P[Poll Hypermail; checkpoint may advance] --> T[Atomic app transaction]
+  T --> M[Message]
+  T --> A[Activity]
+  T --> N[Logical notification]
+  T --> J[Agent job outbox]
+  P -. crash before commit .-> R[Recent Inbox reconciliation]
+  R --> U[Upsert by account + provider message identity]
+  U --> T

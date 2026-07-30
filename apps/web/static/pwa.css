@@ -1,0 +1,11 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; background: #f7f7f8; color: #202124; }
+body { margin: 0; min-block-size: 100vh; }
+.shell { box-sizing: border-box; inline-size: min(32rem, calc(100% - 2rem)); margin: 10vh auto; padding: 2rem; border: 1px solid #dedfe2; border-radius: 1rem; background: #fff; }
+.shell form { display: grid; gap: .75rem; }.shell label { display:grid; gap:.25rem; }.shell input { min-height:44px; }.shell button { min-height:44px; }
+.controls button[hidden] { display: none !important; }
+.controls { position: fixed; z-index: 10; right: 12px; top: 12px; display: flex; gap: .75rem; flex-wrap: wrap; }
+.controls button { min-block-size: 44px; padding: .65rem 1rem; color: #fff; background: #303238; border: 0; border-radius: .5rem; font: inherit; cursor: pointer; }
+.controls button:focus-visible { outline: 3px solid #1a73e8; outline-offset: 3px; }
+.controls button:disabled { opacity: .6; cursor: wait; }
+[data-connectivity="offline"] #connection { color: #8a5700; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

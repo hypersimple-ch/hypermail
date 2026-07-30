@@ -1,0 +1,21 @@
+{
+  "name": "@hypermail/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@hypermail/contracts": "workspace:*",
+    "@mastra/core": "1.54.0",
+    "@mastra/memory": "1.24.0",
+    "@mastra/pg": "1.18.0",
+    "postgres": "3.4.9",
+    "zod": "4.4.3"
+  }
+}

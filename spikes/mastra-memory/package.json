@@ -1,0 +1,23 @@
+{
+  "name": "mastra-postgres-memory-proof",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down -v"
+  },
+  "dependencies": {
+    "@mastra/core": "1.54.0",
+    "@mastra/memory": "1.24.0",
+    "@mastra/pg": "1.18.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.5.0",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "schema": "lazyweb.deep-design-research.v0.14.7",
+  "objective": "create",
+  "project": "Hypermail",
+  "status": "approved for implementation",
+  "brief": {
+    "product": "Private, single-user, Android-first, online-only email PWA",
+    "nonNegotiables": [
+      "Unified All Accounts Inbox",
+      "Mobile tabs: Inbox, Activity, Drafts, More; Compose FAB",
+      "Balanced two-line message rows",
+      "Activity filters: New, Questions, Failed, History",
+      "Inline agent action cards and bottom-sheet detail",
+      "Desktop three-pane shell",
+      "Light-only calm white/gray UI with fine borders, minimal shadow, moderate radii",
+      "Semantic amber, green, red, and blue",
+      "Swipe gestures plus visible alternatives",
+      "Reduced motion support, WCAG AA, no 360px overflow"
+    ]
+  },
+  "evidence": [
+    {"source": "Gmail mobile inbox", "pattern": "scan-first sender/subject/snippet rows, with compact but readable hierarchy"},
+    {"source": "Outlook mobile inbox", "pattern": "swipe triage complements rather than replaces visible controls"},
+    {"source": "GitHub notifications", "pattern": "clear saved/filterable activity states support high-volume review"},
+    {"source": "Product Hunt activity", "pattern": "grouped event feed makes changes and follow-up states legible"},
+    {"source": "Superhuman / Front / Jace desktop email", "pattern": "three-pane layout preserves list context while reading and acting"}
+  ],
+  "bets": [
+    {
+      "id": "A-inbox-led",
+      "name": "Inbox-led calm utility",
+      "structure": "Inbox is the default home. Activity is a separate bottom-tab work queue. Agent cards appear only where the related message is visible.",
+      "strengths": ["Matches the familiar email mental model", "Keeps automated work contextual", "Makes the required mobile tabs and desktop three panes straightforward"],
+      "risks": ["Activity may be under-discovered without an unread badge"]
+    },
+    {
+      "id": "B-activity-led",
+      "name": "Activity-led operations center",
+      "structure": "Activity is the default home and the inbox is a filtered feed; agent work is promoted into a persistent top queue.",
+      "strengths": ["Makes agent work highly visible", "Fast for exception handling"],
+      "risks": ["Changes the expected email starting point", "Competes with message scanning and adds cognitive overhead for a single user"]
+    }
+  ],
+  "recommendation": {
+    "bet": "A-inbox-led",
+    "label": "approved for implementation",
+    "rationale": "A private single-user email tool should make ordinary mail scanning feel familiar and quiet. Activity remains a deliberate, filterable surface for exceptions and agent work instead of turning every inbox visit into an operations dashboard."
+  },
+  "prototype": {
+    "entry": "../prototype/index.html",
+    "screens": ["mobile-inbox", "mobile-activity", "mobile-message", "mobile-compose", "desktop-shell"],
+    "viewports": [{"width": 360, "height": 800}, {"width": 1440, "height": 900}]
+  }
+}

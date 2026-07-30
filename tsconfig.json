@@ -1,0 +1,16 @@
+{
+  "files": [],
+  "references": [
+    { "path": "apps/web" },
+    { "path": "apps/worker" },
+    { "path": "packages/contracts" },
+    { "path": "packages/db" },
+    { "path": "packages/auth" },
+    { "path": "packages/send" },
+    { "path": "packages/hypermail" },
+    { "path": "packages/policy" },
+    { "path": "packages/agent" },
+    { "path": "packages/notifications" },
+    { "path": "packages/observability" }
+  ]
+}

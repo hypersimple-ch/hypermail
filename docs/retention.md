@@ -1,0 +1,11 @@
+# Retention and lifecycle cleanup
+
+The worker runs a singleton, replay-safe lifecycle pass. `BODY_RETENTION_DAYS` defaults to 90 and is evaluated from the injected worker clock against `message_bodies.cached_at`; a body cached exactly at the cutoff is eligible only when its authoritative `purge_after` is also due. This prevents an explicitly extended cache lifetime from being shortened accidentally.
+
+Each pass is bounded (100 body rows and 100 subscriptions by default). It deletes only rows in `app.message_bodies`; it never deletes `messages`, attachments metadata, activities, decisions, actions, verifications, notifications/deliveries, audits, or Mastra memory. Each body-cache deletion writes a `message_body_purged` audit event in the same PostgreSQL statement, with identifiers and cutoff only—never body content. The message-to-body foreign key therefore cannot cause a cascade during retention.
+
+Expired Web Push subscriptions are retained but marked `disabled_at`, with a `push_subscription_expired` audit event. Existing notification and delivery history remains referentially valid. Batching uses `FOR UPDATE SKIP LOCKED`, so concurrent/restarted workers safely make progress; the `lifecycle` scheduler lease prevents normal duplicate passes.
+
+Attachment bytes are not database records. The web entry point completes secure orphan cleanup before it opens the HTTP listener on every restart. It requires the dedicated `ATTACHMENT_TEMP_DIRECTORY` (never shared `/tmp`), considers only old regular `hypermail-attachment-` files, compares identity before unlinking, accepts an injected clock, and removes at most 100 files per invocation. Compose provisions a mode-0700 named volume shared only by web and Hypermail, forces both containers to UID/GID 10001, and sets Hypermail `TMPDIR` to that root; deployment must verify the approved Hypermail image supports this non-root UID before rollout. Attachment metadata remains in PostgreSQL.
+
+Lifecycle audit events and returned per-pass counts are the operational signal. No lifecycle task permanently deletes application history.

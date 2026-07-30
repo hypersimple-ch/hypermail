@@ -1,0 +1,28 @@
+{
+  "name": "@hypermail/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && cp -R static/. dist/ && esbuild src/browser.ts --bundle --format=esm --platform=browser --define:process.env.NODE_ENV='\"production\"' --minify --outfile=dist/app.js && esbuild src/pwa/service-worker.ts --bundle --format=esm --platform=browser --minify --outfile=dist/pwa/service-worker.js",
+    "test": "cd ../.. && vitest run"
+  },
+  "dependencies": {
+    "@hypermail/auth": "workspace:*",
+    "@hypermail/contracts": "workspace:*",
+    "@hypermail/db": "workspace:*",
+    "@hypermail/hypermail": "workspace:*",
+    "@hypermail/notifications": "workspace:*", 
+    "@hypermail/observability": "workspace:*",
+    "@hypermail/send": "workspace:*",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "zod": "4.4.3",
+    "postgres": "3.4.9"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2"
+  }
+}

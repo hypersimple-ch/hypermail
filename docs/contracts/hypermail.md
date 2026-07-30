@@ -1,0 +1,67 @@
+# Hypermail MCP HTTP contract — v0.7.26
+
+**Status:** typed, sanitized fixture proof exists in [`spikes/hypermail-contract`](../../spikes/hypermail-contract/). It is **not live validation**: no configured/live Hypermail v0.7.26 service was available. Fixture values use `*.example.test`, synthetic IDs, and no credentials.
+
+## Authoritative basis and transport
+
+This record is derived from the tagged [v0.7.26 README](https://github.com/hypersimple-ch/hypermail-mcp/blob/v0.7.26/README.md), its tagged [`src/server.ts`](https://github.com/hypersimple-ch/hypermail-mcp/blob/v0.7.26/src/server.ts), and tagged [`src/tools`](https://github.com/hypersimple-ch/hypermail-mcp/tree/v0.7.26/src/tools), plus the [MCP Streamable HTTP specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports).
+
+POST `http://HOST:3000/mcp`, with `Content-Type: application/json` and `Accept: application/json, text/event-stream`. Use JSON-RPC 2.0 lifecycle `initialize`, `notifications/initialized`, `tools/list`, then `tools/call`; retain server-provided `Mcp-Session-Id`. Tool envelope:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_emails","arguments":{"account":"me@example.com"}}}
+```
+
+**Blocking live validation:** the authoritative v0.7.26 material does not publish the exact negotiated `protocolVersion`; never substitute the fixture's placeholder for a live client. Validate initialization, session/SSE behavior, tool schemas, and responses against a running tagged server.
+
+## Exact tool payloads and policy
+
+Classification is local safety policy, not a claim that Hypermail enforces it. `forbidden` explicitly prevents autonomous **send, forward, permanent delete, account administration, and folder administration**.
+
+| Tool | Exact arguments (optional `?`) | Policy |
+|---|---|---|
+| `list_accounts` | `{}` | read-only |
+| `add_account` | `{provider:"gmail"|"outlook"|"imap",email?:string,config?:object}` | forbidden (account admin) |
+| `complete_add_account` | `{provider,handle:string,authorizationResponse?:string,code?:string,state?:string}` | forbidden (account admin) |
+| `get_account_settings` | `{account:string}` | read-only |
+| `set_account_settings` | `{account:string,signature?:string,signaturePath?:string,style?:{fontFamily?:string,fontSize?:string,fontColor?:string}}` (`signature`/`signaturePath` exclusive) | forbidden (account admin) |
+| `remove_account` | `{email:string}` | forbidden (account admin) |
+| `list_emails` | `{account:string,folder?:string,limit?:positive integer ≤100,unreadOnly?:boolean,skip?:integer}` | read-only |
+| `search_emails` | `{account?:string,query?:string,from?:string,to?:string,cc?:string,limit?:positive integer ≤100}`; at least one criterion | read-only |
+| `read_email` | `{account:string,id:string,format?:"markdown"|"html"|"text"}` | read-only |
+| `read_attachment` | `{account:string,messageId:string,attachmentId:string}` | read-only |
+| `get_new_emails` | `{account?:string,limit?:integer ≥0}` | autonomous-policy-eligible |
+| `list_folders` | `{account:string,parentFolderId?:string}` | read-only |
+| `create_folder` | `{account:string,displayName:string,parentFolderId?:string}` | forbidden (folder admin) |
+| `delete_folder` | `{account:string,folderId:string}` | forbidden (folder admin) |
+| `rename_folder` | `{account:string,folderId:string,newName:string}` | forbidden (folder admin) |
+| `draft_email` / `send_email` | `{account,to:[{address,name?}],cc?,bcc?,subject,body,format:"html"|"markdown",include_signature:boolean,inReplyTo:string|false,replyAll?,forwardMessageId?,attachments?:[{filePath,name?}]}`; reply/forward are exclusive | user-approved-only / forbidden (send and forward) |
+| `edit_draft` | `{account,id,to?,cc?,bcc?,subject?,old_text?,new_text?,body?,format?,include_signature?,new_attachments?,remove_attachments?}`; replacement requires `old_text` and exactly one replacement field | user-approved-only |
+| `send_draft` | `{account:string,id:string}` | forbidden (send) |
+| `move_email` | `{account:string,id:string,destination:"archive"|"deleteditems"|"inbox"|"drafts"|"junkemail"|"sentitems"|"outbox"|folderId}` | user-approved-only |
+| `archive_email`, `trash_email`, `mark_read`, `mark_unread` | `{account:string,id:string}` | user-approved-only, user-approved-only, autonomous-policy-eligible, user-approved-only |
+
+`read_attachment` returns temporary local-file metadata (`name`, optional `contentType`, `path`, optional web URL/reason); it is **not** a documented byte-streaming API. `trash_email` must never be treated as permanent delete; no autonomous permanent-delete operation is allowed.
+
+## Semantics, identities, and provider differences
+
+`list_accounts` returns provider identity (`outlook`, `gmail`, `imap`) and public account metadata. Treat `(account email, provider, message ID)` as provider-scoped identifiers: do not infer cross-provider ID portability. `list_emails` defaults to Inbox and reports `hasMore`; advance with `skip`. `get_new_emails` is Inbox-only, does not mark messages read, establishes its first-use checkpoint at newest Inbox mail and returns no mail initially, then returns unseen mail oldest-first. `limit:0` initializes/checks without bodies; all-account limits are global and partial failures are returned in `errors`.
+
+| Provider | Documented difference | Unpublished/blocked |
+|---|---|---|
+| Outlook/M365 | device-code onboarding; Graph folders support well-known names/IDs/localized fallback; move may refresh ID/link and fall back to OWA | per-tool support matrix, limits |
+| Gmail | OAuth URL then redirect/code/state completion; web URL is best-effort unofficial | per-tool support matrix, scopes, limits |
+| IMAP | synchronous host/user/password configuration; no universal webmail URL, so return unavailable reason | `config` keys/auth mechanisms, per-tool support, limits |
+
+The server documents common tools but **does not publish a provider-by-tool capability matrix**. Do not encode availability beyond these documented differences; validate each provider against live tagged service.
+
+## Fixture proof and execution
+
+`src/client.ts` is a minimal typed Streamable-HTTP JSON-RPC client. `fixtures/hypermail-v0.7.26.ts` runs controlled localhost HTTP JSON-RPC responses for sanitized accounts, Inbox pagination, checkpoint behavior, folders/search/message/attachment metadata, and write-tool payload acknowledgements. Tests cover lifecycle/session headers, identities and IDs, pagination, checkpoint behavior, policy, provider differences, HTTP 503 retryability, retryable JSON-RPC error, and malformed JSON.
+
+```sh
+cd spikes/hypermail-contract
+npm run check
+```
+
+A passing result proves only client/fixture compatibility. Live-contract blockers: endpoint/configuration and credentials; exact protocol-version literal; live SSE framing; actual `tools/list` schemas; provider-by-tool support; IMAP config; OAuth scopes; rate/attachment limits; and live error-code retry semantics.

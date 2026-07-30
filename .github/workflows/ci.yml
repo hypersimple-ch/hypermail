@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm security:scan
+      - run: docker build -f infra/Dockerfile.web -t hypermail-web:scan .
+      - run: docker build -f infra/Dockerfile.worker -t hypermail-worker:scan .
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: hypermail-web:scan
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: hypermail-worker:scan
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL

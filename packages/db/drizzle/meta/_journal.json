@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1785365767015,
+      "tag": "0000_solid_lady_deathstrike",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1785365767016,
+      "tag": "0001_lifecycle_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785365767017,
+      "tag": "0002_user_account_ownership",
+      "breakpoints": true
+    }
+  ]
+}

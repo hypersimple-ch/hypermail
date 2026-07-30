@@ -1,0 +1,11 @@
+{
+  "name": "hypermail-contract-proof",
+  "private": true,
+  "type": "module",
+  "devDependencies": { "@types/node": "^24.0.0" },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/contract.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  }
+}

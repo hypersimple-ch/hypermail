@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hypermail — recommended prototype</title><link rel="stylesheet" href="prototype.css"></head>
+<body><main class="prototype" aria-label="Hypermail recommended pending approval prototype">
+  <header class="mobile-head"><div><strong>All Accounts</strong><span>12 unread</span></div><button aria-label="Search">⌕</button></header>
+  <section class="mobile-screen inbox" data-screen="mobile-inbox" aria-label="Mobile Inbox">
+    <div class="filter"><button class="chip active">All mail</button><button class="chip">Unread</button><button class="chip">Starred</button></div>
+    <p class="section-label">TODAY</p>
+    <article class="mail unread"><span class="avatar blue">L</span><div><b>Linear</b><strong>Issue assigned: review Android polish</strong><p>Priya assigned you an issue in Hypermail.</p></div><time>9:42</time></article>
+    <article class="mail"><span class="avatar amber">M</span><div><b>Monzo</b><strong>Your monthly statement is ready</strong><p>View your latest account summary.</p></div><time>8:17</time></article>
+    <article class="mail unread"><span class="avatar green">S</span><div><b>Samira Ahmed</b><strong>Quick question about Thursday</strong><p>Could we move our call an hour later?</p></div><time>7:58</time></article>
+    <p class="section-label">YESTERDAY</p>
+    <article class="mail"><span class="avatar gray">N</span><div><b>Notion</b><strong>New comments in Q2 planning</strong><p>Alex left 3 comments for you.</p></div><time>Tue</time></article>
+  </section>
+  <section class="mobile-screen activity" data-screen="mobile-activity" aria-label="Mobile Activity">
+    <div class="filter"><button class="chip active">New</button><button class="chip">Questions</button><button class="chip">Failed</button><button class="chip">History</button></div>
+    <article class="event"><i class="dot blue"></i><div><b>Reply draft ready</b><p>For Samira Ahmed · 2m ago</p></div><button>Review</button></article>
+    <article class="event"><i class="dot amber"></i><div><b>Question needs your input</b><p>Expense receipt · 18m ago</p></div><button>Answer</button></article>
+    <article class="event"><i class="dot red"></i><div><b>Sync needs attention</b><p>Outlook account · 1h ago</p></div><button>Fix</button></article>
+    <article class="event"><i class="dot green"></i><div><b>Newsletter archived</b><p>Product Hunt Daily · 2h ago</p></div><button>View</button></article>
+  </section>
+  <section class="mobile-screen message" data-screen="mobile-message" aria-label="Message detail with agent card">
+    <button class="back">‹ Inbox</button><h1>Quick question about Thursday</h1><div class="message-actions"><button>Archive</button><button>Reply</button><button>•••</button></div><p class="from"><span class="avatar green">S</span><b>Samira Ahmed</b><br><small>to me · 7:58 AM</small></p><p>Could we move our call an hour later? I have a conflict at 2pm.</p>
+    <aside class="agent-card"><div><span class="spark">✦</span><b>Hypermail suggests a reply</b><button class="more">•••</button></div><p>“Yes, 3pm works for me. See you then!”</p><footer><button class="secondary">Edit</button><button class="primary">Send reply</button></footer></aside>
+    <button class="bottom-sheet" aria-label="Open agent detail">Agent details <span>⌃</span></button>
+  </section>
+  <section class="mobile-screen compose" data-screen="mobile-compose" aria-label="Compose">
+    <header><button class="back">×</button><b>New message</b><button class="send-link">Send</button></header><label>To <input value="samira@example.com" aria-label="To"></label><label>Subject <input value="Thursday call" aria-label="Subject"></label><textarea aria-label="Message">Hi Samira,
+
+Yes, 3pm works for me. See you then!</textarea><div class="compose-tools"><button>＋</button><button>⌁</button><span>Saved just now</span></div>
+  </section>
+  <nav class="tabs" aria-label="Primary"><button class="selected" data-target="mobile-inbox">Inbox</button><button data-target="mobile-activity">Activity <em>3</em></button><button>Drafts</button><button>More</button></nav><button class="fab" aria-label="Compose">＋</button>
+  <section class="desktop" aria-label="Desktop three-pane shell"><aside class="rail"><b>hypermail</b><button class="compose-button">＋ Compose</button><nav><button class="selected">Inbox <span>12</span></button><button>Activity <span>3</span></button><button>Drafts</button><button>Sent</button><button>More</button></nav><small>All accounts<br>Online</small></aside><section class="list"><header><div><b>All Accounts</b><span>12 unread</span></div><button>⌕</button></header><div class="filter"><button class="chip active">All mail</button><button class="chip">Unread</button></div><article class="mail selected"><span class="avatar green">S</span><div><b>Samira Ahmed</b><strong>Quick question about Thursday</strong><p>Could we move our call an hour later?</p></div><time>7:58</time></article><article class="mail"><span class="avatar blue">L</span><div><b>Linear</b><strong>Issue assigned: review Android polish</strong><p>Priya assigned you an issue in Hypermail.</p></div><time>9:42</time></article><article class="mail"><span class="avatar amber">M</span><div><b>Monzo</b><strong>Your monthly statement is ready</strong><p>View your latest account summary.</p></div><time>8:17</time></article></section><article class="reader"><header><button>Archive</button><button>Reply</button><button>•••</button></header><h1>Quick question about Thursday</h1><p class="from"><span class="avatar green">S</span><b>Samira Ahmed</b><br><small>to me · Today, 7:58 AM</small></p><p>Could we move our call an hour later? I have a conflict at 2pm.</p><aside class="agent-card"><div><span class="spark">✦</span><b>Hypermail suggests a reply</b><button class="more">•••</button></div><p>“Yes, 3pm works for me. See you then!”</p><footer><button class="secondary">Edit</button><button class="primary">Send reply</button></footer></aside></article></section>
+</main><script src="prototype.js"></script></body></html>

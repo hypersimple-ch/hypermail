@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Restore is deliberately opt-in and accepts no production defaults.
+set -euo pipefail
+umask 077
+fail() { printf '{"timestamp":"%s","level":"error","event":"restore.failed"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2; exit 1; }
+for tool in age aws pg_restore tar sha256sum cmp python3 stat; do command -v "$tool" >/dev/null 2>&1 || fail "required tool unavailable: $tool"; done
+: "${BACKUP_TARGET:?BACKUP_TARGET is required}"
+: "${BACKUP_ENCRYPTION_KEY_FILE:?BACKUP_ENCRYPTION_KEY_FILE is required}"
+: "${BACKUP_STATE_ENCRYPTION_KEY_FILE:?BACKUP_STATE_ENCRYPTION_KEY_FILE is required}"
+[ "${RESTORE_ISOLATED:-}" = 1 ] || fail 'set RESTORE_ISOLATED=1 after creating an isolated target'
+[ "$#" -eq 6 ] || fail 'usage: restore-run --generation ID --target-db-url-file /run/secrets/file --state-directory EMPTY_DIRECTORY'
+[ "$1" = --generation ] && [ "$3" = --target-db-url-file ] && [ "$5" = --state-directory ] || fail 'invalid arguments'
+generation=$2; target_db_file=$4; state_dir=$6
+[[ "$target_db_file" == /run/secrets/* && -r "$target_db_file" ]] || fail 'target DB URL must be a readable /run/secrets file'
+target_db=$(<"$target_db_file")
+export TARGET_DB_URL="$target_db"
+[[ "$BACKUP_TARGET" =~ ^s3://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]] || fail 'BACKUP_TARGET must be an s3:// bucket/prefix without whitespace'
+[[ "$generation" =~ ^[0-9]{10}-[0-9a-f]{12}$ ]] || fail 'invalid generation identifier'
+[[ "$target_db" =~ ^postgresql://[^/]+/(restore|hypermail_restore)(\?.*)?$ ]] || fail 'target database name must be restore or hypermail_restore'
+for key in "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE"; do
+  [[ "$key" == /run/secrets/* && -f "$key" && -r "$key" ]] || fail 'encryption key files must be readable files under /run/secrets'
+  mode=$(stat -c '%a' "$key")
+  (( (8#$mode & 077) == 0 )) || fail 'encryption key file permissions are too broad'
+done
+cmp -s "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE" && fail 'database and state encryption keys must differ'
+[ ! -e "$state_dir" ] || [ -d "$state_dir" ] && [ -z "$(find "$state_dir" -mindepth 1 -print -quit)" ] || fail 'state directory must be absent or empty'
+mkdir -p "$state_dir"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+base="${BACKUP_TARGET%/}/generations/$generation"
+for artifact in database.dump.age state.tar.age manifest.age; do aws s3 cp --only-show-errors "$base/$artifact" "$tmp/$artifact" >/dev/null; done
+age --decrypt --identity "$BACKUP_ENCRYPTION_KEY_FILE" --output "$tmp/manifest.json" "$tmp/manifest.age" || fail 'manifest decryption failed'
+python3 - "$tmp/manifest.json" "$generation" "$tmp" <<'PY'
+import hashlib, json, pathlib, sys
+manifest = json.load(open(sys.argv[1]))
+if manifest.get('generation') != sys.argv[2]: raise SystemExit('manifest generation mismatch')
+for name in ('database.dump.age', 'state.tar.age'):
+    item = manifest.get('artifacts', {}).get(name, {})
+    data = pathlib.Path(sys.argv[3], name).read_bytes()
+    if item.get('sha256') != hashlib.sha256(data).hexdigest() or item.get('bytes') != len(data):
+        raise SystemExit(f'integrity check failed for {name}')
+PY
+age --decrypt --identity "$BACKUP_ENCRYPTION_KEY_FILE" --output "$tmp/database.dump" "$tmp/database.dump.age" || fail 'database artifact decryption failed'
+age --decrypt --identity "$BACKUP_STATE_ENCRYPTION_KEY_FILE" --output "$tmp/state.tar" "$tmp/state.tar.age" || fail 'state artifact decryption failed'
+connection_parts=()
+while IFS= read -r -d '' value; do connection_parts+=("$value"); done < <(python3 - <<'PY'
+import os, sys
+from urllib.parse import unquote, urlparse
+u = urlparse(os.environ['TARGET_DB_URL'])
+for value in (u.hostname or '', str(u.port or 5432), unquote(u.username or ''), unquote(u.password or ''), u.path.strip('/')):
+    sys.stdout.buffer.write(value.encode() + b'\0')
+PY
+) || fail 'target DB URL cannot be parsed'
+[ "${#connection_parts[@]}" -eq 5 ] || fail 'target DB URL cannot be parsed'
+export PGHOST="${connection_parts[0]}" PGPORT="${connection_parts[1]}" PGUSER="${connection_parts[2]}" PGPASSWORD="${connection_parts[3]}" PGDATABASE="${connection_parts[4]}"
+pg_restore --clean --if-exists --no-owner --no-privileges --dbname="$PGDATABASE" "$tmp/database.dump"
+tar --extract --file "$tmp/state.tar" --directory "$state_dir" --no-same-owner --no-same-permissions
+printf '{"timestamp":"%s","level":"info","event":"restore.succeeded","fields":{"generation":"%s"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$generation"

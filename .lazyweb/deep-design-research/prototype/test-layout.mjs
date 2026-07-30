@@ -1,0 +1,10 @@
+import { readFileSync } from 'node:fs';
+const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+const css = readFileSync(new URL('./prototype.css', import.meta.url), 'utf8');
+const required = ['mobile-inbox', 'mobile-activity', 'mobile-message', 'mobile-compose', 'desktop'];
+for (const item of required) if (!html.includes(item)) throw new Error(`Missing prototype screen: ${item}`);
+for (const item of ['New', 'Questions', 'Failed', 'History', 'Agent details', 'Send reply']) if (!html.includes(item)) throw new Error(`Missing required UI: ${item}`);
+if (!css.includes('@media (min-width:700px)') || !css.includes('grid-template-columns:220px 385px minmax(0,1fr)')) throw new Error('Missing desktop three-pane breakpoint');
+if (!css.includes('max-width:360px') || !css.includes('minmax(0,1fr)')) throw new Error('Missing 360px overflow protections');
+if (!css.includes('prefers-reduced-motion:reduce')) throw new Error('Missing reduced-motion treatment');
+console.log('Static prototype contract: PASS (5 screens, activity filters, agent actions, desktop grid, 360px and reduced-motion rules).');

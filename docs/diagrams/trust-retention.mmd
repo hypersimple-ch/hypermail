@@ -1,0 +1,10 @@
+flowchart LR
+  USER[Single user] -->|HTTPS| WEB[Web API]
+  WEB --> DB[(Private PostgreSQL)]
+  WORKER[Private worker] --> DB
+  WEB --> HM[Private Hypermail]
+  WORKER --> HM
+  HM --> PROVIDERS[Mail providers]
+  BODY[Body cache] -->|90 days| PURGE[Purge]
+  META[Metadata / activity / audit] -->|indefinite| KEEP[Retain]
+  ATTACH[Temporary attachment bytes] -->|request completion| CLEAN[Clean]
