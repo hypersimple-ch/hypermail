@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import * as React from 'react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApprovedSend, MailSendProvider } from '@hypermail/send';
-import { type ApprovalClaim, type DraftRecord, type DraftScope, type DraftSource, type DraftSourceReader, DraftConflictError, DraftInputError, DraftService, InMemoryDraftRepository, createDraftRoutes } from '../../src/drafts/index.js';
+import { type ApprovalClaim, type DraftRecord, type DraftScope, type DraftSource, type DraftSourceReader, DraftCompose, DraftConflictError, DraftInputError, DraftService, InMemoryDraftRepository, createDraftRoutes } from '../../src/drafts/index.js';
 
 const account = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
@@ -110,5 +113,25 @@ describe('draft composition and isolated send boundary', () => {
     expect(sources.join('\n')).not.toContain('@hypermail/send');
     const sendSource = await readFile(resolve(root, 'packages/send/src/index.ts'), 'utf8');
     expect(sendSource).not.toMatch(/from ['"]@hypermail\/(agent|policy)['"]/);
+  });
+
+  it('renders draft controls with versioned review semantics and preserves callbacks', () => {
+    const draft: DraftRecord = { id: 'draft-1', accountId: account, sourceMessageId: null, createdBy: 'agent', state: 'editing', recipients: fields.recipients, subject: fields.subject, body: fields.body, version: 3, createdAt: '2025-01-01T00:00:00.000Z', updatedAt: '2025-01-01T00:00:00.000Z' };
+    const autosave = vi.fn(); const requestSend = vi.fn();
+    const view = render(React.createElement(DraftCompose, { draft, revisions: [], onAutosave: autosave, onRequestSend: requestSend }));
+
+    expect(screen.getByLabelText('To').getAttribute('data-slot')).toBe('input');
+    expect(screen.getByLabelText('Message').getAttribute('data-slot')).toBe('textarea');
+    expect(screen.getByRole('status').textContent).toContain('Version 3 · Agent-created draft');
+    expect(screen.getByText('editing').getAttribute('data-slot')).toBe('badge');
+    expect(screen.getByText('Sending requires your explicit approval.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review and send' }));
+    expect(autosave).toHaveBeenCalledWith(draft); expect(requestSend).toHaveBeenCalledWith(draft);
+
+    view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sending' }, revisions: [] }));
+    expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);
+    view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sent' }, revisions: [] }));
+    expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);
   });
 });

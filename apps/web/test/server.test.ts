@@ -38,8 +38,8 @@ describe('web static host', () => {
     const bootstrap = await fetch(new URL('/app.js', shell.url));
     expect(bootstrap.status).toBe(200);
     expect(bootstrap.headers.get('cache-control')).toBe('no-cache');
-    const styles = await fetch(new URL('/pwa.css', shell.url));
-    expect(styles.headers.get('cache-control')).toBe('no-cache');
+    const legacyStyles = await fetch(new URL('/pwa.css', shell.url));
+    expect(legacyStyles.status).toBe(404);
     // The compiled worker is copied only during `pnpm build`; live-host smoke verifies its root-scope header.
   });
 

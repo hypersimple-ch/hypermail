@@ -1,67 +1,69 @@
 # Hypermail screen specifications
 
-**Status:** approved for implementation  
-**Design source:** [Lazyweb research data](../../.lazyweb/deep-design-research/report-data/hypermail-greenfield.json) and [prototype](../../.lazyweb/deep-design-research/prototype/index.html).
+**Status:** approved for implementation
 
-## Design bets
+## Design bet
 
-| Bet | Structural model | Assessment |
-|---|---|---|
-| A — Inbox-led calm utility | Inbox opens first; Activity is a dedicated tab; agent work appears in the message context. Desktop keeps rail/list/reader. | **Approved.** Familiar email scanning, quieter automation, and the least structural friction for a single user. |
-| B — Activity-led operations center | Activity opens first and a persistent agent queue is promoted above mail; Inbox becomes a filtered secondary feed. | Not recommended. Better exception visibility, but makes standard email scanning feel like operations work and competes with the core inbox. |
+**Inbox-led calm utility — approved.** Inbox opens first; Activity is a dedicated view; agent work appears in message context. The product remains a quiet, familiar single-user mail utility, not an operations dashboard or feature-complete mail client.
 
-## Mobile: Inbox
+## Mobile: Inbox (<700px)
 
-**Purpose:** scan all accounts quickly without a dense, one-line enterprise-list feel.
+**Purpose:** scan all accounts quickly without a dense enterprise-list feel.
 
-- Header: “All Accounts”, unread count, search.
-- Filter pills: All mail, Unread, Starred.
-- Group mail by time; use a stable `TODAY` / `YESTERDAY` label.
-- Every mail row has account/avatar, sender, subject, snippet, and time. Rows are 79px minimum and expose swipe triage, but all swipe actions are also visible via the message toolbar/overflow.
-- Bottom navigation is always present. Compose FAB is always reachable and does not obscure a tab target.
-- At 360px, truncate sender/subject/snippet within the central column; do not shrink the timestamp into unreadable text or allow horizontal scrolling.
+- Header: “All Accounts” and unread count. Show search only when it is API-backed.
+- Show only API-backed filters. Do not promise starred, archive, read/unread, folder, or search behavior when unavailable.
+- Group mail by time with stable `TODAY` / `YESTERDAY` labels where data supports it.
+- Each row has account/avatar, sender, subject, snippet, and time. Rows are 79px minimum. Sender, subject, and snippet truncate within the central column; timestamp remains readable; the document never scrolls horizontally at 360px.
+- Bottom navigation remains present. Compose FAB remains reachable without obscuring a tab target.
+- Any control that is unsupported is omitted or disabled with a clear reason. No enabled control is a no-op.
 
 ## Mobile: Activity
 
-**Purpose:** make agent work, questions, errors, and audit history inspectable without turning the inbox into a task board.
+**Purpose:** make agent work, questions, errors, and audit history inspectable without turning Inbox into a task board.
 
 - Filter order: **New**, **Questions**, **Failed**, **History**. New is default.
-- Each event has a semantic status marker plus a written title, related message/account, relative time, and one visible next action.
-- Blue: informational/new; amber: needs input; red: failed; green: complete. Color never stands alone.
-- Failed items always show a recovery path (“Fix”, retry, or account settings); History is read-only but can open original context.
+- Each event has a written status, related message/account, relative time, and one visible supported next action.
+- Use neutral styling for ordinary/new items. Green means completed, amber needs input, and red failed; color never stands alone.
+- Pending work, errors, and conflicts are visible with an explanation and available next step. Failed items show a supported recovery path; History is read-only but may open original context when supported.
 
-## Mobile: message detail + agent card
+## Mobile: message detail and agent card
 
 **Purpose:** read mail and approve, modify, or reject automation in the same context.
 
 - Back control returns to Inbox; title, sender block, and message body precede automation.
-- Inline agent card presents one recommendation, not a stack of opaque agent activity. The card shows agent identity, proposed result, overflow, Edit, and a clear primary action.
-- “Agent details” opens a bottom sheet with rationale, affected fields/actions, and controls to dismiss or revise. It is not the only path to act.
-- Archive, reply, and overflow remain available outside the card. Announce completed actions and offer Undo where reversal is possible.
+- Inline agent card presents one recommendation, not a stack of opaque activity. It shows agent identity, proposed result, state, and supported revise/reject/approval controls.
+- Agent suggestions never send casually. A send requires explicit user approval at the point of sending.
+- “Agent details,” when available, opens an accessible bottom sheet with rationale and affected actions; it has visible close control, focus containment, and Escape/back dismissal.
+- Do not show archive, reply, or other message actions unless the API supports them. Unsupported actions are absent or honestly disabled, never enabled no-ops.
 
-## Mobile: Compose
+## Mobile: Compose and authentication
 
-**Purpose:** send an intentional message with low ceremony.
+**Purpose:** compose or authenticate with low ceremony and stable layout.
 
-- Header: close/discard path, “New message”, Send.
-- Fields: To, Subject, message editor; each has an accessible label.
-- Footer: attachment and agent affordances plus a saved status. Do not imply background/offline delivery; report online failure plainly.
-- Unsaved close asks for confirmation; draft remains reachable from Drafts.
+- Compose header has close/discard path, “New message,” and explicit Send approval.
+- Fields are labeled To, Subject, and message editor. Show only supported attachment or agent affordances.
+- Footer shows saved, pending, error, or conflict state clearly. Do not imply background/offline delivery; report online failure plainly.
+- Unsaved close asks for confirmation; saved drafts remain reachable from Drafts.
+- Authentication is compact and viewport-stable, with clear loading, error, and retry/next-step feedback.
 
-## Desktop: three-pane shell
+## Desktop: shell (>=700px)
 
-**Purpose:** keep navigation and list context while reading and acting.
+**Purpose:** retain navigation and context without squeezing non-Inbox work into a message-list column.
 
 - **Rail (220px):** brand, Compose, Inbox, Activity, Drafts, Sent, More, account/online indicator.
-- **List (385px):** All Accounts header, search, filters, balanced two-line mail rows. Selected row gets pale-blue background and a blue left keyline; this supplements selected state semantics.
-- **Reader (remaining width):** toolbar, subject, sender, body, contextual agent action card. The reader content measures no wider than ~850px.
-- At widths below 700px, use the mobile screens—not a squeezed three-pane shell.
+- **Inbox:** a 385px list with All Accounts header and only API-backed filters; remaining width is the reader. Selected rows use neutral off-white fill and a charcoal keyline/indicator, plus semantic selected state.
+- **Reader:** toolbar and actions only where supported, then subject, sender, body, and contextual agent card. Reader content measures no wider than ~850px.
+- **Compose, Activity, Drafts, Sent, and More:** use the full area after the 220px rail, with their content sized for readability rather than constrained to 385px.
+- **Drafts:** distinct editable saved-message projection. **Sent:** distinct read-only sent-message projection.
+- Below 700px, use the mobile screens—not a squeezed desktop shell.
 
 ## Acceptance checks
 
-1. All five required screens are represented in the prototype: Inbox, Activity, message detail with agent card, Compose, and desktop shell.
-2. At 360px, document `scrollWidth` equals `clientWidth`; rows truncate instead of overflowing.
-3. At desktop width (1440px), rail/list/reader are simultaneously visible.
-4. Activity shows all four specified filter names and visible non-color status labels/actions.
-5. Reduced-motion CSS disables nonessential animation/transition.
-6. Keyboard, focus, contrast, labels, and alternatives to swipe satisfy the system specification before implementation.
+1. Inbox, Activity, message detail with agent card, Compose, authentication, Drafts, Sent, and desktop shell follow this contract.
+2. At 360px, `scrollWidth` equals `clientWidth`; essential Compose/auth controls remain visible and usable.
+3. At 1440px, Inbox shows rail/list/reader; non-Inbox desktop screens use all remaining space after the 220px rail.
+4. Activity shows all four specified filter names, visible non-color status labels, and pending/error/conflict feedback.
+5. No unsupported behavior is promised or presented as an enabled control; no enabled control is a no-op.
+6. Send remains explicitly user-approved; reduced motion, keyboard, focus, contrast, labels, and 44px touch-target requirements satisfy the system specification.
+7. Current React surfaces use the shared components in `apps/web/src/components/` and Tailwind utilities; no feature imports a legacy component stylesheet or styles a raw button, input, textarea, or select.
+8. The production build emits the complete Tailwind bundle at `/app.css`, and the static shell references no parallel PWA stylesheet.

@@ -4,6 +4,9 @@ import { activateWaitingUpdate, registerPwaWorker } from '../../src/pwa/registra
 import { isNavigationRequest, navigationWithOfflineFallback, OFFLINE_SHELL_URL } from '../../src/pwa/service-worker.js';
 import { initialPwaState, installAvailable, installPrompting, installed, prefersReducedMotion, updateActivating, updateAvailable } from '../../src/pwa/state.js';
 
+const browserSource = () => readFile(new URL('../../src/browser.tsx', import.meta.url), 'utf8');
+const webPackage = async () => JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { scripts: { build: string } };
+
 describe('Android PWA contracts', () => {
   it('ships an Android install manifest and correctly sized PNG icons', async () => {
     const manifest = JSON.parse(await readFile(new URL('../../static/manifest.webmanifest', import.meta.url), 'utf8')) as { display: string; start_url: string; icons: Array<{ src: string; sizes: string; purpose: string }> };
@@ -12,35 +15,55 @@ describe('Android PWA contracts', () => {
       expect.objectContaining({ src: '/icons/icon-192.png', sizes: '192x192', purpose: 'any maskable' }),
       expect.objectContaining({ src: '/icons/icon-512.png', sizes: '512x512', purpose: 'any maskable' }),
     ]));
-    for (const icon of manifest.icons) {
-      const contents = await readFile(new URL(`../../static${icon.src}`, import.meta.url));
-      expect(contents.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    for (const icon of manifest.icons) expect((await readFile(new URL(`../../static${icon.src}`, import.meta.url))).subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  });
+
+  it('forces clean server emission and verifies every runtime asset during the production build', async () => {
+    const build = (await webPackage()).scripts.build;
+    expect(build).toContain('rm -rf dist && tsc -b tsconfig.json --force');
+    for (const artifact of ['dist/index.js', 'dist/app.js', 'dist/app.css']) {
+      expect(build).toContain(`test -f ${artifact}`);
     }
   });
 
-  it('centers the auth shell without document overflow and preserves keyboard/touch affordances', async () => {
-    const css = await readFile(new URL('../../static/pwa.css', import.meta.url), 'utf8');
-    expect(css).toContain('.auth-screen { position: fixed; inset: 0;');
-    expect(css).toContain('place-items: center');
-    expect(css).toContain('min-block-size: 100dvh');
-    expect(css).toContain('.shell { box-sizing: border-box; inline-size: min(32rem, 100%);');
-    expect(css).not.toContain('margin: 10vh auto');
-    expect(css).toContain('min-block-size:44px');
-    expect(css).toContain('button:focus-visible');
+  it('keeps the Node entrypoint separate from browser-only UI modules', async () => {
+    const entrypoint = await readFile(new URL('../../src/index.ts', import.meta.url), 'utf8');
+    expect(entrypoint).not.toContain("export * from './ui/index.js'");
+    expect(entrypoint).not.toContain("from '@/");
   });
 
-  it('does not render the mailbox shell while the session check is pending', async () => {
-    const browser = await readFile(new URL('../../src/browser.ts', import.meta.url), 'utf8');
-    expect(browser).toContain("if (state === 'loading') return React.createElement('main', { className: 'auth-screen'");
+  it('keeps the static shell to document metadata, the React root, app.css, and the application script', async () => {
+    const html = await readFile(new URL('../../static/index.html', import.meta.url), 'utf8');
+    expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest">');
+    expect(html).toContain('<link rel="stylesheet" href="/app.css">');
+    expect(html).toContain('<div id="app"></div>');
+    expect(html).toContain('<script type="module" src="/app.js"></script>');
+    expect(html).not.toContain('pwa.css');
+    expect(html).not.toContain('Application utilities');
   });
 
-  it('keeps first-run setup inside the centered, non-animated auth card', async () => {
-    const [browser, css] = await Promise.all([readFile(new URL('../../src/browser.ts', import.meta.url), 'utf8'), readFile(new URL('../../static/pwa.css', import.meta.url), 'utf8')]);
-    expect(browser).toContain("className: 'auth-screen'");
-    expect(browser).toContain("className: 'shell'");
-    expect(browser).toContain("React.createElement('fieldset', { disabled: pending }");
-    expect(css).toContain('.shell form, .shell fieldset { display: grid; gap: .75rem; }');
-    expect(css).not.toContain('@keyframes');
+  it('renders loading, authentication, connectivity, install, and update presentation with shared JSX primitives', async () => {
+    const browser = await browserSource();
+    for (const primitive of ['Alert', 'Button', 'Card', 'Field', 'Input', 'Spinner']) expect(browser).toContain(`@/components/ui/${primitive.toLowerCase()}`);
+    expect(browser).toContain('function AuthCard');
+    expect(browser).toContain('<Spinner className="size-6" />');
+    expect(browser).toContain('role="status" aria-live="polite"');
+    expect(browser).toContain('aria-label="Application utilities"');
+    expect(browser).toContain('<Button type="button" variant="outline" onClick={install}>Install Hypermail</Button>');
+    expect(browser).toContain('<Button type="button" variant="outline" onClick={update}>Reload to update</Button>');
+    expect(browser).not.toContain('React.createElement');
+  });
+
+  it('keeps first-run setup private and validated in the shared form controls', async () => {
+    const browser = await browserSource();
+    expect(browser).toContain('fetch(\'/api/v1/auth/bootstrap\'');
+    expect(browser).toContain('response.status === 201');
+    expect(browser).toContain('response.status === 409');
+    expect(browser).toContain('<FieldSet disabled={pending}>');
+    expect(browser).toContain('autoComplete="new-password"');
+    expect(browser).toContain('minLength={12} maxLength={1024}');
+    expect(browser).toContain('name="confirmPassword"');
+    expect(browser).toContain('Passwords do not match.');
   });
 
   it('falls back only failed document navigations to the connectivity shell', async () => {
@@ -66,18 +89,10 @@ describe('Android PWA contracts', () => {
     const workerCallbacks: Record<string, () => void> = {};
     const firstWorker = { state: 'installing', addEventListener(type: 'statechange', callback: () => void) { workerCallbacks[type] = callback; } };
     const secondWorker = { state: 'installing', addEventListener() {} };
-    const registration = {
-      waiting: null as { postMessage(message: unknown): void } | null,
-      installing: firstWorker as typeof firstWorker | typeof secondWorker | null,
-      addEventListener(type: 'updatefound', callback: () => void) { callbacks[type] = callback; },
-    };
+    const registration = { waiting: null as { postMessage(message: unknown): void } | null, installing: firstWorker as typeof firstWorker | typeof secondWorker | null, addEventListener(type: 'updatefound', callback: () => void) { callbacks[type] = callback; } };
     const states: string[] = [];
     await registerPwaWorker({ register(url, options) { expect(url).toBe('/pwa/service-worker.js'); expect(options).toEqual({ scope: '/', type: 'module' }); return Promise.resolve(registration); } }, (state) => states.push(state.update), initialPwaState);
-    callbacks.updatefound?.();
-    registration.installing = secondWorker;
-    registration.waiting = { postMessage() {} };
-    firstWorker.state = 'installed';
-    workerCallbacks.statechange?.();
+    callbacks.updatefound?.(); registration.installing = secondWorker; registration.waiting = { postMessage() {} }; firstWorker.state = 'installed'; workerCallbacks.statechange?.();
     expect(states).toEqual(['available']);
   });
 

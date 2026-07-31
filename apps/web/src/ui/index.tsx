@@ -1,0 +1,103 @@
+import * as React from 'react';
+import { ArrowLeft, Bot, FilePenLine, Mail, MoreHorizontal, Paperclip, Plus, Send, X } from 'lucide-react';
+import { AgentPanel, type AgentUiHandlers } from '../agent/ui.js';
+import type { AgentDashboard } from '../agent/contracts.js';
+import { Alert, AlertDescription } from '@/components/ui/alert.js';
+import { Badge } from '@/components/ui/badge.js';
+import { Button } from '@/components/ui/button.js';
+import { Card, CardContent } from '@/components/ui/card.js';
+import { Field, FieldLabel } from '@/components/ui/field.js';
+import { Input } from '@/components/ui/input.js';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select.js';
+import { Textarea } from '@/components/ui/textarea.js';
+import { FilterGroup, NavigationItem, PageHeader, StatePanel } from '@/components/app/patterns.js';
+import { cn } from '@/lib/utils.js';
+
+export type MailState = 'loading' | 'ready' | 'empty' | 'error';
+export type ActivityState = 'new' | 'question' | 'failed' | 'complete';
+export type ActivityFilter = 'new' | 'questions' | 'failed' | 'history';
+export type Screen = 'inbox' | 'activity' | 'drafts' | 'sent' | 'more' | 'message' | 'compose';
+export interface Account { id: string; label: string; address: string; unread: number; color: 'blue' | 'green' | 'amber' | 'gray'; }
+export interface Attachment { id: string; name: string; size: string; safe?: boolean; }
+export interface Draft { id: string; accountId: string; recipients: readonly { kind: string; address: string }[]; subject: string; body: string; state: string; updatedAt: string; version?: number; }
+export interface Message { id: string; accountId: string; sender: string; initials: string; subject: string; preview: string; received: string; unread?: boolean; body: string; attachments?: readonly Attachment[]; }
+export interface ActivityItem { id: string; expectedVersion?: number; state: ActivityState; title: string; context: string; time: string; action: string; }
+export interface ShellData { accounts: readonly Account[]; messages: readonly Message[]; activity: readonly ActivityItem[]; }
+
+const formText = (form: FormData, name: string) => { const value = form.get(name); return typeof value === 'string' ? value : ''; };
+const paneClass = 'min-w-0 bg-background';
+const fullPaneClass = `${paneClass} mx-auto w-full max-w-5xl p-4 sm:p-6`;
+
+function AccountMark({ message, color = 'gray' }: { message: Message; color?: Account['color'] }) {
+  const colors: Record<Account['color'], string> = { blue: 'bg-blue-100 text-blue-800', green: 'bg-emerald-100 text-emerald-800', amber: 'bg-amber-100 text-amber-800', gray: 'bg-muted text-muted-foreground' };
+  return <span className={cn('grid size-8 shrink-0 place-items-center rounded-full text-xs font-bold', colors[color])} aria-hidden="true">{message.initials}</span>;
+}
+
+function ErrorState({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
+  return <Alert variant="destructive" className="m-4 w-auto"><AlertDescription>{children}</AlertDescription>{action}</Alert>;
+}
+
+export function MessageRow({ message, selected, onOpen }: { message: Message; selected?: boolean; onOpen?: () => void }) {
+  return <article className={cn('min-w-0 border-b border-border', selected && 'border-l-4 border-l-primary bg-accent/50', message.unread && 'font-semibold')}>
+    <Button variant="ghost" className="grid h-auto min-h-[79px] w-full min-w-0 grid-cols-[2rem_minmax(0,1fr)_2.5rem] items-start gap-2 rounded-none px-3 py-3 text-left font-normal" type="button" onClick={onOpen} aria-label={`Open message from ${message.sender}: ${message.subject}`}>
+      <AccountMark message={message} />
+      <span className="min-w-0"><strong className="block truncate">{message.sender}</strong><span className="block truncate font-medium">{message.subject}</span><small className="mt-0.5 block truncate text-sm font-normal text-muted-foreground">{message.preview}</small></span>
+      <time className="text-right text-xs font-normal text-muted-foreground">{message.received}</time>
+    </Button>
+  </article>;
+}
+
+export function Inbox({ data, state = 'ready', selectedId, onOpen, onRetry }: { data: ShellData; state?: MailState; selectedId?: string | undefined; onOpen?: ((message: Message) => void) | undefined; onRetry?: (() => void) | undefined }) {
+  const unread = data.accounts.reduce((sum, account) => sum + account.unread, 0);
+  return <section className={paneClass} aria-label="Inbox"><div className="border-b border-border px-4 py-4"><PageHeader title="All Accounts" description={`${String(unread)} unread`} /></div>
+    {state === 'loading' ? <StatePanel className="m-4 w-auto" title="Loading inbox…" loading /> : state === 'error' ? <ErrorState action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>}>Could not load mail.</ErrorState> : state === 'empty' ? <StatePanel className="m-4 w-auto" title="No mail here yet." /> : <><h2 className="px-4 pt-3 text-xs font-medium tracking-widest text-muted-foreground uppercase">Today</h2>{data.messages.map((message) => <MessageRow key={message.id} message={message} selected={selectedId === message.id} onOpen={() => onOpen?.(message)} />)}</>}
+  </section>;
+}
+
+export function Activity({ data, state = 'ready', filter = 'new', onFilter, onAction, onRetry, agentPanel }: { data: ShellData; state?: MailState; filter?: ActivityFilter; onFilter?: ((filter: ActivityFilter) => void) | undefined; onAction?: ((item: ActivityItem) => Promise<void> | void) | undefined; onRetry?: (() => void) | undefined; agentPanel?: React.ReactNode | undefined }) {
+  const [pending, setPending] = React.useState<string>(); const [error, setError] = React.useState('');
+  const status: Record<ActivityState, { text: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = { new: { text: 'New', variant: 'secondary' }, question: { text: 'Needs input', variant: 'outline' }, failed: { text: 'Failed', variant: 'destructive' }, complete: { text: 'Completed', variant: 'secondary' } };
+  const act = (item: ActivityItem) => { if (!onAction) return; setPending(item.id); setError(''); void Promise.resolve(onAction(item)).catch(() => { setError(`Could not ${item.action.toLowerCase()} this activity. Try again.`); }).finally(() => { setPending(undefined); }); };
+  return <section className={fullPaneClass} aria-label="Activity"><PageHeader title="Activity" description="Agent work and exceptions" className="mb-4" />
+    <FilterGroup label="Filters" value={filter} options={[{ value: 'new', label: 'New' }, { value: 'questions', label: 'Questions' }, { value: 'failed', label: 'Failed' }, { value: 'history', label: 'History' }]} onChange={onFilter ?? (() => {})} className="mb-4" />
+    {error ? <ErrorState>{error}</ErrorState> : null}
+    {state === 'loading' ? <StatePanel title="Loading activity…" loading /> : state === 'error' ? <ErrorState action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>}>Could not load activity.</ErrorState> : state === 'empty' ? <StatePanel title="Nothing needs attention." /> : <div className="space-y-3">{data.activity.map((item) => <Card key={item.id} className="gap-0 py-0 shadow-none"><CardContent className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 px-4 py-4 sm:grid-cols-[7rem_minmax(0,1fr)_auto]"><Badge variant={status[item.state].variant} className="order-2 justify-self-end sm:order-none sm:justify-self-auto">{status[item.state].text}</Badge><div className="min-w-0"><strong>{item.title}</strong><p className="mt-1 text-sm text-muted-foreground">{item.context} · {item.time}</p></div>{(item.action === 'Retry' || item.action === 'Acknowledge') ? <Button type="button" variant="ghost" size="sm" onClick={() => { act(item); }} disabled={pending === item.id}>{pending === item.id ? 'Working…' : item.action}</Button> : null}</CardContent></Card>)}</div>}
+    {agentPanel ? <div className="mt-6 border-t border-border pt-6">{agentPanel}</div> : null}
+  </section>;
+}
+
+export function Reader({ message, onBack, onAttachment, error }: { message: Message; onBack?: () => void; onAttachment?: (attachment: Attachment) => Promise<void> | void; error?: string }) {
+  return <article className="min-w-0 bg-background px-4 pb-24 sm:px-8" aria-label="Message detail"><header className="flex min-h-17 items-center border-b border-border"><Button variant="ghost" size="sm" type="button" onClick={onBack}><ArrowLeft aria-hidden="true" />Inbox</Button></header>
+    {error ? <ErrorState>{error}</ErrorState> : null}<div className="mx-auto max-w-3xl py-6"><h1 className="text-2xl font-semibold tracking-tight">{message.subject}</h1><div className="mt-5 grid grid-cols-[2.25rem_1fr] items-center gap-3"><AccountMark message={message} /><p><strong className="block">{message.sender}</strong><small className="text-muted-foreground">to me</small></p></div><p className="my-7 leading-7 whitespace-pre-wrap">{message.body}</p><div className="space-y-2">{message.attachments?.map((attachment) => <Button key={attachment.id} type="button" variant="outline" className="h-auto w-full max-w-md justify-start py-3 text-left" onClick={() => { void onAttachment?.(attachment); }} aria-label={`Download attachment ${attachment.name}`}><Paperclip aria-hidden="true" /><span className="min-w-0"><span className="block truncate">{attachment.name} · {attachment.size}</span><small className="block font-normal text-muted-foreground">Download attachment</small></span></Button>)}</div></div>
+  </article>;
+}
+
+export function Compose({ accounts, draft, onClose, onSave }: { accounts: readonly Account[]; draft?: Draft | undefined; onClose?: (() => void) | undefined; onSave?: ((draft: { id?: string; expectedVersion?: number; accountId: string; recipient: string; subject: string; body: string }) => Promise<void>) | undefined }) {
+  const [pending, setPending] = React.useState(false); const [error, setError] = React.useState('');
+  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); const accountId = formText(form, 'accountId'); if (!onSave || !accountId) return; setPending(true); setError(''); void onSave({ ...(draft ? { id: draft.id, expectedVersion: draft.version } : {}), accountId, recipient: formText(form, 'to'), subject: formText(form, 'subject'), body: formText(form, 'body') }).then(() => onClose?.()).catch(() => { setError('Could not save draft. Try again.'); }).finally(() => { setPending(false); }); };
+  return <section className="mx-auto w-full max-w-3xl bg-background p-4 pb-24 sm:p-6" aria-label="Compose message"><form onSubmit={submit} className="space-y-4"><PageHeader title={draft ? 'Edit draft' : 'New message'} actions={<Button variant="ghost" size="icon" type="button" onClick={onClose} aria-label="Close compose"><X aria-hidden="true" /></Button>} />
+    <Field><FieldLabel htmlFor="compose-account">From account</FieldLabel><NativeSelect id="compose-account" name="accountId" required defaultValue={draft?.accountId}><NativeSelectOption value="" disabled>Select an account</NativeSelectOption>{accounts.map((account) => <NativeSelectOption key={account.id} value={account.id}>{account.label}</NativeSelectOption>)}</NativeSelect></Field>
+    <Field><FieldLabel htmlFor="compose-to">To</FieldLabel><Input id="compose-to" name="to" type="email" placeholder="name@example.com" required defaultValue={draft?.recipients.find((recipient) => recipient.kind === 'to')?.address ?? ''} /></Field>
+    <Field><FieldLabel htmlFor="compose-subject">Subject</FieldLabel><Input id="compose-subject" name="subject" type="text" defaultValue={draft?.subject ?? ''} /></Field>
+    <Field><FieldLabel htmlFor="compose-body">Message</FieldLabel><Textarea id="compose-body" name="body" defaultValue={draft?.body ?? ''} /></Field>
+    {error ? <ErrorState>{error}</ErrorState> : null}<div className="flex justify-end border-t border-border pt-4"><Button type="submit" disabled={pending}>{pending ? 'Saving…' : 'Save draft'}</Button></div>
+  </form></section>;
+}
+
+export function Drafts({ drafts, onOpen }: { drafts: readonly Draft[]; onOpen?: (draft: Draft) => void }) { const editable = drafts.filter((draft) => ['editing', 'ready', 'failed'].includes(draft.state)); return <section className={fullPaneClass} aria-label="Drafts"><PageHeader title="Drafts" className="mb-5" />{editable.length ? <div className="space-y-3">{editable.map((draft) => <Card key={draft.id} className="gap-0 py-0 shadow-none"><CardContent className="flex items-center justify-between gap-4 px-4 py-4"><div className="min-w-0"><strong className="block truncate">{draft.subject || '(no subject)'}</strong><p className="mt-1 truncate text-sm text-muted-foreground">{draft.recipients.map((item) => item.address).join(', ') || 'No recipient'} · {draft.state}</p></div><Button type="button" variant="outline" size="sm" onClick={() => onOpen?.(draft)} aria-label={`Edit draft ${draft.subject || '(no subject)'}`}>Edit</Button></CardContent></Card>)}</div> : <StatePanel title="No drafts yet." />}</section>; }
+export function Sent({ drafts }: { drafts: readonly Draft[] }) { const sent = drafts.filter((draft) => draft.state === 'sent'); return <section className={fullPaneClass} aria-label="Sent"><PageHeader title="Sent" className="mb-5" />{sent.length ? <div className="space-y-3">{sent.map((draft) => <Card key={draft.id} className="gap-0 py-0 shadow-none"><CardContent className="px-4 py-4"><strong>{draft.subject || '(no subject)'}</strong><p className="mt-1 text-sm text-muted-foreground">To {draft.recipients.map((item) => item.address).join(', ') || 'no recipient'} · Sent</p></CardContent></Card>)}</div> : <StatePanel title="No sent messages." />}</section>; }
+export function More() { return <section className={fullPaneClass} aria-label="More"><PageHeader title="More" className="mb-5" /><StatePanel title="Settings and account options are coming soon." /></section>; }
+
+const destinations: Array<{ id: Extract<Screen, 'inbox' | 'activity' | 'drafts' | 'sent' | 'more'>; label: string; icon: typeof Mail }> = [{ id: 'inbox', label: 'Inbox', icon: Mail }, { id: 'activity', label: 'Activity', icon: Bot }, { id: 'drafts', label: 'Drafts', icon: FilePenLine }, { id: 'sent', label: 'Sent', icon: Send }, { id: 'more', label: 'More', icon: MoreHorizontal }];
+function Rail({ screen, onScreen }: { screen: Screen; onScreen: (screen: Screen) => void }) { return <aside className="hidden min-h-dvh flex-col gap-6 border-r border-border bg-card p-4 [@media(min-width:700px)]:flex" aria-label="Mailbox navigation"><strong className="px-2 text-xl tracking-tight">hypermail</strong><Button type="button" onClick={() => { onScreen('compose'); }}><Plus aria-hidden="true" />Compose</Button><nav className="grid gap-1" aria-label="Primary">{destinations.map(({ id, label, icon }) => <NavigationItem key={id} active={screen === id} icon={icon} onClick={() => { onScreen(id); }}>{label}</NavigationItem>)}</nav></aside>; }
+
+export function HypermailShell({ data, initialState = 'ready', drafts = [], dashboard, agentError, agentHandlers, onActivityAction, onActivityFilter, onInboxRetry, onOpenMessage, onSaveDraft }: { data: ShellData; initialState?: MailState; drafts?: readonly Draft[]; dashboard?: AgentDashboard | undefined; agentError?: string | undefined; agentHandlers?: AgentUiHandlers | undefined; onActivityAction?: ((item: ActivityItem) => Promise<void>) | undefined; onActivityFilter?: ((filter: ActivityFilter) => Promise<void>) | undefined; onInboxRetry?: (() => void) | undefined; onOpenMessage?: ((message: Message) => Promise<Message>) | undefined; onSaveDraft?: ((draft: { id?: string; expectedVersion?: number; accountId: string; recipient: string; subject: string; body: string }) => Promise<void>) | undefined }) {
+  const [screen, setScreen] = React.useState<Screen>('inbox'); const [selected, setSelected] = React.useState(data.messages[0]); const [editingDraft, setEditingDraft] = React.useState<Draft>(); const [detailError, setDetailError] = React.useState(''); const [activityError, setActivityError] = React.useState(false); const [activityFilter, setActivityFilter] = React.useState<ActivityFilter>('new'); const [idempotencyKey] = React.useState(() => globalThis.crypto.randomUUID());
+  const openMessage = (message: Message) => { setSelected(message); setDetailError(''); setScreen('message'); if (onOpenMessage) void onOpenMessage(message).then(setSelected).catch(() => { setDetailError('Could not load this message. Try another message or retry.'); }); };
+  const attachment = async (item: Attachment) => { if (!selected) return; setDetailError(''); try { const response = await fetch(`/api/v1/accounts/${encodeURIComponent(selected.accountId)}/messages/${encodeURIComponent(selected.id)}/attachments/${encodeURIComponent(item.id)}`, { headers: { 'x-api-version': 'v1' } }); if (!response.ok) throw new Error(); const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = item.name; anchor.click(); URL.revokeObjectURL(url); } catch { setDetailError('Could not download this attachment. Try again.'); } };
+  const chooseActivityFilter = (filter: ActivityFilter) => { setActivityFilter(filter); setActivityError(false); if (onActivityFilter) void onActivityFilter(filter).catch(() => { setActivityError(true); }); };
+  const agentPanel = dashboard ? <AgentPanel dashboard={dashboard} idempotencyKey={idempotencyKey} {...(agentHandlers ? { handlers: agentHandlers } : {})} {...(agentError ? { error: agentError } : {})} /> : agentError ? <ErrorState>{agentError}</ErrorState> : undefined;
+  const content = screen === 'activity' ? <Activity data={data} state={activityError ? 'error' : initialState} filter={activityFilter} onFilter={chooseActivityFilter} onAction={onActivityAction} onRetry={() => { chooseActivityFilter(activityFilter); }} agentPanel={agentPanel} /> : screen === 'drafts' ? <Drafts drafts={drafts} onOpen={(draft) => { setEditingDraft(draft); setScreen('compose'); }} /> : screen === 'sent' ? <Sent drafts={drafts} /> : screen === 'more' ? <More /> : screen === 'compose' ? <Compose accounts={data.accounts} {...(editingDraft ? { draft: editingDraft } : {})} onClose={() => { setEditingDraft(undefined); setScreen('drafts'); }} onSave={onSaveDraft} /> : screen === 'message' ? selected ? <Reader message={selected} onBack={() => { setScreen('inbox'); }} onAttachment={attachment} error={detailError} /> : null : <Inbox data={data} state={initialState} selectedId={selected?.id} onOpen={openMessage} onRetry={onInboxRetry} />;
+  const desktopContent = screen === 'inbox' ? <><Inbox data={data} state={initialState} selectedId={selected?.id} onOpen={openMessage} onRetry={onInboxRetry} />{selected ? <Reader message={selected} onBack={() => { setScreen('inbox'); }} onAttachment={attachment} error={detailError} /> : <StatePanel title="No message selected." />}</> : content;
+  return <main className="min-h-dvh overflow-x-hidden bg-background [@media(min-width:700px)]:grid [@media(min-width:700px)]:grid-cols-[220px_minmax(0,1fr)]"><p className="sr-only" aria-live="polite">Viewing {screen}</p><Rail screen={screen} onScreen={setScreen} /><div className="min-w-0 pb-20 [@media(min-width:700px)]:hidden">{content}</div><section className={cn('hidden min-w-0 bg-background [@media(min-width:700px)]:block', screen === 'inbox' && '[@media(min-width:700px)]:grid [@media(min-width:700px)]:grid-cols-[385px_minmax(0,1fr)]')} aria-label="Desktop mailbox">{desktopContent}</section><nav className="fixed right-0 bottom-0 left-0 z-10 grid h-[66px] grid-cols-4 border-t border-border bg-background py-1 pr-12 [@media(min-width:700px)]:hidden" aria-label="Mobile primary">{destinations.filter(({ id }) => id !== 'sent').map(({ id, label, icon }) => <NavigationItem key={id} active={screen === id} icon={icon} className="h-auto min-h-11 justify-center px-1 text-xs" onClick={() => { setScreen(id); }}>{label}</NavigationItem>)}</nav><Button className="fixed right-4 bottom-3 z-20 rounded-full shadow-md [@media(min-width:700px)]:hidden" size="icon" type="button" aria-label="Compose" onClick={() => { setScreen('compose'); }}><Plus aria-hidden="true" /></Button></main>;
+}

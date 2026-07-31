@@ -1,12 +1,14 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentDashboard, AgentRepository, AgentScope } from '../../src/agent/contracts.js';
 import { createAgentRoutes } from '../../src/agent/routes.js';
 import { AgentService, agentBrowserScenarios } from '../../src/agent/service.js';
 import { AgentPanel, AutonomyControls } from '../../src/agent/ui.js';
+
+afterEach(cleanup);
 
 const scope: AgentScope = { subjectId: 'person-1', accountIds: ['account-1'] };
 const action = { id: 'action-1', accountId: 'account-1', version: 1, title: 'Follow up', reason: 'The sender asked for confirmation.', status: 'failed' as const, outcome: 'The delivery attempt failed.', verification: 'No message was sent.', recoverable: true, reversalHref: '/activity/action-1/reversal', questionId: 'question-1' };
@@ -69,17 +71,14 @@ describe('agent framework-neutral API', () => {
 
 describe('agent SSR UI contracts', () => {
   const markup = renderToStaticMarkup(React.createElement(AgentPanel, { dashboard, idempotencyKey: 'stable-key' }));
-  const css = readFileSync(resolve(import.meta.dirname, '../../src/agent/agent.css'), 'utf8');
 
   it('passes the dashboard version for the selected autonomy scope', () => {
     const onAutonomy = vi.fn();
-    const controls = AutonomyControls({ dashboard, handlers: { onAutonomy } });
-    const children = controls.props.children as unknown as React.ReactNode;
-    const rows = React.Children.toArray(children).filter((child): child is React.ReactElement => React.isValidElement(child) && child.type === 'div') as unknown as Array<{ props: { children: readonly unknown[] } }>;
-    const globalButton = rows[0]?.props.children[1] as { props: { onClick: () => void } };
-    const accountButton = rows[1]?.props.children[1] as { props: { onClick: () => void } };
-    globalButton.props.onClick();
-    accountButton.props.onClick();
+    render(React.createElement(AutonomyControls, { dashboard, handlers: { onAutonomy } }));
+    const [globalButton, accountButton] = screen.getAllByRole('button', { name: /Pause|Resume/ });
+    if (!globalButton || !accountButton) throw new Error('Expected global and account autonomy controls.');
+    fireEvent.click(globalButton);
+    fireEvent.click(accountButton);
     expect(onAutonomy).toHaveBeenNthCalledWith(1, { kind: 'global' }, 'paused', 100);
     expect(onAutonomy).toHaveBeenNthCalledWith(2, { kind: 'account', accountId: 'account-1' }, 'running', 101);
   });
@@ -106,8 +105,12 @@ describe('agent SSR UI contracts', () => {
     expect(renderToStaticMarkup(React.createElement(AgentPanel, { dashboard: irreversible, idempotencyKey: 'key' }))).not.toContain('Review reversal');
   });
 
-  it('keeps 360px, touch, focus, and reduced-motion contracts in agent-owned CSS', () => {
-    for (const token of ['max-width:100%', 'min-height:44px', '@media (max-width:360px)', ':focus-visible', 'prefers-reduced-motion:reduce']) expect(css).toContain(token);
+  it('uses shared focus-safe 44px button variants for both pause and resume controls', () => {
+    const controls = renderToStaticMarkup(React.createElement(AutonomyControls, { dashboard }));
+    expect(controls).toContain('data-size="sm"');
+    expect(controls).toContain('focus-visible:ring-2');
+    expect(controls).toContain('>Pause</button>');
+    expect(controls).toContain('>Resume</button>');
   });
 
   it('documents browser-ready interaction scenarios without claiming a browser host ran', () => {

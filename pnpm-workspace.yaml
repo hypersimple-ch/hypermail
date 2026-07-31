@@ -8,8 +8,10 @@ overrides:
   postcss: 8.5.24
 
 onlyBuiltDependencies:
+  - '@parcel/watcher'
   - esbuild
 allowBuilds:
+  '@parcel/watcher': true
   esbuild: true
   # Hypermail does not use OS keychain storage; retain its encrypted file store.
   keytar: false

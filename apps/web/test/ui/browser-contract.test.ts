@@ -3,12 +3,14 @@ import { resolve } from 'node:path';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Activity, Drafts, HypermailShell } from '../../src/ui/index.js';
+import { Activity, Drafts, HypermailShell, Sent } from '../../src/ui/index.js';
 import { mockShellData } from '../../src/ui/fixtures.js';
 
 const render = (node: React.ReactElement) => renderToStaticMarkup(node);
-const css = readFileSync(resolve(import.meta.dirname, '../../src/ui/hypermail.css'), 'utf8');
-const browser = readFileSync(resolve(import.meta.dirname, '../../src/browser.ts'), 'utf8');
+const globals = readFileSync(resolve(import.meta.dirname, '../../src/styles/globals.css'), 'utf8');
+const shellSource = readFileSync(resolve(import.meta.dirname, '../../src/ui/index.tsx'), 'utf8');
+const buttonSource = readFileSync(resolve(import.meta.dirname, '../../src/components/ui/button.tsx'), 'utf8');
+const browser = readFileSync(resolve(import.meta.dirname, '../../src/browser.tsx'), 'utf8');
 
 describe('browser runtime contracts', () => {
   it('keeps fixture data outside the production browser entrypoint', () => {
@@ -24,7 +26,7 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain("bootstrapAvailable?: unknown");
     expect(browser).toContain("bootstrapAvailable === true");
     expect(browser).toContain("setState(bootstrapAvailable ? 'bootstrap' : 'unauthenticated')");
-    expect(browser).toContain("if (state === 'bootstrap') return React.createElement(Bootstrap");
+    expect(browser).toContain("if (state === 'bootstrap') return <Bootstrap");
     expect(browser).not.toMatch(/href: ['"]\/?(?:sign-?up|register)/i);
     expect(browser).not.toMatch(/(?:sign-?up|register).*?(?:link|toggle|route)/i);
   });
@@ -34,22 +36,23 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain("response.status === 201");
     expect(browser).toContain("response.status === 409");
     expect(browser).toContain("Setup is complete. Sign in to continue.");
-    expect(browser).toContain("autoComplete: 'email'");
-    expect(browser).toContain("autoComplete: 'new-password'");
-    expect(browser).toContain('minLength: 12, maxLength: 1024');
-    expect(browser).toContain("name: 'confirmPassword'");
-    expect(browser).toContain("Passwords do not match.");
-    expect(browser).toContain("role: 'alert'");
-    expect(browser).toContain("disabled: pending");
+    expect(browser).toContain('autoComplete="email"');
+    expect(browser).toContain('autoComplete="new-password"');
+    expect(browser).toContain('minLength={12} maxLength={1024}');
+    expect(browser).toContain('name="confirmPassword"');
+    expect(browser).toContain('Passwords do not match.');
+    expect(browser).toContain('<FieldSet disabled={pending}>');
+    expect(browser).toContain("@/components/ui/field.js");
   });
 
   it('has 360px, tablet, and desktop layout boundaries without horizontal overflow', () => {
-    expect(css).toContain('.hm-shell{min-height:100dvh;background:var(--hm-paper);overflow-x:hidden}');
-    expect(css).toContain('min-height:79px');
-    expect(css).toContain('@media (min-width:700px)');
-    expect(css).toContain('grid-template-columns:220px minmax(0,1fr)');
-    expect(css).toContain('grid-template-columns:385px minmax(0,1fr)');
-    expect(css).toContain('min-width:0');
+    expect(shellSource).toContain('min-h-dvh overflow-x-hidden');
+    expect(shellSource).toContain('min-h-[79px]');
+    expect(shellSource).toContain('[@media(min-width:700px)]');
+    expect(shellSource).toContain('grid-cols-[220px_minmax(0,1fr)]');
+    expect(shellSource).toContain('grid-cols-[385px_minmax(0,1fr)]');
+    expect(shellSource).toContain('min-w-0');
+    expect(shellSource).not.toContain('hm-');
   });
 
   it('renders accessible keyboard actions at every responsive presentation', () => {
@@ -59,16 +62,23 @@ describe('browser runtime contracts', () => {
     expect(markup).toContain('aria-label="Compose"');
     expect(markup).toContain('aria-label="Open message from Samira Ahmed: Quick question about Thursday"');
     expect(markup).toContain('aria-live="polite"');
-    expect(css).toContain(':focus-visible');
-    expect(css).toContain('width:44px');
-    expect(css).toContain('@media (prefers-reduced-motion:reduce)');
+    expect(buttonSource).toContain('focus-visible:ring-2');
+    expect(buttonSource).toContain('min-h-11');
+    expect(globals).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
-  it('exposes only supported activity mutations and draft navigation as labelled buttons', () => {
+  it('uses supported versioned mutations, filters, and distinct sent projection', () => {
+    expect(browser).toContain('activities?filter=${encodeURIComponent(activityFilter)}');
+    expect(browser).toContain("method: 'POST'");
+    expect(browser).toContain('expectedVersion: draft.expectedVersion');
+    expect(browser).not.toContain("method: draft.id ? 'PUT'");
+    expect(browser).not.toContain('safe: true');
     const activity = render(React.createElement(Activity, { data: { ...mockShellData, activity: [{ id: 'failed', expectedVersion: 2, state: 'failed', title: 'Sync failed', context: 'Work', time: 'now', action: 'Retry' }, { id: 'handled', expectedVersion: 3, state: 'complete', title: 'Reply handled', context: 'Personal', time: 'now', action: 'Acknowledge' }] } }));
     expect(activity).toContain('>Retry</button>');
     expect(activity).toContain('>Acknowledge</button>');
-    const drafts = render(React.createElement(Drafts, { drafts: [{ id: 'd1', accountId: 'personal', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '' }] }));
-    expect(drafts).toContain('aria-label="Edit draft Follow up"');
+    expect(activity).toContain('Questions');
+    const records = [{ id: 'd1', accountId: 'personal', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '' }, { id: 's1', accountId: 'personal', recipients: [], subject: 'Sent only', body: '', state: 'sent', updatedAt: '' }];
+    expect(render(React.createElement(Drafts, { drafts: records }))).toContain('aria-label="Edit draft Follow up"');
+    expect(render(React.createElement(Sent, { drafts: records }))).toContain('Sent only');
   });
 });

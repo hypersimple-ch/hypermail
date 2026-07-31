@@ -5,7 +5,6 @@ import { createWebRuntimeFromEnvironment, type WebRuntime } from './runtime.js';
 import { startWebServer } from './server.js';
 
 export const webService = { name: 'hypermail-web', exposure: 'public-https' } as const;
-export * from './ui/index.js';
 export * from './attachments/index.js';
 export * from './pwa/index.js';
 export { createWebServer, startWebServer } from './server.js';

@@ -1,10 +1,14 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acknowledgementBlockReason, ActivityBlockedError, ActivityConflictError, ActivityService, createActivityRoutes,
-  InMemoryActivityRepository, type ActivityRecord, ActivityDetail, ActivityScreen, activitySurfaceCss,
+  InMemoryActivityRepository, type ActivityRecord, ActivityDetail, ActivityScreen,
 } from '../../src/activity/index.js';
+
+afterEach(cleanup);
 
 const scope = { subjectId: 'person-1', accountIds: ['account-a'] } as const;
 const record = (id: string, state: ActivityRecord['state'], version = 1): ActivityRecord => ({
@@ -62,7 +66,7 @@ describe('Activity API and service contracts', () => {
   });
 });
 
-describe('Activity SSR, accessibility, and responsive behavioral contracts', () => {
+describe('Activity component accessibility and interaction contracts', () => {
   it('renders all filters, count badges, text statuses, question/failure/retry/acknowledgement controls', () => {
     const page = { items: [seed[1], seed[2], seed[3]], nextCursor: null, counts: { new: 2, questions: 1, failed: 1, history: 1 } };
     const list = renderToStaticMarkup(React.createElement(ActivityScreen, { page, filter: 'questions' }));
@@ -74,10 +78,11 @@ describe('Activity SSR, accessibility, and responsive behavioral contracts', () 
     expect(detail).toContain('disabled=""');
   });
 
-  it('is SSR-safe and ships a browser-ready responsive contract without claiming a browser run', () => {
+  it('is SSR-safe and delegates filter changes through the shared filter component', () => {
     expect(() => renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[2] }))).not.toThrow();
-    expect(activitySurfaceCss).toContain('min-width:0');
-    expect(activitySurfaceCss).toContain('@media (min-width:700px)');
-    expect(activitySurfaceCss).toContain('min-height:44px');
+    const onFilterChange = vi.fn();
+    render(React.createElement(ActivityScreen, { page: { items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } }, onFilterChange }));
+    fireEvent.click(screen.getByRole('button', { name: /Failed/ }));
+    expect(onFilterChange).toHaveBeenCalledWith('failed');
   });
 });
