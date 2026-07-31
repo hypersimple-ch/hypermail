@@ -94,6 +94,8 @@ The policy package is the sole autonomous mutation boundary. Its capability inte
 
 ## Protected user actions and PWA
 
+An unauthenticated session exposes only a boolean zero-user bootstrap availability; exact-origin atomic first-owner bootstrap is authoritative, and signup is unavailable after creation.
+
 Browser draft mutations are authenticated, exact-origin POSTs with optimistic draft versions; browser actors are always attributed as `user`. Replies accept only a source-message ID and re-read account-scoped sender/date/subject/body server-side before quoting. Send approval requires authentication within five minutes, binds a hashed explicit confirmation to one approval and draft version, expires after ten minutes, and transactionally re-reads/claims the draft before provider I/O. The isolated `packages/send` adapter forwards the immutable approved snapshot and deterministic key only to a private HTTPS endpoint. Hypermail v0.7 has no native idempotent send operation, so deployment of that private endpoint must durably deduplicate the key; direct MCP send is not represented as exactly-once.
 
 Attachment delivery requires authenticated account scope and a private, non-symlink, non-world-writable attachment directory supplied by deployment. Provider paths must remain within it. Streaming enforces declared and actual byte limits, safe content headers, cancellation/backpressure, identity-checked cleanup, and bounded owned-orphan cleanup; attachment bytes are never model input.

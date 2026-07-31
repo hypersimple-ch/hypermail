@@ -90,6 +90,13 @@ describe('session cookies', () => {
 });
 
 describe('AuthService', () => {
+  it('reports bootstrap availability before and after a successful bootstrap', async () => {
+    const store = new Store(); const service = createService(store);
+    expect(await service.bootstrapAvailable()).toBe(true);
+    await service.bootstrap('OWNER@example.com', 'correct horse battery staple', 'c1');
+    expect(await service.bootstrapAvailable()).toBe(false);
+  });
+
   it('locks bootstrap, hashes passwords, and issues a session', async () => {
     const store = new Store(); const service = createService(store);
     const first = await service.bootstrap('OWNER@example.com', 'correct horse battery staple', 'c1');

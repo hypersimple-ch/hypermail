@@ -18,11 +18,29 @@ describe('Android PWA contracts', () => {
     }
   });
 
-  it('prevents 360px shell overflow and preserves keyboard/touch affordances', async () => {
+  it('centers the auth shell without document overflow and preserves keyboard/touch affordances', async () => {
     const css = await readFile(new URL('../../static/pwa.css', import.meta.url), 'utf8');
-    expect(css).toContain('.shell { box-sizing: border-box;');
-    expect(css).toContain('min-block-size: 44px');
+    expect(css).toContain('.auth-screen { position: fixed; inset: 0;');
+    expect(css).toContain('place-items: center');
+    expect(css).toContain('min-block-size: 100dvh');
+    expect(css).toContain('.shell { box-sizing: border-box; inline-size: min(32rem, 100%);');
+    expect(css).not.toContain('margin: 10vh auto');
+    expect(css).toContain('min-block-size:44px');
     expect(css).toContain('button:focus-visible');
+  });
+
+  it('does not render the mailbox shell while the session check is pending', async () => {
+    const browser = await readFile(new URL('../../src/browser.ts', import.meta.url), 'utf8');
+    expect(browser).toContain("if (state === 'loading') return React.createElement('main', { className: 'auth-screen'");
+  });
+
+  it('keeps first-run setup inside the centered, non-animated auth card', async () => {
+    const [browser, css] = await Promise.all([readFile(new URL('../../src/browser.ts', import.meta.url), 'utf8'), readFile(new URL('../../static/pwa.css', import.meta.url), 'utf8')]);
+    expect(browser).toContain("className: 'auth-screen'");
+    expect(browser).toContain("className: 'shell'");
+    expect(browser).toContain("React.createElement('fieldset', { disabled: pending }");
+    expect(css).toContain('.shell form, .shell fieldset { display: grid; gap: .75rem; }');
+    expect(css).not.toContain('@keyframes');
   });
 
   it('falls back only failed document navigations to the connectivity shell', async () => {

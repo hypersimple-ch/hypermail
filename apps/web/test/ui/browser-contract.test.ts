@@ -19,6 +19,30 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain("fetch('/api/v1/drafts')");
   });
 
+  it('discovers private owner setup only from the 401 session capability', () => {
+    expect(browser).toContain("session.status === 401");
+    expect(browser).toContain("bootstrapAvailable?: unknown");
+    expect(browser).toContain("bootstrapAvailable === true");
+    expect(browser).toContain("setState(bootstrapAvailable ? 'bootstrap' : 'unauthenticated')");
+    expect(browser).toContain("if (state === 'bootstrap') return React.createElement(Bootstrap");
+    expect(browser).not.toMatch(/href: ['"]\/?(?:sign-?up|register)/i);
+    expect(browser).not.toMatch(/(?:sign-?up|register).*?(?:link|toggle|route)/i);
+  });
+
+  it('keeps first-run owner setup accessible, confirmed, and private', () => {
+    expect(browser).toContain("fetch('/api/v1/auth/bootstrap'");
+    expect(browser).toContain("response.status === 201");
+    expect(browser).toContain("response.status === 409");
+    expect(browser).toContain("Setup is complete. Sign in to continue.");
+    expect(browser).toContain("autoComplete: 'email'");
+    expect(browser).toContain("autoComplete: 'new-password'");
+    expect(browser).toContain('minLength: 12, maxLength: 1024');
+    expect(browser).toContain("name: 'confirmPassword'");
+    expect(browser).toContain("Passwords do not match.");
+    expect(browser).toContain("role: 'alert'");
+    expect(browser).toContain("disabled: pending");
+  });
+
   it('has 360px, tablet, and desktop layout boundaries without horizontal overflow', () => {
     expect(css).toContain('.hm-shell{min-height:100dvh;background:var(--hm-paper);overflow-x:hidden}');
     expect(css).toContain('min-height:79px');

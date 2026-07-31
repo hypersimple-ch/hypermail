@@ -68,7 +68,7 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const route = async (request: WebRequest): Promise<WebResponse | null> => {
     const authMatch = /^\/api\/v1\/auth\/(bootstrap|login|logout|recovery|reset)$/.exec(request.pathname);
     if (authMatch) { if (authMatch[1] === 'recovery') return { status: 503, body: { error: 'recovery_delivery_unavailable' } }; return authRoutes[authMatch[1] as 'bootstrap' | 'login' | 'logout' | 'reset'](authRequest(request)); }
-    if (request.pathname === '/api/v1/session' && request.method === 'GET') { const scope = await scopeForRequest(request.cookie); if (!scope) return { status: 401, body: { error: 'unauthenticated' } }; return { status: 200, body: { userId: scope.subjectId, accounts: await scopes.accountsForUser(scope.subjectId), sendEnabled: Boolean(endpoint && authorization) } }; }
+    if (request.pathname === '/api/v1/session' && request.method === 'GET') { const scope = await scopeForRequest(request.cookie); if (!scope) return { status: 401, body: { error: 'unauthenticated', bootstrapAvailable: await auth.bootstrapAvailable() } }; return { status: 200, body: { userId: scope.subjectId, accounts: await scopes.accountsForUser(scope.subjectId), sendEnabled: Boolean(endpoint && authorization) } }; }
     if (request.pathname === '/api/v1/notifications/vapid-public-key' && request.method === 'GET') return { status: 200, body: { publicKey: config.VAPID_PUBLIC_KEY } };
     if (request.pathname === '/api/v1/notifications/subscribe' || request.pathname === '/api/v1/notifications/unsubscribe') {
       if (request.method !== 'POST' || request.origin !== appOrigin) return { status: 403, body: { error: 'forbidden' } };

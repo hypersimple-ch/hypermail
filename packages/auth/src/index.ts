@@ -77,6 +77,11 @@ export class AuthService {
     this.tokens = options.tokens ?? (() => randomBytes(32).toString('base64url'));
   }
 
+  /** Informational only; createFirstUser remains the atomic bootstrap guard. */
+  public async bootstrapAvailable(): Promise<boolean> {
+    return await this.options.store.countUsers() === 0;
+  }
+
   public async bootstrap(email: string, password: string, correlationId: string): Promise<AuthResult> {
     const normalized = normalizeEmail(email);
     if (!validPassword(password)) return { ok: false, reason: 'invalid_credentials' };
