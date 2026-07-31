@@ -7,10 +7,13 @@ const fail = (message) => {
   throw new Error(`deployment verification failed: ${message}`);
 };
 
+const local = read('infra/compose.local.yaml');
 const vps = read('infra/compose.vps.yaml');
 const dokploy = read('infra/dokploy/compose.yaml');
 const webDockerfile = read('infra/Dockerfile.web');
 const workerDockerfile = read('infra/Dockerfile.worker');
+const hypermailDockerfile = read('infra/Dockerfile.hypermail');
+const hypermailPackage = read('apps/hypermail/package.json');
 
 for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   if (!/private:\n    internal: true/.test(compose)) fail(`${name} compose must use an internal private network`);
@@ -45,7 +48,13 @@ if (!/traefik\.enable=true/.test(dokploy) || /\n    ports:/m.test(dokploy)) {
 if (!/CMD \["node", "dist\/main\.js"\]/.test(workerDockerfile) || !/127\.0\.0\.1:3001\/live/.test(workerDockerfile)) {
   fail('worker image must run the operational main entrypoint and probe private liveness');
 }
-for (const [name, dockerfile] of [['web', webDockerfile], ['worker', workerDockerfile]]) {
+if (!/"hypermail-mcp": "0\.7\.26"/.test(hypermailPackage) || !/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
+  fail('Hypermail must build its pinned workspace runtime as a private HTTP service');
+}
+if (/HYPERMAIL_IMAGE|HYPERMAIL_ENV_FILE/.test(local) || !/dockerfile: infra\/Dockerfile\.hypermail/.test(local) || !/127\.0\.0\.1:3000\/mcp/.test(local)) {
+  fail('local compose must build the pinned Hypermail runtime without a separate image or env file');
+}
+for (const [name, dockerfile] of [['web', webDockerfile], ['worker', workerDockerfile], ['hypermail', hypermailDockerfile]]) {
   if (!/FROM .* AS build/.test(dockerfile) || !/FROM node:/.test(dockerfile)) fail(`${name} image must be multi-stage`);
   if (!/pnpm install --frozen-lockfile/.test(dockerfile) || !/pnpm .* deploy --prod/.test(dockerfile)) {
     fail(`${name} image must build from the pnpm workspace`);

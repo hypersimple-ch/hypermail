@@ -14,6 +14,7 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 
 - `apps/web` — public web/API service
 - `apps/worker` — private polling/agent worker
+- `apps/hypermail` — pinned `hypermail-mcp` runtime used by the local private service
 - `packages/contracts` — strict Zod environment/domain contracts and transition reducers
 - `packages/db` — Drizzle schema and migrations
 - `packages/{auth,hypermail,policy,agent,notifications}` — bounded production packages
@@ -29,4 +30,4 @@ corepack pnpm check
 DATABASE_URL=postgresql://... corepack pnpm db:migrate
 ```
 
-Copy `.env.example` only as a variable-name reference. Inject real secrets through deployment secret storage and never commit them.
+Copy `.env.example` only as a variable-name reference. Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. Add mailbox accounts through Hypermail onboarding: provider tokens and IMAP passwords remain in Hypermail's encrypted persistent state, not application environment files. Inject real secrets through deployment secret storage and never commit them.

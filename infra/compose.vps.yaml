@@ -126,7 +126,7 @@ services:
       attachment-temp-init:
         condition: service_completed_successfully
     healthcheck:
-      test: [CMD-SHELL, "wget -q --spider http://localhost:3000/health || exit 1"]
+      test: [CMD-SHELL, "node -e \"fetch('http://127.0.0.1:3000/mcp', {headers:{accept:'application/json, text/event-stream'}}).then(r => process.exit(r.status === 400 ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3

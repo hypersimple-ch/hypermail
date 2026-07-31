@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+FROM node:22.18.0-alpine AS build
+WORKDIR /workspace
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/hypermail/package.json ./apps/hypermail/package.json
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @hypermail/runtime deploy --prod /opt/app
+
+FROM node:22.18.0-alpine AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+RUN addgroup -S hypermail && adduser -S -G hypermail -u 10001 hypermail \
+  && install -d -m 0700 -o hypermail -g hypermail /var/lib/hypermail
+COPY --from=build --chown=hypermail:hypermail /opt/app ./
+USER hypermail
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:3000/mcp', {headers:{accept:'application/json, text/event-stream'}}).then((response) => process.exit(response.status === 400 ? 0 : 1)).catch(() => process.exit(1))"
+CMD ["./node_modules/.bin/hypermail-mcp", "--http", "--host", "0.0.0.0", "--port", "3000", "--data-dir", "/var/lib/hypermail"]

@@ -11,6 +11,8 @@ onlyBuiltDependencies:
   - esbuild
 allowBuilds:
   esbuild: true
+  # Hypermail does not use OS keychain storage; retain its encrypted file store.
+  keytar: false
 minimumReleaseAgeExclude:
   - '@ai-sdk/anthropic@4.0.24'
   - '@ai-sdk/google@4.0.28'

@@ -68,10 +68,12 @@ services:
       - attachment-temp:/attachments
 
   hypermail:
-    image: ${HYPERMAIL_IMAGE:?set HYPERMAIL_IMAGE to the approved Hypermail v0.7.26 image}
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.hypermail
     user: "10001:10001"
-    env_file: ["${HYPERMAIL_ENV_FILE:-../.env.hypermail}"]
     environment:
+      HYPERMAIL_KEY: ${HYPERMAIL_KEY:?set HYPERMAIL_KEY in .env}
       TMPDIR: /var/lib/hypermail-attachments
     volumes:
       - hypermail-data:/var/lib/hypermail
@@ -80,7 +82,7 @@ services:
       attachment-temp-init:
         condition: service_completed_successfully
     healthcheck:
-      test: [CMD-SHELL, "wget -q --spider http://localhost:3000/health || exit 1"]
+      test: [CMD-SHELL, "node -e \"fetch('http://127.0.0.1:3000/mcp', {headers:{accept:'application/json, text/event-stream'}}).then(r => process.exit(r.status === 400 ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3
