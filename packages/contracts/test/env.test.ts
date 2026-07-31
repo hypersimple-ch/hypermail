@@ -38,6 +38,41 @@ describe('environment contracts', () => {
     expect(() => parseEnvironment(webEnvSchema, { ...base, APPROVED_SEND_URL: 'http://approved-send:3000' })).toThrow(/APPROVED_SEND_URL/);
   });
 
+  it('allows HTTPS APP_ORIGIN everywhere and HTTP only for development loopback URLs', () => {
+    const base = {
+      NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32),
+      RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
+      HYPERMAIL_PROTOCOL_VERSION: validWorker.HYPERMAIL_PROTOCOL_VERSION, VAPID_SUBJECT: validWorker.VAPID_SUBJECT, VAPID_PUBLIC_KEY: validWorker.VAPID_PUBLIC_KEY,
+      VAPID_PRIVATE_KEY: validWorker.VAPID_PRIVATE_KEY, PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY,
+      ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments',
+    };
+    expect(parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'production' }).APP_ORIGIN).toBe('https://mail.example.test');
+    for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']) {
+      expect(parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'development', APP_ORIGIN: origin }).APP_ORIGIN).toBe(origin);
+    }
+    for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']) {
+      expect(() => parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'test', APP_ORIGIN: origin })).toThrow(/APP_ORIGIN/);
+      expect(() => parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'production', APP_ORIGIN: origin })).toThrow(/APP_ORIGIN/);
+    }
+    expect(() => parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'development', APP_ORIGIN: 'http://mail.example.test' })).toThrow(/APP_ORIGIN/);
+    expect(() => parseEnvironment(webEnvSchema, { ...base, NODE_ENV: 'development', APP_ORIGIN: 'http://::1:3000' })).toThrow(/APP_ORIGIN/);
+  });
+
+  it('uses Codex CLI defaults only in development and requires hosted-provider secrets', () => {
+    const withoutModel = Object.fromEntries(Object.entries(validWorker).filter(([name]) => !name.startsWith('MODEL_')));
+    const development = parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'development' });
+    expect(development.MODEL_PROVIDER).toBe('codex-cli');
+    expect(development.MODEL_NAME).toBe('default');
+    expect(development.MODEL_API_KEY).toBeUndefined();
+    expect(parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'development', MODEL_PROVIDER: 'codex-cli', MODEL_API_KEY: validWorker.MODEL_API_KEY }).MODEL_API_KEY).toBe(validWorker.MODEL_API_KEY);
+    expect(parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'production', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'default' }).MODEL_API_KEY).toBeUndefined();
+    for (const provider of ['openai', 'anthropic', 'google']) {
+      expect(() => parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'development', MODEL_PROVIDER: provider })).toThrow(/MODEL_API_KEY/);
+      expect(parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'production', MODEL_PROVIDER: provider, MODEL_NAME: 'configured-at-deploy', MODEL_API_KEY: validWorker.MODEL_API_KEY }).MODEL_PROVIDER).toBe(provider);
+    }
+    expect(() => parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'production' })).toThrow(/MODEL_PROVIDER|MODEL_NAME/);
+  });
+
   it('coerces bounded operational settings', () => {
     const env = parseEnvironment(workerEnvSchema, validWorker);
     expect(env.POLL_INTERVAL_SECONDS).toBe(45);

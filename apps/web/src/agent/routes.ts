@@ -27,8 +27,8 @@ const errorResponse = (error: unknown): AgentRouteResponse => {
 
 /** A framework adapter supplies verified auth and raw Origin/version headers to this same-origin boundary. */
 export function createAgentRoutes(service: AgentService, options: AgentRouteOptions) {
-  const gate = (request: AgentRouteRequest): AgentRouteResponse | null => {
-    if (request.origin !== options.expectedOrigin) return { status: 403, body: { error: { code: 'CROSS_ORIGIN' } } };
+  const gate = (request: AgentRouteRequest, requireOrigin = true): AgentRouteResponse | null => {
+    if (requireOrigin && request.origin !== options.expectedOrigin) return { status: 403, body: { error: { code: 'CROSS_ORIGIN' } } };
     if (request.apiVersion !== options.apiVersion) return { status: 426, body: { error: { code: 'UNSUPPORTED_VERSION' } } };
     if (!request.auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
     return null;
@@ -42,7 +42,7 @@ export function createAgentRoutes(service: AgentService, options: AgentRouteOpti
   return {
     async dashboard(request: AgentRouteRequest): Promise<AgentRouteResponse> {
       if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
-      const denied = gate(request); if (denied) return denied;
+      const denied = gate(request, false); if (denied) return denied;
       const auth = request.auth; if (!auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
       try { return { status: 200, body: { dashboard: await service.dashboard(auth) } }; } catch (error) { return errorResponse(error); }
     },

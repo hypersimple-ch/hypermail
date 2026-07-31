@@ -26,8 +26,8 @@ describe('production composition', () => {
     expect(calls).toEqual(expect.arrayContaining(['boss-stop', 'database-close']));
   });
 
-  it.each(['openai', 'anthropic', 'google'] as const)('constructs the configured %s provider without a request', (MODEL_PROVIDER) => {
-    expect(createModel({ MODEL_PROVIDER, MODEL_NAME: 'test-model', MODEL_API_KEY: 'test-key' })).toBeDefined();
+  it.each(['codex-cli', 'openai', 'anthropic', 'google'] as const)('constructs the configured %s provider without a request', (MODEL_PROVIDER) => {
+    expect(createModel({ MODEL_PROVIDER, MODEL_NAME: 'test-model', ...(MODEL_PROVIDER === 'codex-cli' ? {} : { MODEL_API_KEY: 'test-key' }) })).toBeDefined();
   });
 
   it('maps only fetched text and durable attachment metadata into triage', async () => {

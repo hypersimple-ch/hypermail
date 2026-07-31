@@ -26,6 +26,10 @@ describe('worker runtime', () => {
       DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16),
       MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.',
     })).toThrow('HYPERMAIL_PROTOCOL_VERSION');
+    expect(parseWorkerEnvironment({
+      DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
+      MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'test', VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.',
+    }).MODEL_API_KEY).toBeUndefined();
     expect(() => parseQueuePayload('agent.evaluate', { jobId: 'not-a-uuid' })).toThrow('QUEUE_PAYLOAD_INVALID');
     expect(() => parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', extra: true })).toThrow('QUEUE_PAYLOAD_INVALID');
   });

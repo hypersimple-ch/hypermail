@@ -46,11 +46,16 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const config = parsed.data;
   const databaseUrl = config.DATABASE_URL; const appOrigin = config.APP_ORIGIN;
   const endpoint = config.APPROVED_SEND_URL; const authorization = config.APPROVED_SEND_TOKEN;
+  const sessionCookieOptions = { insecureLocalDevelopment: config.NODE_ENV === 'development' && new URL(appOrigin).protocol === 'http:' } as const;
 
   const authSql = postgres(databaseUrl, { max: 5, prepare: true }); const sql = createPostgresClient(databaseUrl); const scopes = new UserAccountScopeStore(sql);
   const auth = new AuthService({ store: createPostgresAuthStore(authSql), appOrigin, mail: { deliver: () => Promise.resolve() } });
   const sender = endpoint && authorization ? new PrivateApprovedSendHttpProvider({ endpoint, authorization }) : disabledSendProvider;
-  const authRoutes = createAuthRoutes(auth, { session: sessionCookie, expired: expiredSessionCookie, read: readSessionToken }, appOrigin);
+  const authRoutes = createAuthRoutes(auth, {
+    session: (token) => sessionCookie(token, sessionCookieOptions),
+    expired: () => expiredSessionCookie(sessionCookieOptions),
+    read: (cookie) => readSessionToken(cookie, sessionCookieOptions),
+  }, appOrigin);
   const activityRoutes = createActivityRoutes(new ActivityService(new PostgresActivityRepository(sql)));
   const agentRoutes = createAgentRoutes(new AgentService(new PostgresAgentRepository(sql)), { expectedOrigin: appOrigin, apiVersion: 'v1' });
   const draftRoutes = createDraftRoutes(new DraftService(new PostgresDraftRepository(sql), sender, new PostgresDraftSourceReader(sql)), { expectedOrigin: appOrigin });
@@ -58,7 +63,7 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const attachmentRoutes = createAttachmentRoutes(new AttachmentDeliveryService(new ScopedHypermailAttachmentReader(sql, new HypermailReadClient({ endpoint: config.HYPERMAIL_URL, protocolVersion: config.HYPERMAIL_PROTOCOL_VERSION, headers: { authorization: `Bearer ${config.HYPERMAIL_KEY}` } })), { maxBytes: config.ATTACHMENT_MAX_BYTES, tempDirectory: config.ATTACHMENT_TEMP_DIRECTORY }), { expectedOrigin: appOrigin, apiVersion: 'v1' });
   const subscriptionPersistence = new PostgresNotificationPersistence(sql, new AuthSecretPushSubscriptionCodec(config.PUSH_SUBSCRIPTION_ENCRYPTION_KEY));
 
-  const scopeForRequest = async (cookie: string | null): Promise<Scope | null> => { const token = readSessionToken(cookie); if (!token) return null; const session = await auth.getSession(token); return !session ? null : { subjectId: session.userId, accountIds: await scopes.accountIdsForUser(session.userId), freshAuthAt: session.createdAt.toISOString() }; };
+  const scopeForRequest = async (cookie: string | null): Promise<Scope | null> => { const token = readSessionToken(cookie, sessionCookieOptions); if (!token) return null; const session = await auth.getSession(token); return !session ? null : { subjectId: session.userId, accountIds: await scopes.accountIdsForUser(session.userId), freshAuthAt: session.createdAt.toISOString() }; };
   const authRequest = (request: WebRequest): RouteRequest => ({ method: request.method, origin: request.origin, cookie: request.cookie, remoteAddress: request.remoteAddress, correlationId: request.correlationId, body: request.body });
   const route = async (request: WebRequest): Promise<WebResponse | null> => {
     const authMatch = /^\/api\/v1\/auth\/(bootstrap|login|logout|recovery|reset)$/.exec(request.pathname);

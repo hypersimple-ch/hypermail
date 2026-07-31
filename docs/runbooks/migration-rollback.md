@@ -2,6 +2,8 @@
 
 ## Migration
 
+Local Compose runs its migration service automatically before web and worker start. This procedure is for production: migrations are reviewed, manual, and run once from a private job/container.
+
 1. Confirm a recent, restorable PostgreSQL backup and record the currently deployed immutable image digests.
 2. Render the intended compose configuration and run `node infra/verify-deployment.mjs`.
 3. Put the worker in a controlled pause/drain state using its application control before schema work. Do not delete queue tables or Hypermail state.

@@ -34,6 +34,7 @@ describe('Activity API and service contracts', () => {
     expect(first.counts).toEqual({ new: 2, questions: 1, failed: 1, history: 1 });
     await expect(service.list(scope, { search: 'x'.repeat(121) })).rejects.toThrow('limited');
     await expect(service.list(scope, { accountId: 'account-b' })).rejects.toThrow('not found');
+    await expect(service.list({ subjectId: 'person-1', accountIds: [] })).resolves.toEqual({ items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } });
   });
 
   it('keeps handled work New until version-safe manual acknowledgement and leaves it searchable in History', async () => {

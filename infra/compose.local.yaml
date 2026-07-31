@@ -25,11 +25,25 @@ services:
     depends_on:
       attachment-temp-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       hypermail:
         condition: service_healthy
     networks: [edge, private]
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+      target: migrate
+    env_file: ["${WEB_ENV_FILE:-../.env}"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [private]
 
   worker:
     build:
@@ -38,12 +52,21 @@ services:
     env_file: ["${WORKER_ENV_FILE:-../.env}"]
     environment:
       HEALTH_PORT: 3001
+      CODEX_HOME: /var/lib/codex
+    volumes:
+      - codex-home:/var/lib/codex
+      - type: bind
+        source: "${CODEX_AUTH_FILE:-${HOME}/.codex/auth.json}"
+        target: /run/codex-seed/auth.json
+        read_only: true
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       hypermail:
         condition: service_healthy
-    networks: [private]
+    networks: [private, egress]
 
   postgres:
     image: postgres:16.10-alpine
@@ -90,6 +113,7 @@ services:
 
 networks:
   edge: {}
+  egress: {}
   private:
     internal: true
 
@@ -97,3 +121,4 @@ volumes:
   postgres-data: {}
   hypermail-data: {}
   attachment-temp: {}
+  codex-home: {}

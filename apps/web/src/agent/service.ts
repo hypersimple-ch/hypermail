@@ -7,7 +7,8 @@ export class AgentService {
   constructor(private readonly repository: AgentRepository) {}
 
   async dashboard(scope: AgentScope): Promise<AgentDashboard> {
-    this.assertScope(scope);
+    if (!scope.subjectId) throw new AgentAuthorizationError();
+    if (scope.accountIds.length === 0) return { actions: [], questions: [], alerts: [], autonomy: { global: { state: 'running', version: 1 }, accounts: {} } };
     return this.repository.dashboard(scope);
   }
 

@@ -11,7 +11,7 @@ export class ActivityService {
   constructor(private readonly repository: ActivityRepository) {}
 
   async list(scope: AuthenticatedActivityScope, input: Partial<ActivityListInput> = {}): Promise<ActivityPage> {
-    this.assertScope(scope);
+    if (!scope.subjectId) throw new ActivityInputError('An authenticated account scope is required.');
     const filter = input.filter ?? 'new';
     if (!activityFilters.includes(filter)) throw new ActivityInputError('Unknown activity filter.');
     if (input.accountId !== undefined && !scope.accountIds.includes(input.accountId)) throw new ActivityNotFoundError();
@@ -19,6 +19,7 @@ export class ActivityService {
     if (search !== undefined && search.length > maxSearchLength) throw new ActivityInputError(`Search is limited to ${String(maxSearchLength)} characters.`);
     const limit = input.limit ?? 25;
     if (!Number.isInteger(limit) || limit < 1 || limit > maxPageSize) throw new ActivityInputError(`Page size must be between 1 and ${String(maxPageSize)}.`);
+    if (scope.accountIds.length === 0) return { items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } };
     return this.repository.list(scope, {
       filter, limit,
       ...(input.accountId === undefined ? {} : { accountId: input.accountId }),

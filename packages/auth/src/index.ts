@@ -8,7 +8,8 @@ const scrypt = (password: string, salt: Buffer, keyLength: number): Promise<Buff
     if (error) reject(error); else resolve(derivedKey);
   });
 });
-const SESSION_COOKIE = '__Host-hypermail_session';
+const SECURE_SESSION_COOKIE = '__Host-hypermail_session';
+const INSECURE_LOCAL_SESSION_COOKIE = 'hypermail_session';
 const SESSION_LIFETIME_MS = 1000 * 60 * 60 * 24 * 7;
 const RECOVERY_LIFETIME_MS = 1000 * 60 * 15;
 const PASSWORD_KEY_LENGTH = 64;
@@ -166,14 +167,26 @@ export class AuthService {
   }
 }
 
-export function sessionCookie(token: string): string {
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${String(SESSION_LIFETIME_MS / 1000)}; HttpOnly; Secure; SameSite=Lax`;
+export type SessionCookieOptions = Readonly<{
+  /** Set only from validated development loopback configuration. */
+  insecureLocalDevelopment?: boolean;
+}>;
+
+function sessionCookieName(options: SessionCookieOptions): string {
+  return options.insecureLocalDevelopment ? INSECURE_LOCAL_SESSION_COOKIE : SECURE_SESSION_COOKIE;
 }
-export function expiredSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+function sessionCookieSecurity(options: SessionCookieOptions): string {
+  return options.insecureLocalDevelopment ? '' : '; Secure';
 }
-export function readSessionToken(cookieHeader: string | null): string | null {
-  const value = cookieHeader?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${SESSION_COOKIE}=`))?.slice(SESSION_COOKIE.length + 1);
+export function sessionCookie(token: string, options: SessionCookieOptions = {}): string {
+  return `${sessionCookieName(options)}=${encodeURIComponent(token)}; Path=/; Max-Age=${String(SESSION_LIFETIME_MS / 1000)}; HttpOnly${sessionCookieSecurity(options)}; SameSite=Lax`;
+}
+export function expiredSessionCookie(options: SessionCookieOptions = {}): string {
+  return `${sessionCookieName(options)}=; Path=/; Max-Age=0; HttpOnly${sessionCookieSecurity(options)}; SameSite=Lax`;
+}
+export function readSessionToken(cookieHeader: string | null, options: SessionCookieOptions = {}): string | null {
+  const name = sessionCookieName(options);
+  const value = cookieHeader?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
   if (!value) return null;
   try { return decodeURIComponent(value); } catch { return null; }
 }

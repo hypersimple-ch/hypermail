@@ -17,6 +17,7 @@ import { LifecycleScheduler, LifecycleWorker } from './lifecycle/retention.js';
 import { PostgresLifecycleStore } from './lifecycle/postgres-store.js';
 import { PgBossDeliveryQueue, type PgBossLike } from './pg-boss-queue.js';
 import { PostgresIngestionStore, type SqlClient as WorkerSqlClient } from './postgres-store.js';
+import { createCodexCliModel, type CodexCliModel } from './codex-cli-model.js';
 import { ClaimingAgentConsumer, DurableNotificationRecovery, type AgentJobHandler, type AgentJobStore, type BossJob, type BossRuntime, type JobConsumer, type NotificationDispatchStore, type NotificationDispatcher, type QueueName, type WorkerEnvironment, type WorkerRuntimeDependencies, WorkerRuntime, defaultHolderId } from './runtime.js';
 
 /** pg-boss v10 invokes a worker with a batch, while WorkerRuntime deliberately consumes one job. */
@@ -124,9 +125,11 @@ export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
   }
 }
 
-type ProviderModel = ReturnType<ReturnType<typeof createOpenAI>>;
-/** Constructs a configured official AI SDK model without probing or sending content. */
+type ProviderModel = ReturnType<ReturnType<typeof createOpenAI>> | CodexCliModel;
+/** Constructs a configured AI SDK model without probing or sending content. */
 export function createModel(environment: Pick<WorkerEnvironment, 'MODEL_PROVIDER' | 'MODEL_API_KEY' | 'MODEL_NAME'>): ProviderModel {
+  if (environment.MODEL_PROVIDER === 'codex-cli') return createCodexCliModel({ modelId: environment.MODEL_NAME });
+  if (environment.MODEL_API_KEY === undefined) throw new Error('MODEL_API_KEY_REQUIRED');
   switch (environment.MODEL_PROVIDER) {
     case 'openai': return createOpenAI({ apiKey: environment.MODEL_API_KEY })(environment.MODEL_NAME);
     case 'anthropic': return createAnthropic({ apiKey: environment.MODEL_API_KEY })(environment.MODEL_NAME);
@@ -221,8 +224,9 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const triage = factories.createTriageService?.(environment) ?? (() => {
     const decisionSql: Sql = postgres(environment.DATABASE_URL);
     const storage = createMastraPostgresStorage(environment.DATABASE_URL);
-    const memory = new Memory({ storage, options: { observationalMemory: true } });
-    const agent = new Agent({ id: 'hypermail-triage', name: 'hypermail-triage', instructions: 'Produce structured triage decisions only.', model: createModel(environment), memory });
+    const model = createModel(environment);
+    const memory = new Memory({ storage, options: { observationalMemory: { enabled: true, model } } });
+    const agent = new Agent({ id: 'hypermail-triage', name: 'hypermail-triage', instructions: 'Produce structured triage decisions only.', model, memory });
     closeAgentResources = async () => {
       const closers = [decisionSql, storage].flatMap((resource) => {
         const close = (resource as unknown as { close?: () => Promise<void> | void; end?: () => Promise<void> | void }).close

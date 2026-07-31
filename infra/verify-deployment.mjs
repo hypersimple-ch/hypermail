@@ -45,21 +45,32 @@ if (!/  proxy:[\s\S]*?\n    ports:/m.test(vps)) fail('VPS compose must publish o
 if (!/traefik\.enable=true/.test(dokploy) || /\n    ports:/m.test(dokploy)) {
   fail('Dokploy compose must route web through Traefik without host port bindings');
 }
-if (!/CMD \["node", "dist\/main\.js"\]/.test(workerDockerfile) || !/127\.0\.0\.1:3001\/live/.test(workerDockerfile)) {
-  fail('worker image must run the operational main entrypoint and probe private liveness');
+if (!/CMD \["node", "dist\/main\.js"\]/.test(workerDockerfile) || !/127\.0\.0\.1:3001\/live/.test(workerDockerfile) || !/test -x \/opt\/app\/node_modules\/\.bin\/codex/.test(workerDockerfile) || !/ENTRYPOINT \["\/usr\/local\/bin\/worker-entrypoint"\]/.test(workerDockerfile)) {
+  fail('worker image must retain the Codex executable, use its non-root entrypoint, and probe private liveness');
 }
+const workerEntrypoint = read('infra/worker-entrypoint.sh');
+if (!/install -d -m 0700 -o hypermail -g hypermail/.test(workerEntrypoint) || !/\[ ! -e "\$codex_home\/auth\.json" \] && \[ -f "\$seed_auth" \]/.test(workerEntrypoint) || !/exec su-exec hypermail/.test(workerEntrypoint) || /cat |echo .*auth|printf .*auth/.test(workerEntrypoint)) {
+  fail('worker entrypoint must privately seed missing Codex auth and start the process non-root');
+}
+if (!/target: migrate/.test(local) || !/condition: service_completed_successfully/.test(local) || !/codex-home:\s*\{\}/.test(local) || !/source: "\$\{CODEX_AUTH_FILE:-\$\{HOME\}\/\.codex\/auth\.json\}"/.test(local) || !/target: \/run\/codex-seed\/auth\.json/.test(local) || !/read_only: true/.test(local)) {
+  fail('local compose must use a private migration job and a read-only host Codex auth seed with persistent Codex state');
+}
+if (!/127\.0\.0\.1:\$\{LOCAL_HTTP_PORT:-8080\}:80/.test(local)) fail('local proxy must remain loopback-only');
 if (!/"hypermail-mcp": "0\.7\.26"/.test(hypermailPackage) || !/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
   fail('Hypermail must build its pinned workspace runtime as a private HTTP service');
 }
 if (/HYPERMAIL_IMAGE|HYPERMAIL_ENV_FILE/.test(local) || !/dockerfile: infra\/Dockerfile\.hypermail/.test(local) || !/127\.0\.0\.1:3000\/mcp/.test(local)) {
   fail('local compose must build the pinned Hypermail runtime without a separate image or env file');
 }
+if (!/FROM build AS migrate/.test(webDockerfile) || !/CMD \["pnpm", "--filter", "@hypermail\/db", "db:migrate"\]/.test(webDockerfile)) {
+  fail('web image must expose a migration target reusing workspace build dependencies');
+}
 for (const [name, dockerfile] of [['web', webDockerfile], ['worker', workerDockerfile], ['hypermail', hypermailDockerfile]]) {
   if (!/FROM .* AS build/.test(dockerfile) || !/FROM node:/.test(dockerfile)) fail(`${name} image must be multi-stage`);
   if (!/pnpm install --frozen-lockfile/.test(dockerfile) || !/pnpm .* deploy --prod/.test(dockerfile)) {
     fail(`${name} image must build from the pnpm workspace`);
   }
-  if (!/USER hypermail/.test(dockerfile) || !/HEALTHCHECK/.test(dockerfile)) {
+  if ((!/USER hypermail/.test(dockerfile) && name !== 'worker') || !/HEALTHCHECK/.test(dockerfile)) {
     fail(`${name} image must run non-root and define a health check`);
   }
 }

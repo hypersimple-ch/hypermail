@@ -12,7 +12,7 @@ POST `http://HOST:3000/mcp`, with `Content-Type: application/json` and `Accept: 
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_emails","arguments":{"account":"me@example.com"}}}
 ```
 
-**Blocking live validation:** the authoritative v0.7.26 material does not publish the exact negotiated `protocolVersion`; never substitute the fixture's placeholder for a live client. Validate initialization, session/SSE behavior, tool schemas, and responses against a running tagged server.
+**Local protocol proof:** on 2026-07-31, the local Compose acceptance run initialized the pinned v0.7.26 image with `protocolVersion=2025-11-25`; worker readiness reported only the pre-existing policy blocker, not Hypermail. This proves the local protocol literal and initialization path, but not live provider tools, session/SSE edge cases, mutation responses, or production deployment. Keep those contract release blockers until the full live matrix passes.
 
 ## Exact tool payloads and policy
 
@@ -64,4 +64,4 @@ cd spikes/hypermail-contract
 npm run check
 ```
 
-A passing result proves only client/fixture compatibility. Live-contract blockers: endpoint/configuration and credentials; exact protocol-version literal; live SSE framing; actual `tools/list` schemas; provider-by-tool support; IMAP config; OAuth scopes; rate/attachment limits; and live error-code retry semantics.
+A passing result proves only client/fixture compatibility. The local pinned-image run additionally proves `2025-11-25` initialization. Remaining live-contract blockers: production endpoint/configuration and credentials; live SSE edge cases; actual `tools/list` schemas; provider-by-tool support; IMAP config; OAuth scopes; rate/attachment limits; and live error-code retry semantics.

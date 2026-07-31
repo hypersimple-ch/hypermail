@@ -29,6 +29,6 @@ describe('web process startup', () => {
 
   it('fails closed when its production database or HTTPS origin is absent', async () => {
     await expect(startWebServiceFromEnvironment({ ATTACHMENT_TEMP_DIRECTORY: tmpdir(), PORT: '0' })).rejects.toThrow('DATABASE_URL');
-    await expect(startWebServiceFromEnvironment({ ...validEnvironment, ATTACHMENT_TEMP_DIRECTORY: tmpdir(), APP_ORIGIN: 'http://mail.example.test', PORT: '0' })).rejects.toThrow('APP_ORIGIN');
+    await expect(startWebServiceFromEnvironment({ ...validEnvironment, ATTACHMENT_TEMP_DIRECTORY: '/var/tmp', APP_ORIGIN: 'http://mail.example.test', PORT: '0' })).rejects.toThrow('APP_ORIGIN');
   });
 });

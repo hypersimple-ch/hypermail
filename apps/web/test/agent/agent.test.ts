@@ -29,11 +29,13 @@ function repository(overrides: Partial<AgentRepository> = {}): AgentRepository {
 }
 
 describe('agent framework-neutral API', () => {
-  it('rejects unauthenticated, cross-origin, and unsupported-version requests before the service', async () => {
+  it('allows origin-less dashboard reads but rejects unauthenticated, cross-origin mutation, and unsupported-version requests', async () => {
     const routes = createAgentRoutes(new AgentService(repository()), { expectedOrigin: 'https://mail.example', apiVersion: '5' });
     const request = { method: 'GET', auth: scope, origin: 'https://mail.example', apiVersion: '5', body: {} };
     expect((await routes.dashboard({ ...request, auth: null })).status).toBe(401);
-    expect((await routes.dashboard({ ...request, origin: 'https://evil.example' })).status).toBe(403);
+    expect((await routes.dashboard({ ...request, origin: null })).status).toBe(200);
+    await expect(new AgentService(repository()).dashboard({ subjectId: 'person-1', accountIds: [] })).resolves.toEqual({ actions: [], questions: [], alerts: [], autonomy: { global: { state: 'running', version: 1 }, accounts: {} } });
+    expect((await routes.answer({ ...request, method: 'POST', origin: 'https://evil.example' }, 'question-1')).status).toBe(403);
     expect((await routes.dashboard({ ...request, apiVersion: '4' })).status).toBe(426);
   });
 

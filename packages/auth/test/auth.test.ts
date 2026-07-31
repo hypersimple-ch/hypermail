@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
-import { AuthService, createBetterAuth, createBetterAuthOptions, type AuthStore, type RecoveryMailAdapter, type RecoveryToken, type Session, type User } from '../src/index.js';
+import { AuthService, createBetterAuth, createBetterAuthOptions, expiredSessionCookie, readSessionToken, sessionCookie, type AuthStore, type RecoveryMailAdapter, type RecoveryToken, type Session, type User } from '../src/index.js';
 
 class Store implements AuthStore {
   users: User[] = []; sessions: Session[] = []; recovery: RecoveryToken[] = []; audits: string[] = []; limits = new Map<string, number>();
@@ -69,6 +69,23 @@ describe('Better Auth factory', () => {
     } finally {
       void pool.end();
     }
+  });
+});
+
+describe('session cookies', () => {
+  it('uses the secure host cookie and never reads the insecure local cookie by default', () => {
+    expect(sessionCookie('secure token')).toBe('__Host-hypermail_session=secure%20token; Path=/; Max-Age=604800; HttpOnly; Secure; SameSite=Lax');
+    expect(expiredSessionCookie()).toBe('__Host-hypermail_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax');
+    expect(readSessionToken('hypermail_session=local-token; __Host-hypermail_session=secure-token')).toBe('secure-token');
+    expect(readSessionToken('hypermail_session=local-token')).toBeNull();
+  });
+
+  it('uses and expires a separate insecure cookie only with explicit local-development options', () => {
+    const options = { insecureLocalDevelopment: true };
+    expect(sessionCookie('local token', options)).toBe('hypermail_session=local%20token; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax');
+    expect(expiredSessionCookie(options)).toBe('hypermail_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax');
+    expect(readSessionToken('__Host-hypermail_session=secure-token; hypermail_session=local-token', options)).toBe('local-token');
+    expect(readSessionToken('hypermail_session=malformed%ZZ', options)).toBeNull();
   });
 });
 
