@@ -4,6 +4,7 @@ import { webEnvSchema } from '@hypermail/contracts';
 import { createPostgresClient, UserAccountScopeStore } from '@hypermail/db';
 import { HypermailReadClient } from '@hypermail/hypermail';
 import { PostgresNotificationPersistence } from '@hypermail/notifications';
+import { createStructuredLogger } from '@hypermail/observability';
 import { PrivateApprovedSendHttpProvider, type MailSendProvider } from '@hypermail/send';
 import { PostgresActivityRepository } from './activity/postgres-repository.js';
 import { ActivityService } from './activity/service.js';
@@ -19,13 +20,15 @@ import { PostgresDraftList } from './drafts/list.js';
 import { DraftService } from './drafts/service.js';
 import { createDraftRoutes } from './drafts/routes.js';
 import { createAuthRoutes, type RouteRequest } from './auth/routes.js';
+import { createMailboxRoutes } from './mailboxes/routes.js';
+import { MailboxService } from './mailboxes/service.js';
 import { AuthSecretPushSubscriptionCodec } from './notifications/crypto-codec.js';
 import type { Readable } from 'node:stream';
 
 export type WebRequest = Readonly<{ method: string; pathname: string; query: Readonly<Record<string, string | undefined>>; origin: string | null; cookie: string | null; remoteAddress: string; correlationId: string; apiVersion: string | null; body: Readonly<Record<string, unknown>>; signal?: AbortSignal }>;
 export type WebResponse = Readonly<{ status: number; body?: Readonly<Record<string, unknown>>; setCookie?: string; headers?: Readonly<Record<string, string>>; stream?: Readable; cleanup?: () => Promise<void> }>;
 export interface WebRuntime { dispatch(request: WebRequest): Promise<WebResponse | null>; close(): Promise<void>; }
-type Scope = Readonly<{ subjectId: string; accountIds: readonly string[]; freshAuthAt?: string }>;
+type Scope = Readonly<{ subjectId: string; ownerEmail: string; accountIds: readonly string[]; freshAuthAt?: string }>;
 const disabledSendProvider: MailSendProvider = { send: () => Promise.reject(new Error('Approved send is not configured.')) };
 
 const webEnvironmentNames = [
@@ -61,14 +64,22 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const draftRoutes = createDraftRoutes(new DraftService(new PostgresDraftRepository(sql), sender, new PostgresDraftSourceReader(sql)), { expectedOrigin: appOrigin });
   const draftList = new PostgresDraftList(sql);
   const attachmentRoutes = createAttachmentRoutes(new AttachmentDeliveryService(new ScopedHypermailAttachmentReader(sql, new HypermailReadClient({ endpoint: config.HYPERMAIL_URL, protocolVersion: config.HYPERMAIL_PROTOCOL_VERSION, headers: { authorization: `Bearer ${config.HYPERMAIL_KEY}` } })), { maxBytes: config.ATTACHMENT_MAX_BYTES, tempDirectory: config.ATTACHMENT_TEMP_DIRECTORY }), { expectedOrigin: appOrigin, apiVersion: 'v1' });
+  const onboardingLogger = createStructuredLogger((record) => { process.stdout.write(`${JSON.stringify(record)}\n`); });
+  const onboardingClient = new HypermailReadClient({ endpoint: config.HYPERMAIL_URL, protocolVersion: config.HYPERMAIL_PROTOCOL_VERSION, headers: { authorization: `Bearer ${config.HYPERMAIL_KEY}` }, onOnboardingDiagnostic: (diagnostic) => { onboardingLogger.log('warn', 'web.mailbox.onboarding.failure', { source: diagnostic.source, reason: diagnostic.reason, detail: diagnostic.detail }); } });
+  const mailboxRoutes = createMailboxRoutes(new MailboxService(onboardingClient, scopes), { expectedOrigin: appOrigin });
   const subscriptionPersistence = new PostgresNotificationPersistence(sql, new AuthSecretPushSubscriptionCodec(config.PUSH_SUBSCRIPTION_ENCRYPTION_KEY));
 
-  const scopeForRequest = async (cookie: string | null): Promise<Scope | null> => { const token = readSessionToken(cookie, sessionCookieOptions); if (!token) return null; const session = await auth.getSession(token); return !session ? null : { subjectId: session.userId, accountIds: await scopes.accountIdsForUser(session.userId), freshAuthAt: session.createdAt.toISOString() }; };
+  const scopeForRequest = async (cookie: string | null): Promise<Scope | null> => { const token = readSessionToken(cookie, sessionCookieOptions); if (!token) return null; const identity = await auth.getAuthenticatedSession(token); return !identity ? null : { subjectId: identity.user.id, ownerEmail: identity.user.email, accountIds: await scopes.accountIdsForUser(identity.user.id), freshAuthAt: identity.session.createdAt.toISOString() }; };
   const authRequest = (request: WebRequest): RouteRequest => ({ method: request.method, origin: request.origin, cookie: request.cookie, remoteAddress: request.remoteAddress, correlationId: request.correlationId, body: request.body });
   const route = async (request: WebRequest): Promise<WebResponse | null> => {
-    const authMatch = /^\/api\/v1\/auth\/(bootstrap|login|logout|recovery|reset)$/.exec(request.pathname);
-    if (authMatch) { if (authMatch[1] === 'recovery') return { status: 503, body: { error: 'recovery_delivery_unavailable' } }; return authRoutes[authMatch[1] as 'bootstrap' | 'login' | 'logout' | 'reset'](authRequest(request)); }
-    if (request.pathname === '/api/v1/session' && request.method === 'GET') { const scope = await scopeForRequest(request.cookie); if (!scope) return { status: 401, body: { error: 'unauthenticated', bootstrapAvailable: await auth.bootstrapAvailable() } }; return { status: 200, body: { userId: scope.subjectId, accounts: await scopes.accountsForUser(scope.subjectId), sendEnabled: Boolean(endpoint && authorization) } }; }
+    const authMatch = /^\/api\/v1\/auth\/(bootstrap|login|logout|password|recovery|reset)$/.exec(request.pathname);
+    if (authMatch) { if (authMatch[1] === 'recovery') return { status: 503, body: { error: 'recovery_delivery_unavailable' } }; return authRoutes[authMatch[1] as 'bootstrap' | 'login' | 'logout' | 'password' | 'reset'](authRequest(request)); }
+    if (request.pathname === '/api/v1/session' && request.method === 'GET') { const scope = await scopeForRequest(request.cookie); if (!scope) return { status: 401, body: { error: 'unauthenticated', bootstrapAvailable: await auth.bootstrapAvailable() } }; return { status: 200, body: { userId: scope.subjectId, user: { id: scope.subjectId, email: scope.ownerEmail }, accounts: await scopes.accountsForUser(scope.subjectId), sendEnabled: Boolean(endpoint && authorization) } }; }
+    if (request.pathname === '/api/v1/mailboxes' || request.pathname === '/api/v1/mailboxes/complete') {
+      const scope = request.method === 'POST' && request.origin === appOrigin ? await scopeForRequest(request.cookie) : null;
+      const mailboxRequest = { method: request.method, origin: request.origin, auth: scope, body: request.body };
+      return request.pathname.endsWith('/complete') ? mailboxRoutes.complete(mailboxRequest) : mailboxRoutes.start(mailboxRequest);
+    }
     if (request.pathname === '/api/v1/notifications/vapid-public-key' && request.method === 'GET') return { status: 200, body: { publicKey: config.VAPID_PUBLIC_KEY } };
     if (request.pathname === '/api/v1/notifications/subscribe' || request.pathname === '/api/v1/notifications/unsubscribe') {
       if (request.method !== 'POST' || request.origin !== appOrigin) return { status: 403, body: { error: 'forbidden' } };

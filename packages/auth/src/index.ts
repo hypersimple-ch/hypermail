@@ -50,6 +50,8 @@ export interface RecoveryMailAdapter {
 export type AuthResult =
   | Readonly<{ ok: true; session: Session; token: string }>
   | Readonly<{ ok: false; reason: 'invalid_credentials' | 'throttled' | 'bootstrap_locked' | 'invalid_recovery' }>;
+/** Safe identity for an active session; deliberately excludes credential material. */
+export type AuthenticatedSession = Readonly<{ session: Session; user: Readonly<Pick<User, 'id' | 'email'>> }>;
 
 export type AuthServiceOptions = Readonly<{
   store: AuthStore;
@@ -120,6 +122,41 @@ export class AuthService {
     if (!session) return;
     await this.options.store.revokeSession(session.id);
     await this.audit('auth.session_revoked', session.userId, correlationId);
+  }
+
+  /** Returns the active session and non-sensitive account identity only. */
+  public async getAuthenticatedSession(token: string): Promise<AuthenticatedSession | null> {
+    const session = await this.getSession(token);
+    if (!session) return null;
+    const user = await this.options.store.findUserById(session.userId);
+    return user ? { session, user: { id: user.id, email: user.email } } : null;
+  }
+
+  /** Rotates credentials from an active session and replaces every existing session. */
+  public async rotatePassword(token: string, currentPassword: string, newPassword: string, subject: string, correlationId: string): Promise<AuthResult> {
+    const now = this.now();
+    if (!await this.options.store.takeRateLimit({ bucket: 'password_rotation', subjectHash: digest(subject), limit: 5, windowMs: 15 * 60_000, now })) {
+      await this.audit('auth.password_rotation_throttled', null, correlationId);
+      return { ok: false, reason: 'throttled' };
+    }
+    const session = await this.getSession(token);
+    if (!session) {
+      await this.audit('auth.password_rotation_failed', null, correlationId);
+      return { ok: false, reason: 'invalid_credentials' };
+    }
+    const user = await this.options.store.findUserById(session.userId);
+    if (!user || !await verifyPassword(currentPassword, user.passwordHash)) {
+      await this.audit('auth.password_rotation_failed', user?.id ?? null, correlationId);
+      return { ok: false, reason: 'invalid_credentials' };
+    }
+    if (!validPassword(newPassword) || await verifyPassword(newPassword, user.passwordHash)) {
+      await this.audit('auth.password_rotation_failed', user.id, correlationId);
+      return { ok: false, reason: 'invalid_credentials' };
+    }
+    await this.options.store.updatePassword(user.id, await hashPassword(newPassword));
+    await this.options.store.revokeSessionsForUser(user.id);
+    await this.audit('auth.password_rotation_completed', user.id, correlationId);
+    return this.newSession(user, correlationId);
   }
 
   /** Always returns successfully so account existence is not disclosed. */

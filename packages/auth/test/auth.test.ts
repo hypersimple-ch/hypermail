@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { AuthService, createBetterAuth, createBetterAuthOptions, expiredSessionCookie, readSessionToken, sessionCookie, type AuthStore, type RecoveryMailAdapter, type RecoveryToken, type Session, type User } from '../src/index.js';
 
+function required<T>(value: T | undefined): T { if (value === undefined) throw new Error('Expected fixture value.'); return value; }
+
 class Store implements AuthStore {
   users: User[] = []; sessions: Session[] = []; recovery: RecoveryToken[] = []; audits: string[] = []; limits = new Map<string, number>();
   countUsers() { return Promise.resolve(this.users.length); }
@@ -121,8 +123,70 @@ describe('AuthService', () => {
     for (let index = 0; index < 5; index++) await service.signIn('owner@example.com', 'nope-nope-nope', 'ip', `c${String(index)}`);
     expect((await service.signIn('owner@example.com', 'nope-nope-nope', 'ip', 'late')).reason).toBe('throttled');
   });
+
+  it('projects only an active session and safe account identity', async () => {
+    const store = new Store(); const service = createService(store);
+    const bootstrap = await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
+    expect(bootstrap.ok).toBe(true);
+    if (!bootstrap.ok) return;
+    expect(await service.getAuthenticatedSession(bootstrap.token)).toEqual({
+      session: bootstrap.session,
+      user: { id: 'user', email: 'owner@example.com' },
+    });
+    expect(await service.getAuthenticatedSession('unknown-token')).toBeNull();
+    Object.assign(required(store.sessions[0]), { expiresAt: new Date('2024-12-31T23:59:59Z') });
+    expect(await service.getAuthenticatedSession(bootstrap.token)).toBeNull();
+  });
+
+  it('rejects invalid, short, unchanged, and incorrect password rotations without changing credentials', async () => {
+    const store = new Store(); const service = createService(store);
+    const bootstrap = await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
+    expect(bootstrap.ok).toBe(true);
+    if (!bootstrap.ok) return;
+    const originalHash = required(store.users[0]).passwordHash;
+    expect(await service.rotatePassword('unknown-token', 'correct horse battery staple', 'new correct horse battery staple', 'ip-invalid', 'c2')).toEqual({ ok: false, reason: 'invalid_credentials' });
+    expect(await service.rotatePassword(bootstrap.token, 'correct horse battery staple', 'too short', 'ip-short', 'c3')).toEqual({ ok: false, reason: 'invalid_credentials' });
+    expect(await service.rotatePassword(bootstrap.token, 'correct horse battery staple', 'correct horse battery staple', 'ip-same', 'c4')).toEqual({ ok: false, reason: 'invalid_credentials' });
+    expect(await service.rotatePassword(bootstrap.token, 'wrong current password', 'new correct horse battery staple', 'ip-wrong', 'c5')).toEqual({ ok: false, reason: 'invalid_credentials' });
+    expect(required(store.users[0]).passwordHash).toBe(originalHash);
+    expect(await service.getSession(bootstrap.token)).toEqual(bootstrap.session);
+    expect(store.audits.filter((event) => event === 'auth.password_rotation_failed')).toHaveLength(4);
+  });
+
+  it('replaces the hash and all prior sessions with one fresh session when rotating a password', async () => {
+    const store = new Store(); const tokens = ['bootstrap-token', 'second-token', 'fresh-token', 'post-rotation-sign-in-token']; const service = createService(store, [], () => required(tokens.shift()));
+    const bootstrap = await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
+    const second = await service.signIn('owner@example.com', 'correct horse battery staple', 'other-ip', 'c2');
+    expect(bootstrap.ok && second.ok).toBe(true);
+    if (!bootstrap.ok || !second.ok) return;
+    const originalHash = required(store.users[0]).passwordHash;
+    const rotation = await service.rotatePassword(bootstrap.token, 'correct horse battery staple', 'new correct horse battery staple', 'ip', 'c3');
+    expect(rotation.ok).toBe(true);
+    if (!rotation.ok) return;
+    expect(rotation.token).toBe('fresh-token');
+    expect(required(store.users[0]).passwordHash).not.toBe(originalHash);
+    expect(store.sessions.filter((session) => !session.revokedAt)).toEqual([rotation.session]);
+    expect(await service.getSession(bootstrap.token)).toBeNull();
+    expect(await service.getSession(second.token)).toBeNull();
+    expect(await service.getSession(rotation.token)).toEqual(rotation.session);
+    expect((await service.signIn('owner@example.com', 'correct horse battery staple', 'old-password-ip', 'c4')).reason).toBe('invalid_credentials');
+    expect((await service.signIn('owner@example.com', 'new correct horse battery staple', 'new-password-ip', 'c5')).ok).toBe(true);
+    expect(store.audits).toContain('auth.password_rotation_completed');
+  });
+
+  it('throttles repeated password rotation failures and audits the throttle', async () => {
+    const store = new Store(); const service = createService(store);
+    const bootstrap = await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
+    expect(bootstrap.ok).toBe(true);
+    if (!bootstrap.ok) return;
+    for (let index = 0; index < 5; index++) {
+      expect((await service.rotatePassword(bootstrap.token, 'wrong current password', 'new correct horse battery staple', 'ip', `c${String(index)}`)).reason).toBe('invalid_credentials');
+    }
+    expect((await service.rotatePassword(bootstrap.token, 'wrong current password', 'new correct horse battery staple', 'ip', 'late')).reason).toBe('throttled');
+    expect(store.audits).toContain('auth.password_rotation_throttled');
+  });
 });
-function createService(store: Store, delivered: string[] = []) {
+function createService(store: Store, delivered: string[] = [], tokens: () => string = () => 'fixed-token') {
   const mail: RecoveryMailAdapter = { deliver(message) { delivered.push(`${message.tags.join(',')}:${message.resetUrl}`); return Promise.resolve(); } };
-  return new AuthService({ store, mail, appOrigin: 'https://app.example.test', now: () => new Date('2025-01-01T00:00:00Z'), tokens: () => 'fixed-token' });
+  return new AuthService({ store, mail, appOrigin: 'https://app.example.test', now: () => new Date('2025-01-01T00:00:00Z'), tokens });
 }

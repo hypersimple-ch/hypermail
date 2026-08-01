@@ -2,7 +2,7 @@
 
 ## Secret rotation
 
-Rotate one credential class at a time: create the replacement in the platform secret store/file, update only consumers that require it, restart those consumers, validate readiness, then revoke the old credential. Rotate `AUTH_SECRET` only with a planned session invalidation. Rotate the database password by changing PostgreSQL and all consumer URLs in a controlled overlap window. Hypermail OAuth/provider credentials are rotated in Hypermail, never copied into app environment files. Do not log secret values or complete dependency errors.
+Rotate one credential class at a time: create the replacement in the platform secret store/file, update only consumers that require it, restart those consumers, validate readiness, then revoke the old credential. Rotate `AUTH_SECRET` only with a planned session invalidation. Rotate the database password by changing PostgreSQL and all consumer URLs in a controlled overlap window. Provider access/refresh credentials are rotated in Hypermail's encrypted state, never copied into app environment files. Gmail OAuth application configuration is instead Hypermail-only bootstrap configuration in `HYPERMAIL_ENV_FILE`: update the Google redirect registration and replacement secret there, restart/redeploy Hypermail, validate readiness and the live callback, then revoke the old secret. Do not log secret values or complete dependency errors.
 
 ## Private networking
 

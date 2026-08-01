@@ -2,7 +2,7 @@
 
 Private, single-user, Android-first email PWA with a public web/API service, private Mastra worker, private Hypermail MCP service, and PostgreSQL.
 
-> **Release status: NO-GO.** Domain libraries, migrations, fixture/component tests, deployment definitions, and the minimal install/connectivity shell exist, but the authenticated product APIs/UI and operational worker are not composed in the running entrypoints. Live provider, Android, approved-send, and production-shaped restore acceptance remain blocked. See [`docs/release/acceptance-matrix.md`](docs/release/acceptance-matrix.md).
+> **Release status: NO-GO.** The authenticated Settings and Account surfaces are composed, but live provider, Android, approved-send, and production-shaped restore acceptance remain blocked. See [`docs/release/acceptance-matrix.md`](docs/release/acceptance-matrix.md).
 
 ## Requirements
 
@@ -42,4 +42,6 @@ pnpm dev
 
 Open <http://localhost:8080>. Local Compose applies migrations automatically and seeds a separate `codex-home` volume from the host's Codex login; it does not use a model API key. Press Ctrl-C to stop the containers. Never commit `.env` or use its fixed development secrets in deployment.
 
-Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. Add mailbox accounts through Hypermail onboarding: provider tokens and IMAP passwords remain in Hypermail's encrypted persistent state, not application environment files. Production secrets belong in deployment secret storage.
+Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
+
+Gmail and Outlook flows require deployment OAuth/device-code configuration and isolated provider accounts before they can be accepted as live integrations. The pinned local service and fixture proof do not establish that acceptance. Production secrets belong in deployment secret storage.

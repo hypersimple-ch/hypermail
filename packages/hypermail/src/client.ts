@@ -1,5 +1,5 @@
 import { AttachmentStream } from "./attachments.js";
-import type { Account, AttachmentMetadata, AttachmentStreamOptions, Folder, HypermailReadClientOptions, InboxPage, Json, Message, RetryClassification, SearchOptions } from "./types.js";
+import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, Provider, RetryClassification, SearchOptions } from "./types.js";
 
 const retryableRpcCodes = new Set([-32001, -32002, -32003]);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,7 +37,13 @@ export class HypermailMcpHttpClient {
     await this.notify("notifications/initialized"); this.#initialized = true; return result;
   }
   async listTools(): Promise<Json> { return this.rpc("tools/list", {}); }
-  async call<T extends Json = Json>(name: string, args: Record<string, Json>): Promise<T> { return this.rpc("tools/call", { name, arguments: args }) as Promise<T>; }
+  async call<T extends Json = Json>(name: string, args: Record<string, Json>): Promise<T> {
+    const result = await this.rpc("tools/call", { name, arguments: args });
+    if (!isRecord(result) || (!("content" in result) && !("structuredContent" in result))) return result as T;
+    if (result.isError === true) throw new McpTransportError("MCP tool failed");
+    if (!("structuredContent" in result)) throw new McpTransportError("Malformed MCP tool result");
+    return result.structuredContent as T;
+  }
 
   async #retry<T>(operation: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) try { return await operation(); } catch (error) {
@@ -82,6 +88,55 @@ const address = (value: unknown, field: string) => { const v = record(value, fie
 const record = (value: unknown, field: string): Record<string, unknown> => { if (!isRecord(value)) throw new McpTransportError(`Malformed ${field}`); return value; };
 function attachment(value: unknown): AttachmentMetadata { const v = record(value, "attachment"); return { id: text(v.id, "attachment.id"), name: text(v.name, "attachment.name"), ...(optionalText(v.contentType, "attachment.contentType") !== undefined ? { contentType: optionalText(v.contentType, "attachment.contentType") } : {}), ...(v.size !== undefined ? { size: number(v.size, "attachment.size") } : {}), ...(optionalText(v.webUrl, "attachment.webUrl") !== undefined ? { webUrl: optionalText(v.webUrl, "attachment.webUrl") } : {}), ...(optionalText(v.webUrlUnavailableReason, "attachment.webUrlUnavailableReason") !== undefined ? { webUrlUnavailableReason: optionalText(v.webUrlUnavailableReason, "attachment.webUrlUnavailableReason") } : {}) }; }
 const number = (value: unknown, field: string): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new McpTransportError(`Malformed ${field}`); return value; };
+const provider = (value: unknown, field: string): Provider => { const result = text(value, field); if (result !== "outlook" && result !== "gmail" && result !== "imap") throw new McpTransportError(`Malformed ${field}`); return result; };
+function onboardingAccount(value: unknown, expectedProvider: Provider): OnboardingAccount { const account = record(value, "account"); const selected = provider(account.provider, "account.provider"); if (selected !== expectedProvider) throw new McpTransportError("Account provider mismatch"); return { provider: selected, email: text(account.email, "account.email"), ...(optionalText(account.displayName, "account.displayName") !== undefined ? { displayName: optionalText(account.displayName, "account.displayName") } : {}), ...(optionalText(account.state, "account.state") !== undefined ? { state: optionalText(account.state, "account.state") } : {}) }; }
+function addAccountResult(value: unknown, expectedProvider: Provider): AddAccountResult {
+  const result = record(value, "add_account response");
+  if (result.status === "ready") return { status: "ready", account: onboardingAccount(result.account, expectedProvider) };
+  if (result.status !== "pending" || expectedProvider === "imap") throw new McpTransportError("Malformed add_account response");
+  const verification = record(result.verification, "add_account.verification"); const type = text(verification.type, "add_account.verification.type");
+  if (type !== "device_code" && type !== "oauth_url") throw new McpTransportError("Malformed add_account.verification.type");
+  if ((expectedProvider === "outlook" && type !== "device_code") || (expectedProvider === "gmail" && type !== "oauth_url")) throw new McpTransportError("Malformed add_account.verification.type");
+  return { status: "pending", handle: text(result.handle, "add_account.handle"), verification: { type, ...(type === "device_code" ? { userCode: text(verification.userCode, "add_account.verification.userCode") } : {}), verificationUri: text(verification.verificationUri, "add_account.verification.verificationUri"), expiresAt: text(verification.expiresAt, "add_account.verification.expiresAt"), message: text(verification.message, "add_account.verification.message") } };
+}
+function onboardingErrorReason(value: unknown): OnboardingErrorReason {
+  if (typeof value !== "string") return "provider_unavailable";
+  const message = value.toLowerCase();
+  if (message.includes("unknown handle") || message.includes("invalid_grant") || message.includes("expired")) return "authorization_expired";
+  if (message.includes("state mismatch") || message.includes("unknown oauth state") || message.includes("missing oauth state")) return "authorization_rejected";
+  if (message.includes("invalid_client") || message.includes("unauthorized_client") || message.includes("redirect_uri") || message.includes("client secret") || message.includes("oauth client was not found")) return "provider_configuration";
+  if (message.includes("token request failed")) return "token_exchange_failed";
+  if (message.includes("failed to get gmail profile") || message.includes("no email returned from google")) return "gmail_profile_failed";
+  return "provider_unavailable";
+}
+function completeAddAccountResult(value: unknown, expectedProvider: Provider): CompleteAddAccountResult {
+  const result = record(value, "complete_add_account response");
+  if (result.status === "ready") return { status: "ready", account: onboardingAccount(result.account, expectedProvider) };
+  if (result.status === "pending" || result.status === "expired") return { status: result.status };
+  if (result.status === "error") return { status: "error", reason: onboardingErrorReason(result.error) };
+  throw new McpTransportError("Malformed complete_add_account response");
+}
+function onboardingDiagnostic(value: unknown, source: OnboardingDiagnostic["source"]): OnboardingDiagnostic {
+  const message = typeof value === "string" ? value : value instanceof Error ? value.message : "Provider returned no diagnostic text";
+  const detail = message
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[redacted-url]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted-email]")
+    .replace(/((?:code|state|access_token|refresh_token|client_secret)\s*[=:]\s*)[^\s,;&"']+/gi, "$1[redacted]")
+    .replace(/[A-Za-z0-9_-]{16,}/g, "[redacted]")
+    .slice(0, 240);
+  return { source, reason: onboardingErrorReason(value), detail };
+}
+function emitOnboardingDiagnostic(callback: HypermailReadClientOptions["onOnboardingDiagnostic"], diagnostic: OnboardingDiagnostic): void {
+  try { callback?.(diagnostic); } catch { /* Diagnostics must never affect account onboarding. */ }
+}
+function addAccountArguments(input: AddAccountInput): Record<string, Json> {
+  const request = record(input, "add_account input"); const selected = provider(request.provider, "add_account.provider"); const email = optionalText(request.email, "add_account.email");
+  if (selected !== "imap") { if (request.config !== undefined) throw new RangeError("Invalid add_account.config"); return { provider: selected, ...(email !== undefined ? { email } : {}) }; }
+  const config = record(request.config, "add_account.config"); const port = config.port === undefined ? undefined : number(config.port, "add_account.config.port"); const smtpPort = config.smtpPort === undefined ? undefined : number(config.smtpPort, "add_account.config.smtpPort");
+  if ((port !== undefined && (port < 1 || port > 65_535)) || (smtpPort !== undefined && (smtpPort < 1 || smtpPort > 65_535))) throw new RangeError("Invalid add_account.config port");
+  return { provider: selected, ...(email !== undefined ? { email } : {}), config: { host: text(config.host, "add_account.config.host"), ...(port !== undefined ? { port } : {}), ...(bool(config.secure, "add_account.config.secure") !== undefined ? { secure: bool(config.secure, "add_account.config.secure") } : {}), user: text(config.user, "add_account.config.user"), password: text(config.password, "add_account.config.password"), ...(optionalText(config.smtpHost, "add_account.config.smtpHost") !== undefined ? { smtpHost: optionalText(config.smtpHost, "add_account.config.smtpHost") } : {}), ...(smtpPort !== undefined ? { smtpPort } : {}), ...(bool(config.smtpSecure, "add_account.config.smtpSecure") !== undefined ? { smtpSecure: bool(config.smtpSecure, "add_account.config.smtpSecure") } : {}) } };
+}
+function completeAddAccountArguments(input: CompleteAddAccountInput): Record<string, Json> { const request = record(input, "complete_add_account input"); return { provider: provider(request.provider, "complete_add_account.provider"), handle: text(request.handle, "complete_add_account.handle"), ...(optionalText(request.authorizationResponse, "complete_add_account.authorizationResponse") !== undefined ? { authorizationResponse: optionalText(request.authorizationResponse, "complete_add_account.authorizationResponse") } : {}), ...(optionalText(request.code, "complete_add_account.code") !== undefined ? { code: optionalText(request.code, "complete_add_account.code") } : {}), ...(optionalText(request.state, "complete_add_account.state") !== undefined ? { state: optionalText(request.state, "complete_add_account.state") } : {}) }; }
 function message(value: unknown, expectedAccount?: string, includeBody = false): Message {
   const v = record(value, "message"); const account = text(v.account, "message.account"); if (expectedAccount && account !== expectedAccount) throw new McpTransportError("Account isolation violation");
   const mapAddresses = (raw: unknown, field: string) => raw === undefined ? undefined : Array.isArray(raw) ? raw.map((entry) => address(entry, field)) : (() => { throw new McpTransportError(`Malformed ${field}`); })();
@@ -98,6 +153,18 @@ export class HypermailReadClient {
     this.#accountTtl = options.accountCacheTtlMs ?? 60_000; this.#folderTtl = options.folderCacheTtlMs ?? 60_000;
   }
   async initialize(): Promise<Json> { return this.transport.initialize(this.options.protocolVersion); }
+  /** Starts an explicit user-controlled account onboarding flow; callers initialize this client first, as with read methods. */
+  async addAccount(input: AddAccountInput): Promise<AddAccountResult> { const result = addAccountResult(await this.transport.call("add_account", addAccountArguments(input)), provider(input.provider, "add_account.provider")); if (result.status === "ready") this.#accounts = undefined; return result; }
+  /** Polls or finalizes an explicit user-controlled account onboarding flow. Server error text is never surfaced. */
+  async completeAddAccount(input: CompleteAddAccountInput): Promise<CompleteAddAccountResult> {
+    let raw: Json;
+    try { raw = await this.transport.call("complete_add_account", completeAddAccountArguments(input)); }
+    catch (error) { emitOnboardingDiagnostic(this.options.onOnboardingDiagnostic, onboardingDiagnostic(error, "transport")); throw error; }
+    const result = completeAddAccountResult(raw, provider(input.provider, "complete_add_account.provider"));
+    if (result.status === "error") emitOnboardingDiagnostic(this.options.onOnboardingDiagnostic, onboardingDiagnostic(isRecord(raw) ? raw.error : undefined, "provider_result"));
+    if (result.status === "ready") this.#accounts = undefined;
+    return result;
+  }
   async accounts(force = false): Promise<Account[]> {
     if (!force && this.#accounts && this.#accounts.expires > Date.now()) return this.#accounts.value;
     const result = record(await this.transport.call("list_accounts", {}), "list_accounts"); if (!Array.isArray(result.accounts)) throw new McpTransportError("Malformed list_accounts.accounts");

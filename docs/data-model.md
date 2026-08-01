@@ -15,7 +15,7 @@ Application code must not write directly to Mastra or pg-boss internal tables.
 | Group | Tables | Retention |
 |---|---|---|
 | Authentication | Better Auth `auth_users`, `auth_sessions`, `auth_accounts`, `auth_verifications`, `auth_rate_limits`; bootstrap/recovery `users`, `sessions`, `recovery_tokens`, `rate_limits` | Sessions/tokens bounded; audit outcomes retained |
-| Account projections | `accounts`, `folders`, `account_health`, `poll_states` | Until account removal; no provider secrets |
+| Account projections | `accounts`, `user_accounts`, `folders`, `account_health`, `poll_states` | Retained; mailbox removal is unavailable; no provider secrets |
 | Mail cache | `messages`, `message_bodies`, `attachments` | Metadata retained; bodies purged after 90 days; no attachment bytes |
 | Activity | `activities`, `agent_jobs`, `questions`, `decisions` | Indefinite |
 | Actions | `actions`, `action_verifications`, `safety_windows` | Indefinite |
@@ -96,8 +96,7 @@ Commit before queue publication or model/provider calls. A replay either finds t
 
 ## Deletion and retention behavior
 
-- Account deletion is an explicit administrative operation and cascades projections only after dependent permanent history policy is applied.
-- Activities/actions use restrictive foreign keys so mailbox cleanup cannot erase decision history accidentally.
+- Mailbox removal is not available. Activities/actions use restrictive foreign keys so any future mailbox cleanup cannot erase decision history accidentally.
 - Body purge selects bounded due rows using both cache age and `purge_after`, deletes `message_bodies` only, and inserts one `message_body_purged` audit per row in the same statement.
 - Expired push subscriptions receive `disabled_at` plus an audit; subscription and delivery records remain.
 - Provider deletion is represented on message metadata (`deleted_at`) rather than erasing history.

@@ -43,6 +43,18 @@ Classification is local safety policy, not a claim that Hypermail enforces it. `
 
 `read_attachment` returns temporary local-file metadata (`name`, optional `contentType`, `path`, optional web URL/reason); it is **not** a documented byte-streaming API. `trash_email` must never be treated as permanent delete; no autonomous permanent-delete operation is allowed.
 
+## Owner onboarding boundary
+
+`add_account` and `complete_add_account` are pinned to v0.7.26 and are account-administration operations. Hypermail makes no ownership decision: the authenticated, exact-same-origin web service is the sole owner-facing caller, and autonomous worker, agent, and policy ports do not expose either tool. Credentials and provider state remain Hypermail private state.
+
+The owner-facing contract uses `pending`, `ready`, `expired`, and `error` outcomes. A mailbox is projected into application `app.accounts` and `app.user_accounts` only after `ready`; incompatible ownership fails closed. Map Hypermail provider `outlook` to application provider `microsoft`. A newly ready mailbox is baselined on its next worker ingestion cycle, so previously existing mail does not create Activity.
+
+- **Gmail:** `add_account` begins the OAuth URL flow. Completion consumes the redirect authorization response/code/state through the app's same-origin `/oauth/gmail/callback`. The browser retains only opaque provider, handle, and expiry values in `sessionStorage`, and removes callback query parameters after handling them.
+- **Outlook:** `add_account` starts device-code onboarding. It remains pending until the owner explicitly requests a status/complete check; the web app does not advance it by background polling.
+- **IMAP:** configuration is submitted to the private owner-only web API and completes synchronously as ready or error. The web app must never persist, log, or echo IMAP credentials.
+
+Mailbox removal is not part of the owner-facing contract.
+
 ## Semantics, identities, and provider differences
 
 `list_accounts` returns provider identity (`outlook`, `gmail`, `imap`) and public account metadata. Treat `(account email, provider, message ID)` as provider-scoped identifiers: do not infer cross-provider ID portability. `list_emails` defaults to Inbox and reports `hasMore`; advance with `skip`. `get_new_emails` is Inbox-only, does not mark messages read, establishes its first-use checkpoint at newest Inbox mail and returns no mail initially, then returns unseen mail oldest-first. `limit:0` initializes/checks without bodies; all-account limits are global and partial failures are returned in `errors`.

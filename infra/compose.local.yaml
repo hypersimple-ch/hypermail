@@ -20,6 +20,10 @@ services:
     env_file: ["${WEB_ENV_FILE:-../.env}"]
     environment:
       ATTACHMENT_TEMP_DIRECTORY: /var/lib/hypermail-attachments
+      # Prevent the shared local env_file from delivering Gmail OAuth config here.
+      HYPERMAIL_GMAIL_CLIENT_ID: ""
+      HYPERMAIL_GMAIL_CLIENT_SECRET: ""
+      HYPERMAIL_GMAIL_REDIRECT_URI: ""
     volumes:
       - attachment-temp:/var/lib/hypermail-attachments
     depends_on:
@@ -39,6 +43,11 @@ services:
       dockerfile: infra/Dockerfile.web
       target: migrate
     env_file: ["${WEB_ENV_FILE:-../.env}"]
+    environment:
+      # Prevent the shared local env_file from delivering Gmail OAuth config here.
+      HYPERMAIL_GMAIL_CLIENT_ID: ""
+      HYPERMAIL_GMAIL_CLIENT_SECRET: ""
+      HYPERMAIL_GMAIL_REDIRECT_URI: ""
     restart: "no"
     depends_on:
       postgres:
@@ -53,6 +62,10 @@ services:
     environment:
       HEALTH_PORT: 3001
       CODEX_HOME: /var/lib/codex
+      # Prevent the shared local env_file from delivering Gmail OAuth config here.
+      HYPERMAIL_GMAIL_CLIENT_ID: ""
+      HYPERMAIL_GMAIL_CLIENT_SECRET: ""
+      HYPERMAIL_GMAIL_REDIRECT_URI: ""
     volumes:
       - codex-home:/var/lib/codex
       - type: bind
@@ -97,6 +110,10 @@ services:
     user: "10001:10001"
     environment:
       HYPERMAIL_KEY: ${HYPERMAIL_KEY:?set HYPERMAIL_KEY in .env}
+      # Optional: blank client fields leave Gmail unavailable; do not invent credentials.
+      HYPERMAIL_GMAIL_CLIENT_ID: ${HYPERMAIL_GMAIL_CLIENT_ID:-}
+      HYPERMAIL_GMAIL_CLIENT_SECRET: ${HYPERMAIL_GMAIL_CLIENT_SECRET:-}
+      HYPERMAIL_GMAIL_REDIRECT_URI: ${HYPERMAIL_GMAIL_REDIRECT_URI:-http://localhost:8080/oauth/gmail/callback}
       TMPDIR: /var/lib/hypermail-attachments
     volumes:
       - hypermail-data:/var/lib/hypermail
@@ -109,7 +126,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    networks: [private]
+    # No host exposure; provider OAuth/token and Gmail API calls require outbound access.
+    networks: [private, egress]
 
 networks:
   edge: {}

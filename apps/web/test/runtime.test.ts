@@ -1,23 +1,28 @@
 import type * as AuthModule from '@hypermail/auth';
+import type * as DbModule from '@hypermail/db';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const authStore = vi.hoisted(() => {
-  let users = 0;
+  let user: { id: string; email: string; passwordHash: string } | null = null;
+  let session: Record<string, unknown> | null = null;
   return {
-    reset: () => { users = 0; },
+    reset: () => { user = null; session = null; },
     store: {
-      countUsers: () => Promise.resolve(users),
+      countUsers: () => Promise.resolve(user ? 1 : 0),
       createFirstUser: (email: string, passwordHash: string) => {
-        if (users) return Promise.resolve(null);
-        users += 1;
-        return Promise.resolve({ id: 'user', email, passwordHash });
+        if (user) return Promise.resolve(null);
+        user = { id: 'user', email, passwordHash };
+        return Promise.resolve(user);
       },
       findUserByEmail: () => Promise.resolve(null),
-      findUserById: () => Promise.resolve(null),
-      createSession: (input: Record<string, unknown>) => Promise.resolve({ ...input, id: 'session', createdAt: new Date(), revokedAt: null }),
-      findSessionByTokenHash: () => Promise.resolve(null),
-      revokeSession: () => Promise.resolve(),
-      revokeSessionsForUser: () => Promise.resolve(),
+      findUserById: (id: string) => Promise.resolve(user?.id === id ? user : null),
+      createSession: (input: Record<string, unknown>) => {
+        session = { ...input, id: 'session', createdAt: new Date(), revokedAt: null };
+        return Promise.resolve(session);
+      },
+      findSessionByTokenHash: () => Promise.resolve(session),
+      revokeSession: () => { session = null; return Promise.resolve(); },
+      revokeSessionsForUser: () => { session = null; return Promise.resolve(); },
       createRecoveryToken: () => Promise.resolve({ id: 'recovery' }),
       consumeRecoveryToken: () => Promise.resolve(null),
       updatePassword: () => Promise.resolve(),
@@ -27,9 +32,19 @@ const authStore = vi.hoisted(() => {
   };
 });
 
+const database = vi.hoisted(() => ({
+  query: vi.fn(() => Promise.resolve({ rows: [] })),
+  transaction: vi.fn(),
+  close: vi.fn(() => Promise.resolve()),
+}));
+
 vi.mock('@hypermail/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof AuthModule>();
   return { ...actual, createPostgresAuthStore: () => authStore.store };
+});
+vi.mock('@hypermail/db', async (importOriginal) => {
+  const actual = await importOriginal<typeof DbModule>();
+  return { ...actual, createPostgresClient: () => database };
 });
 
 import { createWebRuntimeFromEnvironment } from '../src/runtime.js';
@@ -37,7 +52,7 @@ import { createWebRuntimeFromEnvironment } from '../src/runtime.js';
 const environment = { DATABASE_URL: 'postgresql://localhost/hypermail', APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32), RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: 'https://hypermail.internal/mcp', HYPERMAIL_KEY: 'b'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: 'deployment-negotiated', VAPID_SUBJECT: 'mailto:owner@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments' };
 
 describe('runtime recovery delivery', () => {
-  beforeEach(() => { authStore.reset(); });
+  beforeEach(() => { authStore.reset(); database.query.mockClear(); database.close.mockClear(); });
 
   it('uniformly refuses recovery until an ingestion-excluded delivery adapter exists', async () => {
     const runtime = createWebRuntimeFromEnvironment(environment);
@@ -51,6 +66,19 @@ describe('runtime recovery delivery', () => {
     await expect(runtime.dispatch({ ...request, method: 'GET', pathname: '/api/v1/session' })).resolves.toEqual({ status: 401, body: { error: 'unauthenticated', bootstrapAvailable: true } });
     await expect(runtime.dispatch({ ...request, method: 'POST', pathname: '/api/v1/auth/bootstrap', origin: 'https://mail.example.test', body: { email: 'owner@example.test', password: 'correct horse battery staple' } })).resolves.toMatchObject({ status: 201 });
     await expect(runtime.dispatch({ ...request, method: 'GET', pathname: '/api/v1/session' })).resolves.toEqual({ status: 401, body: { error: 'unauthenticated', bootstrapAvailable: false } });
+    await runtime.close();
+  });
+
+  it('returns the safe authenticated owner identity and projected mailbox list', async () => {
+    const runtime = createWebRuntimeFromEnvironment(environment);
+    const base = { query: {}, remoteAddress: '127.0.0.1', correlationId: 'test', apiVersion: null, body: {} } as const;
+    const bootstrap = await runtime.dispatch({ ...base, method: 'POST', pathname: '/api/v1/auth/bootstrap', origin: 'https://mail.example.test', cookie: null, body: { email: 'Owner@Example.test', password: 'correct horse battery staple' } });
+    const cookie = bootstrap?.setCookie?.split(';')[0] ?? null;
+
+    await expect(runtime.dispatch({ ...base, method: 'GET', pathname: '/api/v1/session', origin: null, cookie })).resolves.toEqual({
+      status: 200,
+      body: { userId: 'user', user: { id: 'user', email: 'owner@example.test' }, accounts: [], sendEnabled: false },
+    });
     await runtime.close();
   });
 });

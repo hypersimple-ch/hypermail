@@ -2,6 +2,7 @@ export { HypermailReadClient, HypermailMcpHttpClient, McpJsonRpcError, McpTransp
 export { AttachmentStream, cleanupAttachmentOrphans, contentDisposition } from "./attachments.js";
 export type { AttachmentOrphanCleanupOptions } from "./attachments.js";
 export type {
-  Account, AttachmentMetadata, AttachmentStreamOptions, EmailAddress, Folder, HypermailReadClientOptions,
-  InboxPage, Message, MessagePage, Provider, RetryClassification, SearchOptions
+  Account, AccountVerification, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions,
+  CompleteAddAccountInput, CompleteAddAccountResult, EmailAddress, Folder, HypermailReadClientOptions,
+  ImapAddAccountConfig, InboxPage, Message, MessagePage, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, Provider, RetryClassification, SearchOptions
 } from "./types.js";

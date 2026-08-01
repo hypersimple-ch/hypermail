@@ -45,6 +45,25 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain("@/components/ui/field.js");
   });
 
+  it('wires Settings mailbox onboarding and Account security to authenticated APIs', () => {
+    expect(shellSource).toContain("screen === 'settings'");
+    expect(shellSource).toContain("screen === 'account'");
+    expect(shellSource).toContain('onStartMailboxConnection');
+    expect(shellSource).toContain('onChangePassword');
+    expect(browser).toContain("fetch('/api/v1/mailboxes'");
+    expect(browser).toContain("fetch('/api/v1/mailboxes/complete'");
+    expect(browser).toContain("fetch('/api/v1/auth/password'");
+    expect(browser).toContain("fetch('/api/v1/auth/logout'");
+    expect(browser).toContain("location.pathname === '/oauth/gmail/callback'");
+    expect(browser).toContain("window.location.assign(authorizationUrl)");
+    expect(browser).toContain("url.origin !== 'https://accounts.google.com'");
+    expect(browser).toContain("authorizationResponse = callback.toString()");
+    expect(browser).toContain("window.history.replaceState(window.history.state, '', '/')");
+    const storageWrite = browser.split('\n').find((line) => line.includes('sessionStorage.setItem')) ?? '';
+    expect(storageWrite).toContain('provider: pending.provider, handle: pending.handle, expiresAt: pending.expiresAt');
+    expect(storageWrite).not.toMatch(/password|authorizationUrl|userCode|code:|state:/);
+  });
+
   it('has 360px, tablet, and desktop layout boundaries without horizontal overflow', () => {
     expect(shellSource).toContain('min-h-dvh overflow-x-hidden');
     expect(shellSource).toContain('min-h-[79px]');

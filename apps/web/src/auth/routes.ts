@@ -14,6 +14,7 @@ export interface AuthRouteService {
   bootstrap(email: string, password: string, correlationId: string): Promise<LoginResult>;
   signIn(email: string, password: string, subject: string, correlationId: string): Promise<LoginResult>;
   signOut(token: string, correlationId: string): Promise<void>;
+  rotatePassword(token: string, currentPassword: string, newPassword: string, subject: string, correlationId: string): Promise<LoginResult>;
   requestRecovery(email: string, subject: string, correlationId: string): Promise<void>;
   resetPassword(token: string, password: string, correlationId: string): Promise<LoginResult>;
 }
@@ -43,6 +44,13 @@ export function createAuthRoutes(service: AuthRouteService, cookies: AuthCookieC
       const token = cookies.read(request.cookie); if (token) await service.signOut(token, request.correlationId);
       return { status: 204, body: {}, setCookie: cookies.expired() };
     },
+    async password(request: RouteRequest): Promise<RouteResponse> {
+      const denied = protectedMutation(request); if (denied) return denied;
+      const token = cookies.read(request.cookie);
+      if (!token) return { status: 401, body: { error: 'invalid_credentials' } };
+      const result = await service.rotatePassword(token, text(request.body, 'currentPassword'), text(request.body, 'newPassword'), request.remoteAddress, request.correlationId);
+      return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.session(result.token) } : { status: result.reason === 'throttled' ? 429 : 401, body: { error: 'invalid_credentials' } };
+    },
     async recovery(request: RouteRequest): Promise<RouteResponse> {
       const denied = protectedMutation(request); if (denied) return denied;
       await service.requestRecovery(text(request.body, 'email'), request.remoteAddress, request.correlationId);
@@ -63,4 +71,5 @@ export const playwrightRouteScenarios = [
   'POST /auth/recovery returns the same 202 body for known and unknown accounts',
   'POST /auth/reset consumes a recovery token once and expires all prior sessions',
   'POST /auth/logout clears the __Host-hypermail_session cookie',
+  'POST /auth/password verifies the current password, revokes prior sessions, and rotates the session cookie',
 ] as const;

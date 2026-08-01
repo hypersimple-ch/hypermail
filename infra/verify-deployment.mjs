@@ -56,6 +56,8 @@ if (!/target: migrate/.test(local) || !/condition: service_completed_successfull
   fail('local compose must use a private migration job and a read-only host Codex auth seed with persistent Codex state');
 }
 if (!/127\.0\.0\.1:\$\{LOCAL_HTTP_PORT:-8080\}:80/.test(local)) fail('local proxy must remain loopback-only');
+const localHypermail = local.match(/^  hypermail:\n([\s\S]*?)(?=\nnetworks:)/m)?.[1] ?? '';
+if (!/networks: \[private, egress\]/.test(localHypermail) || /^    ports:/m.test(localHypermail)) fail('local Hypermail must have private ingress and provider egress without host ports');
 if (!/"hypermail-mcp": "0\.7\.26"/.test(hypermailPackage) || !/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
   fail('Hypermail must build its pinned workspace runtime as a private HTTP service');
 }

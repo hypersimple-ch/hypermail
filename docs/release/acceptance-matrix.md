@@ -1,13 +1,15 @@
 # Release acceptance matrix
 
 Decision: **NO-GO**  
-Evidence date: 2026-07-30
+Evidence date: 2026-08-01
 
 `PASS` is exercised at its required boundary. `PARTIAL` has runtime/disposable integration proof but lacks a required live or production-shaped boundary. `BLOCKED` has no required-boundary evidence.
 
+A bounded Gmail External/Testing onboarding proof passed on 2026-08-01. It is not a release-boundary pass: the test authorization expires after seven days and no Gmail arrival, read, mutation, send, timing, or production OAuth behavior was exercised.
+
 | # | Idea success criterion | Status | Passing evidence | Release blocker |
 |---:|---|---|---|---|
-| 1 | No arrival, unresolved question, action failure, or polling failure is hidden | PARTIAL | Migrated serial PostgreSQL worker lifecycle, consumers, replay/isolation, health and shutdown | No live provider/deployed flow |
+| 1 | No arrival, unresolved question, action failure, or polling failure is hidden | PARTIAL | Migrated serial PostgreSQL worker lifecycle, consumers, replay/isolation, health and shutdown | No live arrival/worker/deployed flow |
 | 2 | Detect normal new Inbox mail within one minute | PARTIAL | 30–60s scheduler, lease/backoff, composed worker runtime | No isolated live provider timing run |
 | 3 | Arrival is durable before agent work and creates one Activity/push | PARTIAL | PostgreSQL arrival/replay identity and pg-boss consumers | No live provider or push |
 | 4 | Denied/unavailable push retains in-app pending state | PARTIAL | Notification contracts and browser/PWA shell | No Android denied-permission/live-push run |
@@ -22,6 +24,7 @@ Evidence date: 2026-07-30
 
 ## Cross-cutting evidence
 
+- `docs/evidence/gmail-oauth-acceptance-2026-08-01.md`
 - `docs/evidence/runtime-acceptance-2026-07-30.md`
 - `docs/evidence/fault-acceptance-2026-07-30.md`
 - `docs/evidence/security-acceptance-2026-07-30.md`
@@ -32,7 +35,7 @@ Evidence date: 2026-07-30
 ## Release blockers
 
 1. Android/device acceptance.
-2. Isolated live Outlook, Gmail, and IMAP plus approved deployed Hypermail/protocol validation.
+2. Isolated live Outlook and IMAP remain untested. Gmail passed onboarding only in the seven-day External/Testing tier; live Gmail arrival/read/mutation/timing and approved deployed Hypermail/protocol validation remain outstanding.
 3. Approved private durable exactly-once send service.
 4. Verified Hypermail draft create/edit provider response contract; policy readiness remains `not_ready` until then.
 5. Production-shaped Compose deployment, public-network probe, and off-host restore.

@@ -24,6 +24,60 @@ export interface HypermailReadClientOptions {
   maxRetries?: number;
   accountCacheTtlMs?: number;
   folderCacheTtlMs?: number;
+  /** Receives only scrubbed, bounded onboarding diagnostics; raw provider text is never emitted. */
+  onOnboardingDiagnostic?: (diagnostic: OnboardingDiagnostic) => void;
 }
 /** `tempDirectory` must be a private, dedicated attachment directory; the process-wide temporary directory is never accepted. */
 export interface AttachmentStreamOptions { maxBytes: number; tempDirectory: string; signal?: AbortSignal }
+
+/** IMAP credentials are accepted only as an add-account request and are never returned. */
+export interface ImapAddAccountConfig {
+  host: string;
+  port?: number;
+  secure?: boolean;
+  user: string;
+  password: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpSecure?: boolean;
+}
+export type AddAccountInput =
+  | { provider: "outlook" | "gmail"; email?: string; config?: never }
+  | { provider: "imap"; email?: string; config: ImapAddAccountConfig };
+export interface CompleteAddAccountInput {
+  provider: Provider;
+  handle: string;
+  /** OAuth callback data is request-only and is never included in a result. */
+  authorizationResponse?: string;
+  code?: string;
+  state?: string;
+}
+export interface OnboardingAccount {
+  provider: Provider;
+  email: string;
+  displayName?: string;
+  state?: string;
+}
+export interface AccountVerification {
+  type: "device_code" | "oauth_url";
+  userCode?: string;
+  verificationUri: string;
+  expiresAt: string;
+  message: string;
+}
+export type AddAccountResult =
+  | { status: "pending"; handle: string; verification: AccountVerification }
+  | { status: "ready"; account: OnboardingAccount };
+/** Safe operational detail for diagnosing onboarding failures without callback data, credentials, tokens, or raw provider text. */
+export interface OnboardingDiagnostic {
+  source: "provider_result" | "transport";
+  reason: OnboardingErrorReason;
+  detail: string;
+}
+/** Bounded completion failures; raw provider text is deliberately never exposed. */
+export type OnboardingErrorReason = "authorization_expired" | "authorization_rejected" | "provider_configuration" | "token_exchange_failed" | "gmail_profile_failed" | "provider_unavailable";
+export type CompleteAddAccountResult =
+  | { status: "pending" }
+  | { status: "ready"; account: OnboardingAccount }
+  | { status: "expired" }
+  | { status: "error"; reason: OnboardingErrorReason };

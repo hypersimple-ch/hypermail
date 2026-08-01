@@ -52,7 +52,20 @@ describe('responsive shell rendering contracts', () => {
     const sent = render(React.createElement(Sent, { drafts }));
     expect(sent).toContain('Delivered');
     expect(sent).not.toContain('>Edit</button>');
-    expect(render(React.createElement(More))).toContain('Settings and account options');
+    const more = render(React.createElement(More, { ownerEmail: 'owner@example.test', onSettings: () => {}, onAccount: () => {} }));
+    expect(more).toContain('Add and review connected mailboxes');
+    expect(more).toContain('owner@example.test');
+  });
+
+  it('renders Settings and Account as full-area screens reached through More', () => {
+    const settings = render(React.createElement(HypermailShell, { data: mockShellData, initialScreen: 'settings', settingsMailboxes: [{ id: 'personal', provider: 'gmail', email: 'me@example.com', displayName: 'Personal', state: 'ready' }], onStartMailboxConnection: () => Promise.resolve({ state: 'error' }), onCompleteMailboxConnection: () => Promise.resolve({ state: 'error' }) }));
+    expect(settings).toContain('Viewing settings');
+    expect(settings).toContain('Connected mailboxes');
+    expect(settings).toContain('Personal');
+    const account = render(React.createElement(HypermailShell, { data: mockShellData, initialScreen: 'account', ownerEmail: 'owner@example.test', onChangePassword: () => Promise.resolve({ ok: true }), onSignOut: () => Promise.resolve() }));
+    expect(account).toContain('Viewing account');
+    expect(account).toContain('Owner identity');
+    expect(account).toContain('owner@example.test');
   });
 
   it('provides focusable 44px shared controls and does not render unsupported actions', () => {
