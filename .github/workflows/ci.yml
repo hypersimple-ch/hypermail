@@ -21,13 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.11.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22.18.0
+          node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
@@ -37,29 +37,43 @@ jobs:
   security:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.11.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22.18.0
+          node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm security:scan
-      - run: docker build -f infra/Dockerfile.web -t hypermail-web:scan .
-      - run: docker build -f infra/Dockerfile.worker -t hypermail-worker:scan .
+
+  container-security:
+    if: github.event_name != 'pull_request'
+    name: container-security (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: web
+            dockerfile: infra/Dockerfile.web
+            image: hypermail-web:scan
+          - service: worker
+            dockerfile: infra/Dockerfile.worker
+            image: hypermail-worker:scan
+          - service: hypermail
+            dockerfile: infra/Dockerfile.hypermail
+            image: hypermail-runtime:scan
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -f ${{ matrix.dockerfile }} -t ${{ matrix.image }} .
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: hypermail-web:scan
-          format: table
-          exit-code: '1'
-          severity: HIGH,CRITICAL
-      - uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: hypermail-worker:scan
+          image-ref: ${{ matrix.image }}
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL

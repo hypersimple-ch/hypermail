@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22.18.0-alpine AS build
+FROM node:22.23.2-alpine AS build
 WORKDIR /workspace
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
@@ -10,12 +10,15 @@ RUN pnpm --filter @hypermail/worker... build
 RUN pnpm --filter @hypermail/worker deploy --prod /opt/app \
   && test -x /opt/app/node_modules/.bin/codex
 
-FROM node:22.18.0-alpine AS runtime
+FROM node:22.23.2-alpine AS runtime
 ENV NODE_ENV=production \
     CODEX_HOME=/var/lib/codex \
     PATH=/app/node_modules/.bin:$PATH
 WORKDIR /app
-RUN apk add --no-cache su-exec \
+# Runtime needs Node and the deployed Codex binary, not package managers.
+RUN rm -rf /usr/local/lib/node_modules /opt/yarn-* \
+  && rm -f /usr/local/bin/corepack /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+  && apk add --no-cache su-exec \
   && addgroup -S hypermail \
   && adduser -S -G hypermail -u 10001 hypermail
 COPY --from=build --chown=hypermail:hypermail /opt/app ./

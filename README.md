@@ -6,7 +6,7 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 
 ## Requirements
 
-- Node.js 22.18.0 (see `.nvmrc`)
+- Node.js 22.23.2 (see `.nvmrc`)
 - pnpm 11.11.0 through Corepack
 - PostgreSQL 16+ for migrations and integration work
 
