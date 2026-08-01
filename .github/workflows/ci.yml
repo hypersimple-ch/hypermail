@@ -4,12 +4,20 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -23,8 +31,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - if: github.event_name == 'pull_request'
+        run: pnpm security:scan
 
   security:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -40,13 +51,13 @@ jobs:
       - run: pnpm security:scan
       - run: docker build -f infra/Dockerfile.web -t hypermail-web:scan .
       - run: docker build -f infra/Dockerfile.worker -t hypermail-worker:scan .
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hypermail-web:scan
           format: table
           exit-code: '1'
           severity: HIGH,CRITICAL
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: hypermail-worker:scan
           format: table

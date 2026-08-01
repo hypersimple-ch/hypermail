@@ -3,8 +3,11 @@ packages:
   - packages/*
 
 injectWorkspacePackages: true
+syncInjectedDepsAfterScripts:
+  - build
 
 overrides:
+  nodemailer@<=9.0.0: 9.0.3
   postcss: 8.5.24
 
 onlyBuiltDependencies:

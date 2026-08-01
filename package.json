@@ -18,7 +18,7 @@
     "db:migrate": "pnpm --filter @hypermail/db db:migrate",
     "verify:deployment": "node infra/verify-deployment.mjs",
     "security:scan": "node infra/security-scan.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm verify:deployment"
+    "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test && pnpm verify:deployment"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
