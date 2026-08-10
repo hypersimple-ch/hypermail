@@ -3,12 +3,12 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import type { AgentDashboard, AgentUiHandlers, AutonomyScope, AutonomyState } from './agent/index.js';
-import { Alert, AlertDescription } from '@/components/ui/alert.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card.js';
-import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/ui/field.js';
-import { Input } from '@/components/ui/input.js';
-import { Spinner } from '@/components/ui/spinner.js';
+import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardHeader } from '@/components/heroui/card.js';
+import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
 import { initialPwaState } from './pwa/state.js';
 import { HypermailShell, type ActivityItem, type ActivityState, type Draft, type Screen, type ShellData } from './ui/index.js';

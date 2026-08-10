@@ -44,7 +44,7 @@ describe('Android PWA contracts', () => {
 
   it('renders loading, authentication, connectivity, install, and update presentation with shared JSX primitives', async () => {
     const browser = await browserSource();
-    for (const primitive of ['Alert', 'Button', 'Card', 'Field', 'Input', 'Spinner']) expect(browser).toContain(`@/components/ui/${primitive.toLowerCase()}`);
+    for (const primitive of ['Alert', 'Button', 'Card', 'Field', 'Input', 'Spinner']) expect(browser).toContain(`@/components/heroui/${primitive.toLowerCase()}`);
     expect(browser).toContain('function AuthCard');
     expect(browser).toContain('<Spinner className="size-6" />');
     expect(browser).toContain('role="status" aria-live="polite"');

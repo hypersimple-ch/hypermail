@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert.js';
-import { Badge } from '@/components/ui/badge.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.js';
-import { Field, FieldDescription, FieldLabel } from '@/components/ui/field.js';
-import { Textarea } from '@/components/ui/textarea.js';
+import { Alert, AlertDescription, AlertTitle } from '@/components/heroui/alert.js';
+import { Badge } from '@/components/heroui/badge.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
+import { Field, FieldDescription, FieldLabel } from '@/components/heroui/field.js';
+import { Textarea } from '@/components/heroui/textarea.js';
 import type { AgentAction, AgentAlert, AgentDashboard, AgentQuestion, AutonomyScope, AutonomyState } from './contracts.js';
 
 export type AgentUiHandlers = Readonly<{

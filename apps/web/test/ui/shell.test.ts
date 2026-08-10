@@ -22,7 +22,7 @@ describe('responsive shell rendering contracts', () => {
     const markup = render(React.createElement(Activity, { data: mockShellData }));
     for (const text of ['New', 'Questions', 'Failed', 'History', 'Needs input', 'Completed']) expect(markup).toContain(text);
     expect(markup).toContain('data-slot="filter-group"');
-    expect(markup).toContain('data-slot="badge"');
+    expect(markup).toContain('data-slot="chip"');
     expect(markup).toContain('data-slot="card"');
     expect(markup).toContain('data-slot="button"');
     expect(markup).not.toContain('>Review</button>');

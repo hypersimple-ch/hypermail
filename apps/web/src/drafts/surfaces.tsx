@@ -1,11 +1,11 @@
 import type * as React from 'react';
 import type { DraftRecord, DraftRevision } from './contracts.js';
-import { Badge } from '@/components/ui/badge.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card.js';
-import { Field, FieldDescription, FieldLabel } from '@/components/ui/field.js';
-import { Input } from '@/components/ui/input.js';
-import { Textarea } from '@/components/ui/textarea.js';
+import { Badge } from '@/components/heroui/badge.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/heroui/card.js';
+import { Field, FieldDescription, FieldLabel } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { Textarea } from '@/components/heroui/textarea.js';
 
 export type DraftComposeProps = Readonly<{
   draft: DraftRecord;

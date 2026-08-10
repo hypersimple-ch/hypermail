@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Badge } from '@/components/ui/badge.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card.js';
+import { Badge } from '@/components/heroui/badge.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { FilterGroup, PageHeader, StatePanel, type FilterOption } from '@/components/app/patterns.js';
 import { acknowledgementBlockReason, activityFilters, matchesActivityFilter, type ActivityFilter, type ActivityPage, type ActivityRecord } from './contracts.js';
 

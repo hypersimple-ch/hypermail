@@ -1,14 +1,14 @@
 import * as React from 'react';
 import { ArrowLeft, ExternalLink, Plus } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert.js';
-import { Badge } from '@/components/ui/badge.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.js';
-import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/ui/field.js';
-import { Input } from '@/components/ui/input.js';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select.js';
-import { Separator } from '@/components/ui/separator.js';
-import { Spinner } from '@/components/ui/spinner.js';
+import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { Badge } from '@/components/heroui/badge.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
+import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { NativeSelect, NativeSelectOption } from '@/components/heroui/native-select.js';
+import { Separator } from '@/components/heroui/separator.js';
+import { Spinner } from '@/components/heroui/spinner.js';
 import { PageHeader, StatePanel } from '@/components/app/patterns.js';
 
 export type MailboxProvider = 'microsoft' | 'gmail' | 'imap';

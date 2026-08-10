@@ -1,12 +1,12 @@
 import * as React from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { PageHeader } from '@/components/app/patterns.js';
-import { Alert, AlertDescription } from '@/components/ui/alert.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.js';
-import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/ui/field.js';
-import { Input } from '@/components/ui/input.js';
-import { Spinner } from '@/components/ui/spinner.js';
+import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
+import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { Spinner } from '@/components/heroui/spinner.js';
 
 export interface ChangePasswordInput {
   currentPassword: string;

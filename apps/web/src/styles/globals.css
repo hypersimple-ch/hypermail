@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@heroui/styles";
 @source "../**/*.{ts,tsx}";
 @source "../../test/**/*.{ts,tsx}";
 
@@ -15,13 +16,30 @@
   --secondary-foreground: oklch(0.24 0 0);
   --muted: oklch(0.955 0 0);
   --muted-foreground: oklch(0.46 0 0);
-  --accent: oklch(0.92 0 0);
-  --accent-foreground: oklch(0.22 0 0);
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
   --destructive: oklch(0.53 0.2 27);
   --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.87 0 0);
   --input: oklch(0.82 0 0);
   --ring: oklch(0.48 0 0);
+  --surface: var(--card);
+  --surface-foreground: var(--card-foreground);
+  --surface-secondary: var(--secondary);
+  --surface-secondary-foreground: var(--secondary-foreground);
+  --surface-tertiary: var(--muted);
+  --surface-tertiary-foreground: var(--foreground);
+  --default: var(--secondary);
+  --default-foreground: var(--secondary-foreground);
+  --field-background: var(--card);
+  --field-foreground: var(--foreground);
+  --field-placeholder: var(--muted-foreground);
+  --field-border: var(--input);
+  --focus: var(--ring);
+  --danger: var(--destructive);
+  --danger-foreground: var(--destructive-foreground);
+  --success: oklch(0.49 0.13 155);
+  --warning: oklch(0.56 0.12 75);
   --radius: 0.625rem;
 }
 

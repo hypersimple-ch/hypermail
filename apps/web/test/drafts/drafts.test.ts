@@ -123,7 +123,7 @@ describe('draft composition and isolated send boundary', () => {
     expect(screen.getByLabelText('To').getAttribute('data-slot')).toBe('input');
     expect(screen.getByLabelText('Message').getAttribute('data-slot')).toBe('textarea');
     expect(screen.getByRole('status').textContent).toContain('Version 3 · Agent-created draft');
-    expect(screen.getByText('editing').getAttribute('data-slot')).toBe('badge');
+    expect(screen.getByText('editing').getAttribute('data-slot')).toBe('chip');
     expect(screen.getByText('Sending requires your explicit approval.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     fireEvent.click(screen.getByRole('button', { name: 'Review and send' }));
