@@ -86,4 +86,12 @@ describe("Hypermail explicit-user onboarding", () => {
     expect(error).toEqual(expect.objectContaining({ name: McpTransportError.name, message: "MCP tool failed" }));
     expect(JSON.stringify(error)).not.toContain("provider secret detail");
   });
+
+  it("classifies an expired provider grant without exposing tool diagnostics", async () => {
+    const server = await initialized({ add_account: { isError: true, content: [{ type: "text", text: "invalid_grant token=provider-secret-value" }] } });
+    const error = await server.client.addAccount({ provider: "gmail" }).catch((caught: unknown) => caught);
+    expect(error).toEqual(expect.objectContaining({ name: McpTransportError.name, message: "Provider authentication failed", status: 401, retryable: false }));
+    expect(JSON.stringify(error)).not.toContain("invalid_grant");
+    expect(JSON.stringify(error)).not.toContain("provider-secret-value");
+  });
 });

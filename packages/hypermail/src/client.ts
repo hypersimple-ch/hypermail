@@ -3,6 +3,15 @@ import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, At
 
 const retryableRpcCodes = new Set([-32001, -32002, -32003]);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const toolFailure = (result: Record<string, unknown>): McpTransportError => {
+  const diagnostic = Array.isArray(result.content) ? result.content.flatMap((entry) => isRecord(entry) && typeof entry.text === "string" ? [entry.text] : []).join(" ") : "";
+  // Tool content can contain provider secrets. Use it only to select a bounded,
+  // stable classification and never include it in the thrown error.
+  if (/invalid_grant|invalid[_ -]?token|token (?:has )?expired|reauth|authentication/i.test(diagnostic)) return new McpTransportError("Provider authentication failed", 401, false, "http");
+  if (/rate.?limit|too many requests|\b429\b/i.test(diagnostic)) return new McpTransportError("Provider rate limited", 429, true, "http");
+  if (/timeout|temporar|unavailable|network|\b5\d\d\b/i.test(diagnostic)) return new McpTransportError("Provider unavailable", 503, true, "http");
+  return new McpTransportError("MCP tool failed");
+};
 const text = (value: unknown, field: string): string => { if (typeof value !== "string" || value.length === 0) throw new McpTransportError(`Malformed ${field}`); return value; };
 const optionalText = (value: unknown, field: string): string | undefined => value === undefined ? undefined : text(value, field);
 const bool = (value: unknown, field: string): boolean | undefined => value === undefined ? undefined : typeof value === "boolean" ? value : (() => { throw new McpTransportError(`Malformed ${field}`); })();
@@ -40,7 +49,7 @@ export class HypermailMcpHttpClient {
   async call<T extends Json = Json>(name: string, args: Record<string, Json>): Promise<T> {
     const result = await this.rpc("tools/call", { name, arguments: args });
     if (!isRecord(result) || (!("content" in result) && !("structuredContent" in result))) return result as T;
-    if (result.isError === true) throw new McpTransportError("MCP tool failed");
+    if (result.isError === true) throw toolFailure(result);
     if (!("structuredContent" in result)) throw new McpTransportError("Malformed MCP tool result");
     return result.structuredContent as T;
   }

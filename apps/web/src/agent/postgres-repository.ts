@@ -5,6 +5,13 @@ import type {
 } from './contracts.js';
 
 const text = (value: unknown): string => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
+const healthMessage = (row: SqlRow): string => {
+  const reason = text(row['reason_code']) || text(row['last_error_code']);
+  if (reason === 'provider_auth_failed') return 'Mailbox authentication expired. Reconnect this mailbox in More → Settings.';
+  if (reason === 'provider_rate_limited') return 'The mail provider is rate limiting requests. Hypermail will retry automatically.';
+  if (reason === 'provider_unavailable') return 'The mail provider is temporarily unavailable. Hypermail will retry automatically.';
+  return text(row['detail']) || reason || 'Account connection needs attention.';
+};
 const scoped = (column: string, parameter: number): string => `${column} = ANY($${String(parameter)}::uuid[])`;
 const accountVersion = (row: SqlRow): number => {
   const value = row['updated_at'];
@@ -67,7 +74,7 @@ export class PostgresAgentRepository implements AgentRepository {
     const alerts = alertRows.rows.flatMap((row) => {
       const accountId = text(row['account_id']);
       const items: AgentDashboard['alerts'][number][] = [];
-      if (row['health_state'] && row['health_state'] !== 'healthy' && row['health_state'] !== 'paused') items.push({ id: `health:${accountId}`, kind: 'account_health', accountId, message: text(row['detail']) || text(row['reason_code']) || 'Account connection needs attention.' });
+      if (row['health_state'] && row['health_state'] !== 'healthy' && row['health_state'] !== 'paused') items.push({ id: `health:${accountId}`, kind: 'account_health', accountId, message: healthMessage(row) });
       if (Number(row['consecutive_failures']) > 0) items.push({ id: `poll:${accountId}`, kind: 'poll_failure', accountId, message: `Polling is retrying${row['last_error_code'] ? ` (${text(row['last_error_code'])})` : ''}; previous results remain visible.` });
       if (row['autonomy_paused_at'] || row['health_state'] === 'paused') items.push({ id: `pause:${accountId}`, kind: 'safety_pause', accountId, message: 'Safety pause is active.' });
       return items;
