@@ -14,18 +14,18 @@ Use **Inbox-led calm utility**. Inbox is the familiar default; Activity is a sep
 - **Shape:** 8px controls, 12px cards, 999px filters. Avoid large rounded containers.
 - **Spacing:** 4px base; row padding 12px mobile / 13px desktop; 8px control gaps; 14–18px screen gutters.
 - **Motion:** no essential animation. `prefers-reduced-motion: reduce` removes transitions and animation.
-- **Controls:** project-owned shadcn variants retain a 44px minimum interactive height, including compact and icon controls; feature code must not shrink that target.
+- **Controls:** project-owned HeroUI adapters retain a 44px minimum interactive height, including compact and icon controls; feature code must not shrink that target.
 
 ## Implementation convention
 
-Hypermail uses **Tailwind CSS v4** and repository-owned **shadcn/ui-style React components**. This is the only production web styling convention.
+Hypermail uses **Tailwind CSS v4** and **HeroUI v3 React components** behind thin repository-owned adapters. This is the only production web styling convention.
 
 - Global tokens and base accessibility rules live in `apps/web/src/styles/globals.css`. Tailwind v4 is configured CSS-first; do not add `tailwind.config.*`, PostCSS, CSS Modules, or a second styling system.
-- Reusable controls live in `apps/web/src/components/ui/`; reusable application patterns live in `apps/web/src/components/app/`. Feature components use TSX and Tailwind utilities for their unique layout.
-- Use `cn()` from `apps/web/src/lib/utils.ts` and CVA variants for reusable states. Never repair contrast or state with selector specificity, `!important`, inline color styles, or broad element selectors.
+- HeroUI-backed controls live in `apps/web/src/components/heroui/`; reusable application patterns live in `apps/web/src/components/app/`. Feature components use TSX and Tailwind utilities for their unique layout.
+- Use `cn()` from `apps/web/src/lib/utils.ts` when application-specific Tailwind classes must be merged with HeroUI styling. Never repair contrast or state with selector specificity, `!important`, inline color styles, or broad element selectors.
 - Use the owned Button, Input, Textarea, NativeSelect, Card, Badge, Alert, Field, Separator, and Spinner primitives instead of styling raw controls in feature code. Compose navigation, filters, page headers, and empty/loading/error presentation from the app patterns.
 - Use Lucide icons with an accessible text label or `aria-label`; decorative icons are `aria-hidden`. Do not use Unicode glyphs as interface icons.
-- The checked-in `components.json` fixes the shadcn convention to New York, neutral, CSS variables, React Server Components off, TSX on, and Lucide. Registry output is starting source, not an opaque runtime dependency.
+- `globals.css` imports `@heroui/styles` immediately after Tailwind, then applies Hypermail’s light neutral tokens and accessibility rules. HeroUI v3 requires no global provider; add one only for an explicitly required optional integration such as internationalization.
 - The web build compiles `globals.css` with the Tailwind CLI to the public `/app.css` asset. Static HTML and service-worker caching depend on that path.
 
 See [`components.md`](components.md) for the component inventory and add-component workflow.

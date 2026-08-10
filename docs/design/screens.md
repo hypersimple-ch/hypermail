@@ -53,7 +53,7 @@
 - **More** is a hub that links to Settings and Account. Mobile navigation keeps its four tabs; Settings and Account are pushed full-page screens and remain usable without horizontal scrolling at 360px. On desktop they use the full area after the rail, not the Inbox list column.
 - **Settings** lists projected mailboxes and offers explicit owner-initiated Gmail, Outlook, and IMAP onboarding. Gmail shows the OAuth handoff and a written pending, ready, expired, or error state. Outlook shows the device code and an explicit status-check action; it does not imply background completion. IMAP uses a labeled credential form and reports synchronous completion or failure.
 - **Account** shows the owner email as read-only, provides a current-password-verified password rotation form, and exposes sign out. Do not offer owner-email editing, account deletion, mailbox removal, or unimplemented preferences.
-- Forms use calm repository-owned components and Tailwind v4 utilities. Every interactive control has a 44px minimum target, visible focus, associated labels/errors, keyboard operation, and written status in addition to color. OAuth/device-code handoffs, pending states, and errors must give a clear next step and expose changing status through an appropriate live region.
+- Forms use the repository’s calm HeroUI-backed components and Tailwind v4 utilities. Every interactive control has a 44px minimum target, visible focus, associated labels/errors, keyboard operation, and written status in addition to color. OAuth/device-code handoffs, pending states, and errors must give a clear next step and expose changing status through an appropriate live region.
 
 ## Desktop: shell (>=700px)
 

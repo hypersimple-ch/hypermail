@@ -4,14 +4,14 @@ import { AgentPanel, type AgentUiHandlers } from '../agent/ui.js';
 import { Account as AccountScreen, type ChangePasswordInput, type ChangePasswordResult } from './account.js';
 import { Settings, type CompleteMailboxConnectionInput, type MailboxConnectionResult, type PendingMailboxConnection, type SettingsMailbox, type StartMailboxConnectionInput } from './settings.js';
 import type { AgentDashboard } from '../agent/contracts.js';
-import { Alert, AlertDescription } from '@/components/ui/alert.js';
-import { Badge } from '@/components/ui/badge.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent } from '@/components/ui/card.js';
-import { Field, FieldLabel } from '@/components/ui/field.js';
-import { Input } from '@/components/ui/input.js';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select.js';
-import { Textarea } from '@/components/ui/textarea.js';
+import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { Badge } from '@/components/heroui/badge.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent } from '@/components/heroui/card.js';
+import { Field, FieldLabel } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { NativeSelect, NativeSelectOption } from '@/components/heroui/native-select.js';
+import { Textarea } from '@/components/heroui/textarea.js';
 import { FilterGroup, NavigationItem, PageHeader, StatePanel } from '@/components/app/patterns.js';
 import { cn } from '@/lib/utils.js';
 
@@ -40,7 +40,7 @@ function ErrorState({ children, action }: { children: React.ReactNode; action?: 
 }
 
 export function MessageRow({ message, selected, onOpen }: { message: Message; selected?: boolean; onOpen?: () => void }) {
-  return <article className={cn('min-w-0 border-b border-border', selected && 'border-l-4 border-l-primary bg-accent/50', message.unread && 'font-semibold')}>
+  return <article className={cn('min-w-0 border-b border-border', selected && 'border-l-4 border-l-primary bg-secondary/50', message.unread && 'font-semibold')}>
     <Button variant="ghost" className="grid h-auto min-h-[79px] w-full min-w-0 grid-cols-[2rem_minmax(0,1fr)_2.5rem] items-start gap-2 rounded-none px-3 py-3 text-left font-normal" type="button" onClick={onOpen} aria-label={`Open message from ${message.sender}: ${message.subject}`}>
       <AccountMark message={message} />
       <span className="min-w-0"><strong className="block truncate">{message.sender}</strong><span className="block truncate font-medium">{message.subject}</span><small className="mt-0.5 block truncate text-sm font-normal text-muted-foreground">{message.preview}</small></span>

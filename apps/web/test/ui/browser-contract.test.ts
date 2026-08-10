@@ -9,7 +9,7 @@ import { mockShellData } from '../../src/ui/fixtures.js';
 const render = (node: React.ReactElement) => renderToStaticMarkup(node);
 const globals = readFileSync(resolve(import.meta.dirname, '../../src/styles/globals.css'), 'utf8');
 const shellSource = readFileSync(resolve(import.meta.dirname, '../../src/ui/index.tsx'), 'utf8');
-const buttonSource = readFileSync(resolve(import.meta.dirname, '../../src/components/ui/button.tsx'), 'utf8');
+const buttonSource = readFileSync(resolve(import.meta.dirname, '../../src/components/heroui/button.tsx'), 'utf8');
 const browser = readFileSync(resolve(import.meta.dirname, '../../src/browser.tsx'), 'utf8');
 
 describe('browser runtime contracts', () => {
@@ -42,7 +42,7 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain('name="confirmPassword"');
     expect(browser).toContain('Passwords do not match.');
     expect(browser).toContain('<FieldSet disabled={pending}>');
-    expect(browser).toContain("@/components/ui/field.js");
+    expect(browser).toContain("@/components/heroui/field.js");
   });
 
   it('wires Settings mailbox onboarding and Account security to authenticated APIs', () => {

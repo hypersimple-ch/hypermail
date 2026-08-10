@@ -8,6 +8,8 @@
     "test": "cd ../.. && vitest run"
   },
   "dependencies": {
+    "@heroui/react": "3.2.4",
+    "@heroui/styles": "3.2.4",
     "@hypermail/auth": "workspace:*",
     "@hypermail/contracts": "workspace:*",
     "@hypermail/db": "workspace:*",
@@ -15,8 +17,6 @@
     "@hypermail/notifications": "workspace:*",
     "@hypermail/observability": "workspace:*",
     "@hypermail/send": "workspace:*",
-    "@radix-ui/react-slot": "1.2.4",
-    "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "0.468.0",
     "postgres": "3.4.9",

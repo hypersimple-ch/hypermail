@@ -2,27 +2,26 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FilterGroup, NavigationItem, PageHeader, StatePanel } from '../../src/components/app/patterns.js';
-import { Alert } from '../../src/components/ui/alert.js';
-import { Badge } from '../../src/components/ui/badge.js';
-import { Button, buttonVariants } from '../../src/components/ui/button.js';
-import { Card } from '../../src/components/ui/card.js';
-import { Field, FieldDescription, FieldError, FieldLabel } from '../../src/components/ui/field.js';
-import { Input } from '../../src/components/ui/input.js';
-import { NativeSelect } from '../../src/components/ui/native-select.js';
-import { Separator } from '../../src/components/ui/separator.js';
-import { Spinner } from '../../src/components/ui/spinner.js';
-import { Textarea } from '../../src/components/ui/textarea.js';
+import { Alert } from '../../src/components/heroui/alert.js';
+import { Badge } from '../../src/components/heroui/badge.js';
+import { Button, buttonVariants } from '../../src/components/heroui/button.js';
+import { Card } from '../../src/components/heroui/card.js';
+import { Field, FieldDescription, FieldError, FieldLabel } from '../../src/components/heroui/field.js';
+import { Input } from '../../src/components/heroui/input.js';
+import { NativeSelect } from '../../src/components/heroui/native-select.js';
+import { Separator } from '../../src/components/heroui/separator.js';
+import { Spinner } from '../../src/components/heroui/spinner.js';
+import { Textarea } from '../../src/components/heroui/textarea.js';
 import { cn } from '../../src/lib/utils.js';
 
 afterEach(cleanup);
 
-describe('shadcn-style component foundation', () => {
+describe('HeroUI component foundation', () => {
   it('keeps readable button variants and a 44px minimum target', () => {
-    expect(buttonVariants()).toContain('bg-primary');
-    expect(buttonVariants()).toContain('text-primary-foreground');
+    expect(buttonVariants()).toContain('button--primary');
     expect(buttonVariants()).toContain('min-h-11');
-    expect(buttonVariants({ variant: 'destructive' })).toContain('text-destructive-foreground');
-    expect(buttonVariants({ variant: 'outline' })).toContain('text-foreground');
+    expect(buttonVariants({ variant: 'destructive' })).toContain('button--danger');
+    expect(buttonVariants({ variant: 'outline' })).toContain('button--outline');
   });
 
   it('merges conflicting Tailwind utilities deterministically', () => {
@@ -42,9 +41,9 @@ describe('shadcn-style component foundation', () => {
     render(<><Button disabled>Compose</Button><Badge>New</Badge><Alert>Blocked</Alert><Card>Message</Card><Separator decorative={false} /><Spinner /></>);
     expect(screen.getByRole('button', { name: 'Compose' }).disabled).toBe(true);
     expect(screen.getByRole('button', { name: 'Compose' }).getAttribute('data-variant')).toBe('default');
-    expect(screen.getByText('New').getAttribute('data-slot')).toBe('badge');
-    expect(screen.getByRole('alert').getAttribute('data-slot')).toBe('alert');
-    expect(screen.getByRole('separator').getAttribute('aria-orientation')).toBe('horizontal');
+    expect(screen.getByText('New').getAttribute('data-slot')).toBe('chip');
+    expect(screen.getByRole('alert').getAttribute('data-slot')).toBe('alert-root');
+    expect(screen.getByRole('separator').getAttribute('data-slot')).toBe('separator');
   });
 });
 

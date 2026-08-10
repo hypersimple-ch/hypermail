@@ -1,9 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
 import * as React from 'react';
 import { cn } from '@/lib/utils.js';
-import { Button } from '@/components/ui/button.js';
-import { Card, CardContent } from '@/components/ui/card.js';
-import { Spinner } from '@/components/ui/spinner.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent } from '@/components/heroui/card.js';
+import { Spinner } from '@/components/heroui/spinner.js';
 
 type NavigationItemProps = Omit<React.ComponentProps<typeof Button>, 'variant'> & {
   active?: boolean;
@@ -11,7 +11,7 @@ type NavigationItemProps = Omit<React.ComponentProps<typeof Button>, 'variant'> 
 };
 
 function NavigationItem({ active = false, icon: Icon, className, children, ...props }: NavigationItemProps): React.JSX.Element {
-  return <Button variant="ghost" aria-current={active ? 'page' : undefined} data-slot="navigation-item" className={cn('w-full justify-start text-muted-foreground aria-[current=page]:bg-accent aria-[current=page]:text-accent-foreground', className)} {...props}>
+  return <Button variant="ghost" aria-current={active ? 'page' : undefined} data-slot="navigation-item" className={cn('w-full justify-start text-muted-foreground aria-[current=page]:bg-secondary aria-[current=page]:text-secondary-foreground', className)} {...props}>
     {Icon ? <Icon aria-hidden="true" /> : null}{children}
   </Button>;
 }
