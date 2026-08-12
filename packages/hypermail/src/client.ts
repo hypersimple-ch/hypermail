@@ -1,5 +1,6 @@
+import { marked } from "marked";
 import { AttachmentStream } from "./attachments.js";
-import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, Provider, RetryClassification, SearchOptions } from "./types.js";
+import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, DraftCreateInput, DraftEditInput, DraftMutationResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, PolicyMutationResult, Provider, RetryClassification, SearchOptions } from "./types.js";
 
 const retryableRpcCodes = new Set([-32001, -32002, -32003]);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -147,21 +148,132 @@ function addAccountArguments(input: AddAccountInput): Record<string, Json> {
 }
 function completeAddAccountArguments(input: CompleteAddAccountInput): Record<string, Json> { const request = record(input, "complete_add_account input"); return { provider: provider(request.provider, "complete_add_account.provider"), handle: text(request.handle, "complete_add_account.handle"), ...(optionalText(request.authorizationResponse, "complete_add_account.authorizationResponse") !== undefined ? { authorizationResponse: optionalText(request.authorizationResponse, "complete_add_account.authorizationResponse") } : {}), ...(optionalText(request.code, "complete_add_account.code") !== undefined ? { code: optionalText(request.code, "complete_add_account.code") } : {}), ...(optionalText(request.state, "complete_add_account.state") !== undefined ? { state: optionalText(request.state, "complete_add_account.state") } : {}) }; }
 function message(value: unknown, expectedAccount?: string, includeBody = false): Message {
-  const v = record(value, "message"); const account = text(v.account, "message.account"); if (expectedAccount && account !== expectedAccount) throw new McpTransportError("Account isolation violation");
+  const v = record(value, "message"); const projectedAccount = optionalText(v.account, "message.account"); const account = projectedAccount ?? expectedAccount;
+  if (!account) throw new McpTransportError("Malformed message.account"); if (expectedAccount && account !== expectedAccount) throw new McpTransportError("Account isolation violation");
   const mapAddresses = (raw: unknown, field: string) => raw === undefined ? undefined : Array.isArray(raw) ? raw.map((entry) => address(entry, field)) : (() => { throw new McpTransportError(`Malformed ${field}`); })();
   const attachments = v.attachments === undefined ? undefined : Array.isArray(v.attachments) ? v.attachments.map(attachment) : (() => { throw new McpTransportError("Malformed message.attachments"); })();
-  return { id: text(v.id, "message.id"), account, ...(optionalText(v.subject, "message.subject") !== undefined ? { subject: optionalText(v.subject, "message.subject") } : {}), ...(v.from !== undefined ? { from: address(v.from, "message.from") } : {}), ...(mapAddresses(v.to, "message.to") ? { to: mapAddresses(v.to, "message.to") } : {}), ...(mapAddresses(v.cc, "message.cc") ? { cc: mapAddresses(v.cc, "message.cc") } : {}), ...(optionalText(v.receivedAt, "message.receivedAt") !== undefined ? { receivedAt: optionalText(v.receivedAt, "message.receivedAt") } : {}), ...(bool(v.isRead, "message.isRead") !== undefined ? { isRead: bool(v.isRead, "message.isRead") } : {}), ...(includeBody && optionalText(v.body, "message.body") !== undefined ? { body: optionalText(v.body, "message.body") } : {}), ...(attachments ? { attachments } : {}) };
+  const bodyFormat = optionalText(v.bodyFormat, "message.bodyFormat");
+  if (bodyFormat !== undefined && bodyFormat !== "markdown" && bodyFormat !== "html" && bodyFormat !== "text") throw new McpTransportError("Malformed message.bodyFormat");
+  return { id: text(v.id, "message.id"), account, ...(optionalText(v.subject, "message.subject") !== undefined ? { subject: optionalText(v.subject, "message.subject") } : {}), ...(v.from !== undefined ? { from: address(v.from, "message.from") } : {}), ...(mapAddresses(v.to, "message.to") ? { to: mapAddresses(v.to, "message.to") } : {}), ...(mapAddresses(v.cc, "message.cc") ? { cc: mapAddresses(v.cc, "message.cc") } : {}), ...(optionalText(v.receivedAt, "message.receivedAt") !== undefined ? { receivedAt: optionalText(v.receivedAt, "message.receivedAt") } : {}), ...(bool(v.isRead, "message.isRead") !== undefined ? { isRead: bool(v.isRead, "message.isRead") } : {}), ...(optionalText(v.folder, "message.folder") !== undefined ? { folder: optionalText(v.folder, "message.folder") } : {}), ...(includeBody && optionalText(v.body, "message.body") !== undefined ? { body: optionalText(v.body, "message.body") } : {}), ...(includeBody && bodyFormat !== undefined ? { bodyFormat } : {}), ...(attachments ? { attachments } : {}) };
+}
+
+/** Mirrors the pinned runtime's Markdown draft composition for safe exact-text selection. */
+export const renderDraftMarkdown = (body: string): string => marked.parse(body, { async: false });
+
+const draftMutationResult = (value: unknown, flag: "draft" | "edited"): DraftMutationResult => {
+  const result = record(value, `${flag} response`);
+  if (result[flag] !== true) throw new McpTransportError(`Malformed ${flag} response`);
+  return { id: text(result.id, `${flag}.id`), ...(optionalText(result.draftHtml, `${flag}.draftHtml`) !== undefined ? { draftHtml: optionalText(result.draftHtml, `${flag}.draftHtml`) } : {}) };
+};
+const draftAddresses = (items: DraftCreateInput["to"] | undefined): Json[] | undefined => items?.map((item) => ({ address: text(item.address, "recipient.address"), ...(optionalText(item.name, "recipient.name") !== undefined ? { name: optionalText(item.name, "recipient.name") } : {}) }));
+const policyMutationResult = (value: unknown, flag: "archived" | "trashed" | "moved" | "marked", expected?: Readonly<Record<string, unknown>>): PolicyMutationResult => {
+  const result = record(value, `${flag} response`); if (result[flag] !== true) throw new McpTransportError(`Malformed ${flag} response`);
+  for (const [field, wanted] of Object.entries(expected ?? {})) if (result[field] !== wanted) throw new McpTransportError(`Malformed ${flag}.${field}`);
+  return { id: text(result.id, `${flag}.id`) };
+};
+
+/** Restricted write client for autonomous policy. It intentionally exposes drafts only, never send, forward, account admin, or folder admin. */
+export class HypermailPolicyClient {
+  constructor(private readonly transport: Pick<HypermailMcpHttpClient, "call">) {}
+  async archive(account: string, id: string): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call("archive_email", { account, id }), "archived"); }
+  async trash(account: string, id: string): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call("trash_email", { account, id }), "trashed"); }
+  async move(account: string, id: string, destination: string): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call("move_email", { account, id, destination }), "moved", { destination }); }
+  async mark(account: string, id: string, isRead: boolean): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call(isRead ? "mark_read" : "mark_unread", { account, id }), "marked", { isRead }); }
+  async containsMessageInFolder(account: string, id: string, folder: string, maximumPages = 5): Promise<boolean> {
+    for (let page = 0; page < maximumPages; page += 1) {
+      const result = record(await this.transport.call("list_emails", { account, folder, skip: page * 100, limit: 100 }), "list_emails");
+      if (!Array.isArray(result.items) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response");
+      if (result.items.some((raw) => record(raw, "message").id === id)) return true; if (!result.hasMore) return false;
+    }
+    return false;
+  }
+  async createDraft(input: DraftCreateInput): Promise<DraftMutationResult> {
+    return draftMutationResult(await this.transport.call("draft_email", {
+      account: text(input.account, "draft.account"), to: draftAddresses(input.to) ?? [], ...(input.cc ? { cc: draftAddresses(input.cc) ?? [] } : {}), ...(input.bcc ? { bcc: draftAddresses(input.bcc) ?? [] } : {}),
+      subject: input.subject, body: input.body, format: "markdown", include_signature: false, inReplyTo: input.inReplyTo ?? false,
+    }), "draft");
+  }
+  async editDraft(input: DraftEditInput): Promise<DraftMutationResult> {
+    if ((input.oldText === undefined) !== (input.newText === undefined) || input.oldText === "") throw new RangeError("Draft body edits require one non-empty oldText and its newText replacement");
+    const bodyEdit: Record<string, Json> = input.oldText !== undefined && input.newText !== undefined ? { old_text: input.oldText, new_text: input.newText, format: "markdown", include_signature: false } : {};
+    return draftMutationResult(await this.transport.call("edit_draft", {
+      account: text(input.account, "draft.account"), id: text(input.id, "draft.id"), ...(input.to ? { to: draftAddresses(input.to) ?? [] } : {}), ...(input.cc ? { cc: draftAddresses(input.cc) ?? [] } : {}), ...(input.bcc ? { bcc: draftAddresses(input.bcc) ?? [] } : {}),
+      ...(input.subject !== undefined ? { subject: input.subject } : {}), ...bodyEdit,
+    }), "edited");
+  }
+  async readDraft(account: string, id: string, format: "markdown" | "html" | "text" = "html"): Promise<Message> { return message(await this.transport.call("read_email", { account, id, format }), account, true); }
+}
+
+const policyToolContracts = {
+  list_emails: { input: ["account", "folder", "limit", "skip"], required: ["account"], output: ["items", "hasMore"] },
+  read_email: { input: ["account", "id", "format"], required: ["account", "id"] },
+  archive_email: { input: ["account", "id"], required: ["account", "id"], output: ["archived", "id"], flag: "archived" },
+  trash_email: { input: ["account", "id"], required: ["account", "id"], output: ["trashed", "id"], flag: "trashed" },
+  move_email: { input: ["account", "id", "destination"], required: ["account", "id", "destination"], output: ["moved", "id", "destination"], flag: "moved" },
+  mark_read: { input: ["account", "id"], required: ["account", "id"], output: ["marked", "id", "isRead"], flag: "marked" },
+  mark_unread: { input: ["account", "id"], required: ["account", "id"], output: ["marked", "id", "isRead"], flag: "marked" },
+  draft_email: { input: ["account", "to", "subject", "body", "format", "include_signature", "inReplyTo"], required: ["account", "to", "subject", "body", "format", "include_signature"], output: ["draft", "id"], flag: "draft" },
+  edit_draft: { input: ["account", "id", "old_text", "new_text"], required: ["account", "id"], output: ["edited", "id"], flag: "edited" },
+} as const;
+const policyInputTypes: Record<string, Record<string, "string" | "number" | "boolean" | "array">> = {
+  list_emails: { account: "string", folder: "string", limit: "number", skip: "number" }, read_email: { account: "string", id: "string", format: "string" },
+  archive_email: { account: "string", id: "string" }, trash_email: { account: "string", id: "string" }, move_email: { account: "string", id: "string", destination: "string" },
+  mark_read: { account: "string", id: "string" }, mark_unread: { account: "string", id: "string" },
+  draft_email: { account: "string", to: "array", subject: "string", body: "string", format: "string", include_signature: "boolean" },
+  edit_draft: { account: "string", id: "string", old_text: "string", new_text: "string" },
+};
+const policyOutputTypes: Record<string, Record<string, "string" | "boolean" | "array">> = {
+  list_emails: { items: "array", hasMore: "boolean" }, archive_email: { id: "string" }, trash_email: { id: "string" }, move_email: { id: "string", destination: "string" },
+  mark_read: { id: "string", isRead: "boolean" }, mark_unread: { id: "string", isRead: "boolean" }, draft_email: { id: "string" }, edit_draft: { id: "string" },
+};
+const schemaVariants = (value: unknown): Record<string, unknown>[] => {
+  if (!isRecord(value)) return []; const nested = [value.anyOf, value.oneOf].flatMap((item) => Array.isArray(item) ? item.filter(isRecord) : []); return [value, ...nested];
+};
+const hasSchemaType = (value: unknown, type: string): boolean => schemaVariants(value).some((schema) => schema.type === type || (type === "number" && schema.type === "integer") || (type === "boolean" && typeof schema.const === "boolean"));
+const hasSchemaEnum = (value: unknown, values: readonly unknown[]): boolean => schemaVariants(value).some((schema) => {
+  const enumeration: unknown = schema.enum; if (!Array.isArray(enumeration)) return false; const items = enumeration as unknown[];
+  return values.every((wanted) => items.some((item) => Object.is(item, wanted)));
+});
+
+const stringArray = (value: unknown, field: string): string[] => {
+  if (!Array.isArray(value)) throw new McpTransportError(`Malformed ${field}`); const result: string[] = [];
+  for (const item of value as unknown[]) { if (typeof item !== "string") throw new McpTransportError(`Malformed ${field}`); result.push(item); }
+  return result;
+};
+function verifyPolicyTools(value: unknown): void {
+  const result = record(value, "tools/list");
+  if (!Array.isArray(result.tools)) throw new McpTransportError("Malformed tools/list.tools");
+  const tools = new Map(result.tools.map((raw) => { const tool = record(raw, "tool"); return [text(tool.name, "tool.name"), tool] as const; }));
+  for (const [name, contract] of Object.entries(policyToolContracts)) {
+    const tool = tools.get(name); if (!tool) throw new McpTransportError(`Missing policy tool ${name}`);
+    const input = record(tool.inputSchema, `${name}.inputSchema`); const properties = record(input.properties, `${name}.inputSchema.properties`); const required = new Set(stringArray(input.required, `${name}.inputSchema.required`));
+    if (contract.input.some((field) => !(field in properties)) || contract.required.some((field) => !required.has(field))) throw new McpTransportError(`Malformed ${name} input schema`);
+    if (Object.entries(policyInputTypes[name] ?? {}).some(([field, type]) => !hasSchemaType(properties[field], type))) throw new McpTransportError(`Incompatible ${name} input schema`);
+    if (name === "draft_email" && (!hasSchemaType(properties["inReplyTo"], "string") || !hasSchemaType(properties["inReplyTo"], "boolean") || !hasSchemaEnum(properties["format"], ["html", "markdown"]))) throw new McpTransportError("Incompatible draft_email input schema");
+    if (name === "read_email" && !hasSchemaEnum(properties["format"], ["html", "markdown", "text"])) throw new McpTransportError("Incompatible read_email input schema");
+    if ("output" in contract) {
+      const output = record(tool.outputSchema, `${name}.outputSchema`); const outputProperties = record(output.properties, `${name}.outputSchema.properties`); const outputRequired = new Set(stringArray(output.required, `${name}.outputSchema.required`));
+      if (contract.output.some((field) => !(field in outputProperties) || !outputRequired.has(field))) throw new McpTransportError(`Malformed ${name} output schema`);
+      if (Object.entries(policyOutputTypes[name] ?? {}).some(([field, type]) => !hasSchemaType(outputProperties[field], type))) throw new McpTransportError(`Incompatible ${name} output schema`);
+      if ("flag" in contract) { const flag = record(outputProperties[contract.flag], `${name}.outputSchema.${contract.flag}`); if (flag.const !== true && (!Array.isArray(flag.enum) || !flag.enum.includes(true))) throw new McpTransportError(`Malformed ${name} success flag`); }
+    }
+  }
 }
 
 export class HypermailReadClient {
   readonly transport: HypermailMcpHttpClient;
-  #accounts?: { value: Account[]; expires: number }; #folders = new Map<string, { value: Folder[]; expires: number }>();
+  #accounts?: { value: Account[]; expires: number }; #folders = new Map<string, { value: Folder[]; expires: number }>(); #policyContract?: Promise<void>;
   #accountTtl: number; #folderTtl: number;
   constructor(private readonly options: HypermailReadClientOptions) {
     this.transport = new HypermailMcpHttpClient(options.endpoint, options.fetch, options.headers, options.maxRetries ?? 0);
     this.#accountTtl = options.accountCacheTtlMs ?? 60_000; this.#folderTtl = options.folderCacheTtlMs ?? 60_000;
   }
   async initialize(): Promise<Json> { return this.transport.initialize(this.options.protocolVersion); }
+  /** Validates the pinned runtime's restricted mutation surface without performing provider I/O. */
+  verifyPolicyContract(): Promise<void> {
+    if (!this.#policyContract) this.#policyContract = this.transport.listTools().then(verifyPolicyTools).catch((error: unknown) => { this.#policyContract = undefined; throw error; });
+    return this.#policyContract;
+  }
   /** Starts an explicit user-controlled account onboarding flow; callers initialize this client first, as with read methods. */
   async addAccount(input: AddAccountInput): Promise<AddAccountResult> { const result = addAccountResult(await this.transport.call("add_account", addAccountArguments(input)), provider(input.provider, "add_account.provider")); if (result.status === "ready") this.#accounts = undefined; return result; }
   /** Polls or finalizes an explicit user-controlled account onboarding flow. Server error text is never surfaced. */
@@ -182,8 +294,8 @@ export class HypermailReadClient {
   }
   async folders(account: string, parentFolderId?: string): Promise<Folder[]> {
     const key = `${account}\u0000${parentFolderId ?? ""}`, cached = this.#folders.get(key); if (cached && cached.expires > Date.now()) return cached.value;
-    const result = record(await this.transport.call("list_folders", { account, ...(parentFolderId ? { parentFolderId } : {}) }), "list_folders"); if (!Array.isArray(result.folders)) throw new McpTransportError("Malformed list_folders.folders");
-    const folders = result.folders.map((raw) => { const f = record(raw, "folder"); return { id: text(f.id, "folder.id"), displayName: text(f.displayName, "folder.displayName"), ...(optionalText(f.parentFolderId, "folder.parentFolderId") !== undefined ? { parentFolderId: optionalText(f.parentFolderId, "folder.parentFolderId") } : {}), ...(optionalText(f.wellKnownName, "folder.wellKnownName") !== undefined ? { wellKnownName: optionalText(f.wellKnownName, "folder.wellKnownName") } : {}) }; });
+    const result = record(await this.transport.call("list_folders", { account, ...(parentFolderId ? { parentFolderId } : {}) }), "list_folders"); if (!Array.isArray(result.items)) throw new McpTransportError("Malformed list_folders.items");
+    const folders = result.items.map((raw) => { const f = record(raw, "folder"); return { id: text(f.id, "folder.id"), displayName: text(f.displayName, "folder.displayName"), ...(optionalText(f.parentFolderId, "folder.parentFolderId") !== undefined ? { parentFolderId: optionalText(f.parentFolderId, "folder.parentFolderId") } : {}), ...(optionalText(f.wellKnownName, "folder.wellKnownName") !== undefined ? { wellKnownName: optionalText(f.wellKnownName, "folder.wellKnownName") } : {}) }; });
     this.#folders.set(key, { value: folders, expires: Date.now() + this.#folderTtl }); return folders;
   }
   async inbox(input: { account?: string; cursor?: string; limit?: number } = {}): Promise<InboxPage> {
@@ -198,7 +310,7 @@ export class HypermailReadClient {
   async readMessage(account: string, id: string, format: "markdown" | "html" | "text" = "markdown"): Promise<Message> { return message(await this.transport.call("read_email", { account, id, format }), account, true); }
   async search(options: SearchOptions): Promise<Message[]> {
     if (!options.query && !options.from && !options.to && !options.cc) throw new RangeError("search requires at least one criterion");
-    const result = record(await this.transport.call("search_emails", { ...options, limit: positive(options.limit, "limit") }), "search_emails"); if (!Array.isArray(result.emails)) throw new McpTransportError("Malformed search_emails.emails"); return result.emails.map((raw) => message(raw));
+    const result = record(await this.transport.call("search_emails", { ...options, limit: positive(options.limit, "limit") }), "search_emails"); if (!Array.isArray(result.items)) throw new McpTransportError("Malformed search_emails.items"); return result.items.map((raw) => message(raw));
   }
   /** Establishes the provider's Inbox checkpoint and deliberately never returns mail content. */
   async establishBaseline(account?: string): Promise<void> { await this.transport.call("get_new_emails", account ? { account, limit: 0 } : { limit: 0 }); }
@@ -206,7 +318,7 @@ export class HypermailReadClient {
   async openAttachment(account: string, messageId: string, attachmentId: string, options: AttachmentStreamOptions): Promise<AttachmentStream> {
     const result = record(await this.transport.call("read_attachment", { account, messageId, attachmentId }), "read_attachment"); const metadata = attachment({ ...result, id: attachmentId }); const path = text(result.path, "read_attachment.path"); return AttachmentStream.open(metadata, path, options);
   }
-  private async listEmails(account: string, skip: number, limit: number): Promise<{ messages: Message[]; hasMore: boolean }> { const result = record(await this.transport.call("list_emails", { account, folder: "inbox", skip, limit }), "list_emails"); if (!Array.isArray(result.emails) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response"); return { messages: result.emails.map((raw) => message(raw, account)), hasMore: result.hasMore }; }
+  private async listEmails(account: string, skip: number, limit: number): Promise<{ messages: Message[]; hasMore: boolean }> { const result = record(await this.transport.call("list_emails", { account, folder: "inbox", skip, limit }), "list_emails"); if (!Array.isArray(result.items) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response"); return { messages: result.items.map((raw) => message(raw, account)), hasMore: result.hasMore }; }
 }
 function encodeCursor(cursor: Cursor): string { return Buffer.from(JSON.stringify(cursor)).toString("base64url"); }
 function decodeCursor(value: string | undefined, scope: Cursor["scope"], account?: string): Cursor { if (!value) return { scope, ...(account ? { account } : {}), offsets: {} }; try { const raw = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown; const cursor = record(raw, "cursor"); if (cursor.scope !== scope || cursor.account !== account || !isRecord(cursor.offsets)) throw new Error(); const offsets = Object.fromEntries(Object.entries(cursor.offsets).map(([key, offset]) => [key, number(offset, "cursor offset")])); return { scope, ...(account ? { account } : {}), offsets }; } catch { throw new RangeError("Invalid Inbox cursor"); } }

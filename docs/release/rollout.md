@@ -10,7 +10,7 @@ No production rollout is authorized. Runtime composition is proven in disposable
 All boxes require immutable evidence from the exact proposed image digests and production-shaped configuration.
 
 - [x] Web runtime image builds and passes liveness, environment, graceful-shutdown, and localhost PWA-shell checks; full Android/authenticated-product acceptance remains required.
-- [x] Worker runtime image builds; `dist/main.js` smoke and migrated disposable-PostgreSQL lifecycle, pg-boss consumer/replay/isolation, pause/verification, health, and shutdown checks pass. Readiness remains correctly `not_ready` until the Hypermail draft create/edit provider-response contract is verified.
+- [x] Worker runtime image builds; `dist/main.js` smoke and migrated disposable-PostgreSQL lifecycle, pg-boss consumer/replay/isolation, pause/verification, health, and shutdown checks pass. Runtime readiness validates the pinned Hypermail restricted mutation schemas; live provider mutation acceptance remains required.
 - [ ] Concrete Hypermail mutation transport implements only the policy allowlist and verifies provider outcomes.
 - [ ] Private approved-send service is deployed, authorized, network-private, and durably deduplicates the approval key.
 - [ ] Approved Hypermail v0.7.26 digest runs as UID/GID 10001, persists only its state volume, passes health, and writes attachment files through the shared mode-0700 `TMPDIR`.

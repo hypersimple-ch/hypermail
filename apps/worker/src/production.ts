@@ -260,8 +260,8 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
       // Provider construction is the readiness boundary; probes never send email content or requests.
       model: () => Promise.resolve(true),
       notifications: () => Promise.resolve(true),
-      // Hypermail's durable draft response contract is still unverified; keep release readiness closed.
-      policy: () => Promise.resolve(false),
+      // Validate the pinned runtime's advertised restricted mutation schemas without provider mutation I/O.
+      policy: async () => { await ensureHypermail(); await client.verifyPolicyContract(); return true; },
     },
   };
   return new WorkerRuntime(environment, dependencies);

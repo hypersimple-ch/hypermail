@@ -16,12 +16,12 @@ describe('production composition', () => {
     const calls: string[] = [];
     const database: ManagedSqlClient = { query: () => Promise.resolve({ rows: [] }), transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database), close: () => { calls.push('database-close'); return Promise.resolve(); } };
     const boss = { start: () => { calls.push('boss-start'); return Promise.resolve(); }, createQueue: (name: string) => { calls.push(`queue:${name}`); return Promise.resolve(); }, stop: () => { calls.push('boss-stop'); return Promise.resolve(); }, send: () => Promise.resolve('queue-job'), async work(name: string, handler: (jobs: readonly { data: unknown }[]) => Promise<void>) { calls.push(`work:${name}`); await handler([]); } };
-    const hypermail = { initialize: () => { calls.push('hypermail-initialize'); return Promise.resolve(null); }, establishBaseline: () => Promise.resolve(), pollNewInbox: () => Promise.resolve([]), inbox: () => Promise.resolve({ messages: [] }) };
+    const hypermail = { initialize: () => { calls.push('hypermail-initialize'); return Promise.resolve(null); }, verifyPolicyContract: () => { calls.push('policy-contract'); return Promise.resolve(); }, establishBaseline: () => Promise.resolve(), pollNewInbox: () => Promise.resolve([]), inbox: () => Promise.resolve({ messages: [] }) };
     const runtime = composeWorkerRuntime(environment(), { createDatabase: () => database, createBoss: () => boss, createHypermail: () => hypermail as unknown as HypermailReadClient, createTriageService: () => ({ triage: () => Promise.resolve({ decision: { state: 'handled', rationale: 'test' } }) }) as never, createNotificationTransport: () => ({ send: () => Promise.resolve({ ok: true }) }), holderId: () => 'test-holder' });
     await runtime.start();
     expect(calls).toEqual(expect.arrayContaining(['boss-start', 'work:agent.evaluate', 'work:notification.deliver', 'work:policy.execute', 'hypermail-initialize']));
     expect(calls.filter(call => call === 'hypermail-initialize')).toHaveLength(1);
-    expect(runtime.dependencyState).toMatchObject({ database: true, queue: true, hypermail: true, model: true, notifications: true, policy: false });
+    expect(runtime.dependencyState).toMatchObject({ database: true, queue: true, hypermail: true, model: true, notifications: true, policy: true });
     await runtime.shutdown();
     expect(calls).toEqual(expect.arrayContaining(['boss-stop', 'database-close']));
   });

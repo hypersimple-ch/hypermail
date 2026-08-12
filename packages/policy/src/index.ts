@@ -45,7 +45,7 @@ export type MutationCapability = Readonly<{
 }>;
 /** Private transport: do not add send, deletion, admin, or folder-management methods. */
 export interface PrivateMutationTransport extends MutationCapability {
-  read?(target: z.infer<typeof policyTargetSchema>): Promise<Readonly<Record<string, unknown>> | null>;
+  read?(target: z.infer<typeof policyTargetSchema>, kind?: PolicyActionKind): Promise<Readonly<Record<string, unknown>> | null>;
   list?(target: z.infer<typeof policyTargetSchema>): Promise<readonly Readonly<Record<string, unknown>>[]>;
 }
 export type ProviderReceipt = Readonly<Record<string, unknown>>;
@@ -116,7 +116,7 @@ export class PolicyExecutor {
     if (claim.recover) return this.finish(claim, await this.verify(input, undefined, false));
     // Provider preconditions are checked before claiming the external call. They are never prompt text.
     if (Object.keys(input.precondition).length && this.options.transport.read) {
-      const current = await this.options.transport.read(input.target);
+      const current = await this.options.transport.read(input.target, input.kind);
       if (!matches(current, input.precondition)) return this.finish(claim, { outcome: 'failed', observed: record(current), errorCode: 'PRECONDITION_MISMATCH' });
     }
     // This is the last operation before provider I/O and atomically checks global + account pause.
@@ -169,7 +169,7 @@ export class PolicyExecutor {
     if (!this.options.transport.read && !this.options.transport.list) return completion('unverifiable', {}, 'PROVIDER_CANNOT_VERIFY');
     try {
       let observed: Readonly<Record<string, unknown>> | null;
-      if (this.options.transport.read) observed = await this.options.transport.read(input.target);
+      if (this.options.transport.read) observed = await this.options.transport.read(input.target, input.kind);
       else if (this.options.transport.list) observed = (await this.options.transport.list(input.target))[0] ?? null;
       else observed = null;
       const expected = verificationProjection(input);

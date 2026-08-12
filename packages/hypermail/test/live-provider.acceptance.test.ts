@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { HypermailReadClient } from '../src/index.js';
+import { HypermailPolicyClient, HypermailReadClient } from '../src/index.js';
 
 type ProviderName = 'outlook' | 'gmail' | 'imap';
 type MutationCase = Readonly<{ provider: ProviderName; name: string; arguments: Record<string, string | number | boolean | readonly Record<string, string>[]> }>; 
@@ -50,6 +50,7 @@ describe.skipIf(!liveEnabled)('live Hypermail provider read acceptance', () => {
   it('publishes every required provider tool without exposing permanent deletion', async () => {
     const client = configuredClient();
     await client.initialize();
+    await expect(client.verifyPolicyContract()).resolves.toBeUndefined();
     const result = await client.transport.listTools();
     const tools = (result as { tools?: readonly { name?: string }[] }).tools ?? [];
     const names = new Set(tools.map((tool) => tool.name));
@@ -72,4 +73,16 @@ describe.skipIf(!liveEnabled || !mutationEnabled)('live Hypermail reversible mut
       await expect(client.transport.call(testCase.name, testCase.arguments)).resolves.toBeDefined();
     }
   });
+
+  it.each(['outlook', 'gmail', 'imap'] as const)('%s creates, reads, and exact-edits a draft while retaining returned IDs', async (provider) => {
+    const runId = process.env['HYPERMAIL_ACCEPTANCE_RUN_ID'];
+    if (!runId || !/^[a-zA-Z0-9_-]{8,64}$/.test(runId)) throw new Error('HYPERMAIL_ACCEPTANCE_RUN_ID must be an opaque 8-64 character value');
+    const account = accountFor(provider); const client = configuredClient(); await client.initialize(); const policy = new HypermailPolicyClient(client.transport);
+    const marker = `Hypermail draft acceptance ${runId} ${provider}`;
+    const created = await policy.createDraft({ account, to: [{ address: account }], subject: marker, body: `${marker} created` });
+    expect(created.id).toBeTruthy(); const current = await policy.readDraft(account, created.id); expect(current.body).toContain(`${marker} created`);
+    const edited = await policy.editDraft({ account, id: created.id, subject: marker, oldText: current.body ?? '', newText: `${marker} edited` });
+    expect(edited.id).toBeTruthy(); const observed = await policy.readDraft(account, edited.id); expect(observed.body).toContain(`${marker} edited`);
+  });
+
 });

@@ -8,7 +8,15 @@ export interface Folder { id: string; displayName: string; parentFolderId?: stri
 export interface AttachmentMetadata { id: string; name: string; contentType?: string; size?: number; webUrl?: string; webUrlUnavailableReason?: string }
 export interface Message {
   id: string; account: string; subject?: string; from?: EmailAddress; to?: EmailAddress[]; cc?: EmailAddress[];
-  receivedAt?: string; isRead?: boolean; body?: string; attachments?: AttachmentMetadata[];
+  receivedAt?: string; isRead?: boolean; folder?: string; body?: string; bodyFormat?: "markdown" | "html" | "text"; attachments?: AttachmentMetadata[];
+}
+export interface DraftMutationResult { id: string; draftHtml?: string }
+export interface PolicyMutationResult { id: string }
+export interface DraftCreateInput {
+  account: string; to: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject: string; body: string; inReplyTo?: string;
+}
+export interface DraftEditInput {
+  account: string; id: string; to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject?: string; oldText?: string; newText?: string;
 }
 export interface MessagePage { messages: Message[]; cursor?: string; hasMore: boolean }
 export interface InboxPage extends MessagePage { account?: string }

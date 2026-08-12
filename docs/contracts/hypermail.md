@@ -1,6 +1,6 @@
 # Hypermail MCP HTTP contract — v0.7.26
 
-**Status:** typed, sanitized fixture proof exists in [`spikes/hypermail-contract`](../../spikes/hypermail-contract/). It is **not live validation**: no configured/live Hypermail v0.7.26 service was available. Fixture values use `*.example.test`, synthetic IDs, and no credentials.
+**Status:** production parsing and policy-schema probes are aligned with the pinned v0.7.26 package source. The older [`spikes/hypermail-contract`](../../spikes/hypermail-contract/) fixture remains sanitized evidence only and models some collection payloads too loosely; it is **not live validation**. No provider-specific draft or post-mutation acceptance is claimed.
 
 ## Authoritative basis and transport
 
@@ -35,13 +35,21 @@ Classification is local safety policy, not a claim that Hypermail enforces it. `
 | `create_folder` | `{account:string,displayName:string,parentFolderId?:string}` | forbidden (folder admin) |
 | `delete_folder` | `{account:string,folderId:string}` | forbidden (folder admin) |
 | `rename_folder` | `{account:string,folderId:string,newName:string}` | forbidden (folder admin) |
-| `draft_email` / `send_email` | `{account,to:[{address,name?}],cc?,bcc?,subject,body,format:"html"|"markdown",include_signature:boolean,inReplyTo:string|false,replyAll?,forwardMessageId?,attachments?:[{filePath,name?}]}`; reply/forward are exclusive | user-approved-only / forbidden (send and forward) |
+| `draft_email` / `send_email` | `{account,to:[{address,name?}],cc?,bcc?,subject,body,format:"html"|"markdown",include_signature:boolean,inReplyTo:string|false,replyAll?,forwardMessageId?,attachments?:[{filePath,name?}]}`; `to`, `subject`, `body`, `format`, and `include_signature` are advertised as required; the runtime handler also expects `inReplyTo`, while v0.7.26 `tools/list` omits it from `required` because of its preprocess schema; production callers always provide it; reply/forward are exclusive | user-approved-only / forbidden (send and forward) |
 | `edit_draft` | `{account,id,to?,cc?,bcc?,subject?,old_text?,new_text?,body?,format?,include_signature?,new_attachments?,remove_attachments?}`; replacement requires `old_text` and exactly one replacement field | user-approved-only |
 | `send_draft` | `{account:string,id:string}` | forbidden (send) |
 | `move_email` | `{account:string,id:string,destination:"archive"|"deleteditems"|"inbox"|"drafts"|"junkemail"|"sentitems"|"outbox"|folderId}` | user-approved-only |
 | `archive_email`, `trash_email`, `mark_read`, `mark_unread` | `{account:string,id:string}` | user-approved-only, user-approved-only, autonomous-policy-eligible, user-approved-only |
 
 `read_attachment` returns temporary local-file metadata (`name`, optional `contentType`, `path`, optional web URL/reason); it is **not** a documented byte-streaming API. `trash_email` must never be treated as permanent delete; no autonomous permanent-delete operation is allowed.
+
+## Production policy adapter
+
+The production client unwraps MCP `structuredContent`, validates the advertised restricted tool schemas, and parses `list_emails`, `search_emails`, and `list_folders` using the v0.7.26 `items` collections. `read_email` does not return an account field, so the caller-supplied account is retained as the isolation scope.
+
+Draft policy actions load recipients, subject, body, and optional reply identity from the durable application draft, call `draft_email` or exact-text `edit_draft`, retain the returned post-operation provider draft ID, and verify that the returned draft remains readable. Edits render a unique prior application revision with the pinned Markdown renderer and select it only at the start of the provider's HTML readback; if that selection cannot be proven, they fail closed rather than replacing quoted reply/forward history. Neither policy client nor autonomous transport exposes send, forward, or administration tools.
+
+Runtime schema readiness is not provider acceptance. Mutation results are strictly parsed and returned post-operation IDs are retained before verification. Archive, recoverable-trash, and move verification list the actual destination and require the retained ID to be present. Outlook/IMAP may change IDs after a move; Gmail archive state is not uniformly observable through `read_email.folder` or an Archive label, so that case remains `unverifiable` rather than fabricating a universal folder fact. If a draft may have been created but its provider ID was not retained, later distinct create attempts fail closed to prevent duplicates; operator reconciliation is then required.
 
 ## Owner onboarding boundary
 
@@ -75,5 +83,14 @@ The server documents common tools but **does not publish a provider-by-tool capa
 cd spikes/hypermail-contract
 npm run check
 ```
+
+The production live suite is gated separately. With explicit reversible-mutation authorization, it creates, reads, and exact-edits one self-addressed unsent draft per configured provider and verifies the returned post-operation IDs:
+
+```sh
+HYPERMAIL_LIVE_ACCEPTANCE=1 HYPERMAIL_LIVE_MUTATION_ACCEPTANCE=1 \
+HYPERMAIL_ACCEPTANCE_RUN_ID=<opaque-run-id> pnpm vitest run packages/hypermail/test/live-provider.acceptance.test.ts
+```
+
+It additionally requires the private endpoint/key/protocol and isolated Outlook, Gmail, and IMAP account environment variables described by the test.
 
 A passing result proves only client/fixture compatibility. The local pinned-image run additionally proves `2025-11-25` initialization. Remaining live-contract blockers: production endpoint/configuration and credentials; live SSE edge cases; actual `tools/list` schemas; provider-by-tool support; IMAP config; OAuth scopes; rate/attachment limits; and live error-code retry semantics.

@@ -224,7 +224,11 @@ importers:
         specifier: 0.31.10
         version: 0.31.10
 
-  packages/hypermail: {}
+  packages/hypermail:
+    dependencies:
+      marked:
+        specifier: 18.0.7
+        version: 18.0.7
 
   packages/notifications:
     dependencies:

@@ -37,6 +37,6 @@ A bounded Gmail External/Testing onboarding proof passed on 2026-08-01. It is no
 1. Android/device acceptance.
 2. Isolated live Outlook and IMAP remain untested. Gmail passed onboarding only in the seven-day External/Testing tier; live Gmail arrival/read/mutation/timing and approved deployed Hypermail/protocol validation remain outstanding.
 3. Approved private durable exactly-once send service.
-4. Verified Hypermail draft create/edit provider response contract; policy readiness remains `not_ready` until then.
+4. Live provider validation of Hypermail draft create/edit and post-mutation verification; runtime schema readiness alone is not provider acceptance.
 5. Production-shaped Compose deployment, public-network probe, and off-host restore.
 6. Model vendor/data-retention terms, region, cost controls, and named owner.

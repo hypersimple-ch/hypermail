@@ -20,9 +20,9 @@ function fakeServer(overrides: Partial<Record<string, unknown>> = {}) {
       if (body.method === "initialize") return { protocolVersion: "deployment", capabilities: {} };
       if (body.method === "notifications/initialized") return {};
       if (name === "list_accounts") return { accounts };
-      if (name === "list_folders") return { folders: [{ id: "inbox", displayName: "Inbox" }] };
-      if (name === "list_emails") { const a = body.params?.arguments?.account as string; const skip = Number(body.params?.arguments?.skip ?? 0); const messages = [{ id: `${a}-1`, account: a, subject: a, receivedAt: a.startsWith("gmail") ? "2026-01-03T00:00:00Z" : "2026-01-02T00:00:00Z" }, { id: `${a}-2`, account: a, receivedAt: "2026-01-01T00:00:00Z" }]; return { emails: messages.slice(skip), hasMore: false }; }
-      if (name === "search_emails") return { emails: [{ id: "search", account: "gmail@example.test" }] };
+      if (name === "list_folders") return { items: [{ id: "inbox", displayName: "Inbox" }] };
+      if (name === "list_emails") { const a = body.params?.arguments?.account as string; const skip = Number(body.params?.arguments?.skip ?? 0); const messages = [{ id: `${a}-1`, subject: a, receivedAt: a.startsWith("gmail") ? "2026-01-03T00:00:00Z" : "2026-01-02T00:00:00Z" }, { id: `${a}-2`, receivedAt: "2026-01-01T00:00:00Z" }]; return { items: messages.slice(skip), hasMore: false }; }
+      if (name === "search_emails") return { items: [{ id: "search", account: "gmail@example.test" }] };
       if (name === "get_new_emails") return { emails: [] };
       return {};
     })();
@@ -54,7 +54,7 @@ describe("Hypermail read worker", () => {
   it("rejects malformed JSON and cross-account provider responses", async () => {
     const malformedFetch: typeof fetch = () => Promise.resolve(new Response("{broken", { headers: { "content-type": "application/json" } }));
     await expect(new HypermailReadClient({ endpoint: "x", protocolVersion: "v", fetch: malformedFetch }).accounts()).rejects.toBeInstanceOf(McpTransportError);
-    const isolated = client(fakeServer({ list_emails: { emails: [{ id: "wrong", account: "other@example.test" }], hasMore: false } })); await expect(isolated.inbox({ account: "gmail@example.test" })).rejects.toThrow("Account isolation");
+    const isolated = client(fakeServer({ list_emails: { items: [{ id: "wrong", account: "other@example.test" }], hasMore: false } })); await expect(isolated.inbox({ account: "gmail@example.test" })).rejects.toThrow("Account isolation");
   });
   it("streams only an authenticated read_attachment temp file, bounds it, and cleans it up on completion/cancellation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "hypermail-test-")); const path = join(directory, "report ü.txt"); await writeFile(path, "hello");
