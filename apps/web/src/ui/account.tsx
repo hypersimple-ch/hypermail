@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { PageHeader } from '@/components/app/patterns.js';
+import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
 import { Alert, AlertDescription } from '@/components/heroui/alert.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
@@ -82,14 +82,14 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
     });
   };
 
-  return <section className="mx-auto min-w-0 w-full max-w-2xl bg-background p-4 pb-24 sm:p-6" aria-label="Account">
+  return <AppPage aria-label="Account"><PageContainer measure="form">
     <PageHeader title="Account" description="Private owner settings" actions={<Button type="button" variant="ghost" size="sm" onClick={onBack} disabled={pending}><ArrowLeft aria-hidden="true" />More</Button>} />
     <div className="mt-6 space-y-4">
-      <Card className="gap-0 py-0 shadow-none">
+      <Card className="gap-0 py-0">
         <CardHeader className="px-4 pt-4 pb-0"><CardTitle>Owner identity</CardTitle><CardDescription>This email identifies the private owner account.</CardDescription></CardHeader>
         <CardContent className="px-4 pt-4 pb-4"><Field><FieldLabel htmlFor="account-owner-email">Email</FieldLabel><Input id="account-owner-email" type="email" value={ownerEmail} readOnly autoComplete="email" /></Field></CardContent>
       </Card>
-      <Card className="gap-0 py-0 shadow-none">
+      <Card className="gap-0 py-0">
         <CardHeader className="px-4 pt-4 pb-0"><CardTitle>Password</CardTitle><CardDescription>Confirm your current password before choosing a new one.</CardDescription></CardHeader>
         <CardContent className="px-4 pt-4 pb-4">
           <form onSubmit={changePassword} noValidate>
@@ -103,11 +103,11 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
           </form>
         </CardContent>
       </Card>
-      <Card className="gap-0 py-0 shadow-none">
+      <Card className="gap-0 py-0">
         <CardHeader className="px-4 pt-4 pb-0"><CardTitle>Sign out</CardTitle><CardDescription>End this session on this device.</CardDescription></CardHeader>
         <CardContent className="px-4 pt-4 pb-4"><Button type="button" variant="outline" onClick={signOut} disabled={pending}>{signOutPending ? <><Spinner />Signing out…</> : 'Sign out'}</Button></CardContent>
       </Card>
     </div>
     {feedback ? <Alert role="status" aria-live="polite" className="mt-4"><AlertDescription>{feedback}</AlertDescription></Alert> : null}
-  </section>;
+  </PageContainer></AppPage>;
 }

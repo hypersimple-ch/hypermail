@@ -26,11 +26,27 @@ type FilterGroupProps<T extends string> = Readonly<{
 }>;
 
 function FilterGroup<T extends string>({ label, value, options, onChange, className }: FilterGroupProps<T>): React.JSX.Element {
-  return <div data-slot="filter-group" role="group" aria-label={label} className={cn('flex flex-wrap gap-2', className)}>
-    {options.map((option) => <Button key={option.value} type="button" size="sm" variant={option.value === value ? 'secondary' : 'ghost'} aria-pressed={option.value === value} onClick={() => { onChange(option.value); }}>
+  return <div data-slot="filter-group" role="group" aria-label={label} className={cn('flex flex-nowrap gap-2 overflow-x-auto overscroll-x-contain', className)}>
+    {options.map((option) => <Button key={option.value} type="button" size="sm" variant={option.value === value ? 'secondary' : 'ghost'} aria-pressed={option.value === value} className="shrink-0 rounded-full" onClick={() => { onChange(option.value); }}>
       {option.label}{option.count === undefined ? null : <span aria-label={`${String(option.count)} items`} className="text-xs text-muted-foreground">{option.count}</span>}
     </Button>)}
   </div>;
+}
+
+type AppPageProps = React.ComponentProps<'section'>;
+function AppPage({ className, ...props }: AppPageProps): React.JSX.Element {
+  return <section data-slot="app-page" className={cn('mx-auto w-full max-w-5xl min-w-0 bg-background px-4 py-4 sm:px-6 sm:py-6', className)} {...props} />;
+}
+
+type PageMeasure = 'wide' | 'reading' | 'form';
+type PageContainerProps = React.ComponentProps<'div'> & { measure?: PageMeasure };
+const pageMeasures: Record<PageMeasure, string> = {
+  wide: 'max-w-none',
+  reading: 'max-w-3xl',
+  form: 'max-w-2xl',
+};
+function PageContainer({ measure = 'wide', className, ...props }: PageContainerProps): React.JSX.Element {
+  return <div data-slot="page-container" data-measure={measure} className={cn('w-full min-w-0', pageMeasures[measure], className)} {...props} />;
 }
 
 type PageHeaderProps = React.ComponentProps<'header'> & { title: string; description?: string; actions?: React.ReactNode };
@@ -43,9 +59,9 @@ function PageHeader({ title, description, actions, className, ...props }: PageHe
 
 type StatePanelProps = React.ComponentProps<'div'> & { title: string; description?: string; loading?: boolean; action?: React.ReactNode };
 function StatePanel({ title, description, loading = false, action, className, ...props }: StatePanelProps): React.JSX.Element {
-  return <Card data-slot="state-panel" className={cn('border-dashed shadow-none', className)} {...props}><CardContent className="flex min-h-40 flex-col items-center justify-center gap-3 text-center">
+  return <Card data-slot="state-panel" className={cn('border-dashed', className)} {...props}><CardContent className="flex min-h-40 flex-col items-center justify-center gap-3 text-center">
     {loading ? <Spinner className="size-5" /> : null}<h2 className="font-semibold">{title}</h2>{description ? <p className="max-w-md text-sm text-muted-foreground">{description}</p> : null}{action}
   </CardContent></Card>;
 }
 
-export { NavigationItem, FilterGroup, PageHeader, StatePanel, type FilterOption };
+export { AppPage, PageContainer, NavigationItem, FilterGroup, PageHeader, StatePanel, type FilterOption, type PageMeasure };

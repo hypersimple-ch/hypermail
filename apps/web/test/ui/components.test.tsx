@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FilterGroup, NavigationItem, PageHeader, StatePanel } from '../../src/components/app/patterns.js';
+import { AppPage, FilterGroup, NavigationItem, PageContainer, PageHeader, StatePanel } from '../../src/components/app/patterns.js';
 import { Alert } from '../../src/components/heroui/alert.js';
 import { Badge } from '../../src/components/heroui/badge.js';
 import { Button, buttonVariants } from '../../src/components/heroui/button.js';
 import { Card } from '../../src/components/heroui/card.js';
+import { Checkbox } from '../../src/components/heroui/checkbox.js';
 import { Field, FieldDescription, FieldError, FieldLabel } from '../../src/components/heroui/field.js';
 import { Input } from '../../src/components/heroui/input.js';
-import { NativeSelect } from '../../src/components/heroui/native-select.js';
+import { Select } from '../../src/components/heroui/select.js';
 import { Separator } from '../../src/components/heroui/separator.js';
 import { Spinner } from '../../src/components/heroui/spinner.js';
 import { Textarea } from '../../src/components/heroui/textarea.js';
@@ -29,12 +30,20 @@ describe('HeroUI component foundation', () => {
   });
 
   it('passes semantic and invalid state props to controls', () => {
-    render(<Field><FieldLabel htmlFor="subject">Subject</FieldLabel><Input id="subject" aria-invalid="true" /><FieldDescription id="help">Required for review.</FieldDescription><FieldError id="error">Enter a subject.</FieldError><Textarea aria-label="Body" /><NativeSelect aria-label="Account"><option>Personal</option></NativeSelect></Field>);
+    render(<Field><FieldLabel htmlFor="subject">Subject</FieldLabel><Input id="subject" aria-invalid="true" /><FieldDescription id="help">Required for review.</FieldDescription><FieldError id="error">Enter a subject.</FieldError><Textarea aria-label="Body" /><Select aria-label="Account" value="personal" options={[{ value: 'personal', label: 'Personal' }]} /><Checkbox label="Automatic processing" isDisabled /></Field>);
     expect(screen.getByLabelText('Subject').getAttribute('data-slot')).toBe('input');
     expect(screen.getByLabelText('Subject').getAttribute('aria-invalid')).toBe('true');
     expect(screen.getByRole('alert').textContent).toContain('Enter a subject.');
     expect(screen.getByLabelText('Body').getAttribute('data-slot')).toBe('textarea');
-    expect(screen.getByLabelText('Account').getAttribute('data-slot')).toBe('native-select');
+    expect(screen.getByRole('button', { name: /Account/ }).getAttribute('data-slot')).toBe('select-trigger');
+    expect(screen.getByRole('checkbox', { name: 'Automatic processing' }).disabled).toBe(true);
+  });
+
+  it('submits HeroUI select and checkbox values through their accessible hidden controls', () => {
+    render(<form data-testid="preferences"><Select aria-label="Account" name="account" defaultValue="work" options={[{ value: 'personal', label: 'Personal' }, { value: 'work', label: 'Work' }]} /><Checkbox name="tls" label="Use TLS" defaultSelected /></form>);
+    const values = new FormData(screen.getByTestId('preferences'));
+    expect(values.get('account')).toBe('work');
+    expect(values.get('tls')).toBe('on');
   });
 
   it('exposes component slots and disabled state without raw selector contracts', () => {
@@ -58,7 +67,8 @@ describe('application patterns', () => {
   });
 
   it('renders reusable headers and loading states', () => {
-    render(<><PageHeader title="Activity" description="Agent work" actions={<Button>Pause</Button>} /><StatePanel title="Loading activity" loading /></>);
+    render(<AppPage aria-label="Activity page"><PageContainer measure="reading"><PageHeader title="Activity" description="Agent work" actions={<Button>Pause</Button>} /><StatePanel title="Loading activity" loading /></PageContainer></AppPage>);
+    expect(screen.getByRole('region', { name: 'Activity page' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Activity' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Pause' })).toBeTruthy();
     expect(screen.getByText('Loading activity')).toBeTruthy();

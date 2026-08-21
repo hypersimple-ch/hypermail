@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Activity, Drafts, HypermailShell, Sent } from '../../src/ui/index.js';
+import { Drafts, HypermailShell, Sent } from '../../src/ui/index.js';
 import { mockShellData } from '../../src/ui/fixtures.js';
 
 const render = (node: React.ReactElement) => renderToStaticMarkup(node);
@@ -92,10 +92,6 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain('expectedVersion: draft.expectedVersion');
     expect(browser).not.toContain("method: draft.id ? 'PUT'");
     expect(browser).not.toContain('safe: true');
-    const activity = render(React.createElement(Activity, { data: { ...mockShellData, activity: [{ id: 'failed', expectedVersion: 2, state: 'failed', title: 'Sync failed', context: 'Work', time: 'now', action: 'Retry' }, { id: 'handled', expectedVersion: 3, state: 'complete', title: 'Reply handled', context: 'Personal', time: 'now', action: 'Acknowledge' }] } }));
-    expect(activity).toContain('>Retry</button>');
-    expect(activity).toContain('>Acknowledge</button>');
-    expect(activity).toContain('Questions');
     const records = [{ id: 'd1', accountId: 'personal', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '' }, { id: 's1', accountId: 'personal', recipients: [], subject: 'Sent only', body: '', state: 'sent', updatedAt: '' }];
     expect(render(React.createElement(Drafts, { drafts: records }))).toContain('aria-label="Edit draft Follow up"');
     expect(render(React.createElement(Sent, { drafts: records }))).toContain('Sent only');

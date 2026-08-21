@@ -8,6 +8,8 @@ const mailboxes: readonly SettingsMailbox[] = [
   { id: 'gmail', provider: 'gmail', email: 'me@gmail.test', displayName: 'Personal', state: 'ready' },
   { id: 'outlook', provider: 'microsoft', email: 'work@outlook.test', displayName: null, state: 'degraded' },
 ];
+Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } });
+
 const pendingOutlook = { provider: 'microsoft' as const, handle: 'opaque-handle', authorizationUrl: 'https://microsoft.example/verify', userCode: 'ABCD-EFGH', expiresAt: 'in 10 minutes' };
 
 function openAddMailbox() { fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' })); }
@@ -57,7 +59,8 @@ describe('Settings', () => {
     const resolve = vi.fn<(input: StartMailboxConnectionInput) => Promise<MailboxConnectionResult>>().mockResolvedValue({ state: 'ready' });
     render(<Settings mailboxes={[]} onStartConnection={resolve} />);
     openAddMailbox();
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'imap' } });
+    fireEvent.click(screen.getByRole('button', { name: /Provider/ }));
+    fireEvent.click(await screen.findByRole('option', { name: 'IMAP' }));
     fireEvent.click(screen.getByRole('button', { name: 'Connect IMAP' }));
     expect(screen.getByText('Enter the required IMAP details and a valid port.')).toBeTruthy();
 
@@ -73,7 +76,8 @@ describe('Settings', () => {
     expect(submitted?.provider).toBe('imap');
     if (submitted?.provider !== 'imap') throw new Error('Expected IMAP input.');
     expect(submitted.imap).toMatchObject({ password: credential, imapPort: 993 });
-    await waitFor(() => { expect(password.value).toBe(''); });
+    await waitFor(() => { expect(screen.queryByLabelText('Password')).toBeNull(); });
+    expect(password.isConnected).toBe(false);
     expect(screen.queryByText(credential)).toBeNull();
     expect(screen.getByRole('status').textContent).toContain('Mailbox connected');
   });

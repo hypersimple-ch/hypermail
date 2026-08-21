@@ -7,14 +7,16 @@
 
 ### UI primitives
 
-Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed Badge, Input, Textarea, Separator, and Spinner use official `@heroui/react` components. Field and NativeSelect remain small application-owned semantic adapters where native form behavior is required.
+Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed Badge, Input, Textarea, Separator, and Spinner use official `@heroui/react` components. Select and Checkbox now use the official HeroUI compound components. Field composes the official HeroUI Label and Fieldset with application layout helpers. HeroUI and React Aria may render internal native or hidden form elements to preserve browser semantics, but application source must not author visible native controls.
 
 | Component | Use |
 |---|---|
-| `Button` | All button/link actions; typed visual and size variants |
+| `Button` | All button actions; typed visual and size variants |
+| `Link` | HeroUI navigation and external links |
 | `Input` | Single-line text, email, and password fields |
+| `Checkbox` | HeroUI labelled boolean control with a 44px interactive target |
 | `Textarea` | Message and answer editors |
-| `NativeSelect` | Native, keyboard-friendly account and option selection |
+| `Select` | HeroUI popover and ListBox selection with hidden native form submission |
 | `Card` | Grouped content with header/content/footer sections |
 | `Badge` | Written status paired with semantic color |
 | `Alert` | Error, safety, and status messages |
@@ -22,7 +24,7 @@ Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed B
 | `Separator` | Semantic or decorative section boundaries |
 | `Spinner` | Pending state; paired with written status text |
 
-HeroUI-backed controls expose HeroUI `data-slot` markers, while the native semantic adapters keep repository-owned slots. The Button and Badge adapters translate Hypermail variants to HeroUI variants; caller utilities are merged through `cn()` while preserving focus, disabled, invalid, and 44px target behavior.
+HeroUI-backed controls expose HeroUI `data-slot` markers. The Button and Badge adapters translate Hypermail variants to HeroUI variants; caller utilities are merged through `cn()` while preserving focus, disabled, invalid, and 44px target behavior. Outlined buttons, form fields, select triggers, and cards use the white surface token so they remain distinct from the light-gray page background.
 
 ### Application patterns
 

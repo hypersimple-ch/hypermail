@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Activity, Compose, Drafts, HypermailShell, Inbox, More, Sent } from '../../src/ui/index.js';
+import { Compose, destinationForScreen, Drafts, HypermailShell, Inbox, More, Sent } from '../../src/ui/index.js';
+import { ActivityScreen } from '../../src/activity/surfaces.js';
 import { mockShellData } from '../../src/ui/fixtures.js';
 
 const render = (node: React.ReactElement) => renderToStaticMarkup(node);
@@ -18,9 +19,26 @@ describe('responsive shell rendering contracts', () => {
     expect(markup).not.toContain('Message actions for Samira Ahmed');
   });
 
+  it('maps detail screens to their primary route families', () => {
+    expect(destinationForScreen('message')).toBe('inbox');
+    expect(destinationForScreen('activity-detail')).toBe('activity');
+    for (const screen of ['settings', 'account', 'pending-sends'] as const) expect(destinationForScreen(screen)).toBe('more');
+    expect(destinationForScreen('compose')).toBeUndefined();
+  });
+
+  it('keeps message detail in the desktop Inbox split and exposes owner connection status', () => {
+    const markup = render(React.createElement(HypermailShell, { data: mockShellData, initialScreen: 'message', ownerEmail: 'owner@example.test', online: false }));
+    expect(markup).toContain('aria-label="Desktop mailbox"');
+    expect(markup).toContain('aria-label="Inbox"');
+    expect(markup).toContain('aria-label="Message detail"');
+    expect(markup).toContain('aria-label="Owner and connection status"');
+    expect(markup).toContain('owner@example.test');
+    expect(markup).toContain('Offline');
+  });
+
   it('uses shared filter, badge, card, and button patterns for supported activity recovery', () => {
-    const markup = render(React.createElement(Activity, { data: mockShellData }));
-    for (const text of ['New', 'Questions', 'Failed', 'History', 'Needs input', 'Completed']) expect(markup).toContain(text);
+    const markup = render(React.createElement(ActivityScreen, { page: mockShellData.activity }));
+    for (const text of ['New', 'Questions', 'Failed', 'History', 'Handled — acknowledge']) expect(markup).toContain(text);
     expect(markup).toContain('data-slot="filter-group"');
     expect(markup).toContain('data-slot="chip"');
     expect(markup).toContain('data-slot="card"');
@@ -38,7 +56,7 @@ describe('responsive shell rendering contracts', () => {
 
   it('uses shared fields and a high-contrast primary save action in compose', () => {
     const markup = render(React.createElement(Compose, { accounts: mockShellData.accounts }));
-    expect(markup).toContain('data-slot="native-select"');
+    expect(markup).toContain('data-slot="select-trigger"');
     expect(markup).toContain('data-slot="input"');
     expect(markup).toContain('data-slot="textarea"');
     expect(markup).toContain('data-variant="default"');

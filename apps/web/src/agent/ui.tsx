@@ -1,7 +1,8 @@
 import * as React from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/heroui/alert.js';
 import { Badge } from '@/components/heroui/badge.js';
-import { Button } from '@/components/heroui/button.js';
+import { Link } from '@heroui/react/link';
+import { Button, buttonVariants } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { Field, FieldDescription, FieldLabel } from '@/components/heroui/field.js';
 import { Textarea } from '@/components/heroui/textarea.js';
@@ -35,7 +36,7 @@ export function AgentActionCard({ action, onRetry }: Readonly<{ action: AgentAct
       <Badge variant={action.status === 'failed' || action.status === 'blocked' ? 'destructive' : 'secondary'}>Status: {action.status}</Badge>
       <div className="flex flex-wrap gap-2">
         {canRetry ? <Button type="button" variant="outline" size="sm" onClick={() => onRetry?.(action)} aria-label={`Retry ${action.title}`}>Retry</Button> : null}
-        {action.recoverable && action.reversalHref ? <Button asChild variant="link" size="sm"><a href={action.reversalHref}>Review reversal</a></Button> : null}
+        {action.recoverable && action.reversalHref ? <Link href={action.reversalHref} className={buttonVariants({ variant: 'link', size: 'sm' })}>Review reversal</Link> : null}
       </div>
     </CardContent>
   </Card>;

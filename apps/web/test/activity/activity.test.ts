@@ -67,15 +67,47 @@ describe('Activity API and service contracts', () => {
 });
 
 describe('Activity component accessibility and interaction contracts', () => {
-  it('renders all filters, count badges, text statuses, question/failure/retry/acknowledgement controls', () => {
+  it('renders all filters, count badges, text statuses, and honest detail links', () => {
     const page = { items: [seed[1], seed[2], seed[3]], nextCursor: null, counts: { new: 2, questions: 1, failed: 1, history: 1 } };
     const list = renderToStaticMarkup(React.createElement(ActivityScreen, { page, filter: 'questions' }));
-    for (const text of ['New', 'Questions', 'Failed', 'History', 'Needs input', 'Failed', 'Retry']) expect(list).toContain(text);
+    for (const text of ['New', 'Questions', 'Failed', 'History', 'Needs input', 'Failed', 'Open']) expect(list).toContain(text);
     expect(list).toContain('aria-pressed="true"');
     const detail = renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[1] }));
     expect(detail).toContain('Question needs your input');
     expect(detail).toContain('Answer the open question before acknowledging.');
     expect(detail).toContain('disabled=""');
+    expect(renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[2] }))).toContain('>Retry</button>');
+    expect(renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[3] }))).toContain('>Acknowledge</button>');
+  });
+
+  it('disables Activity mutations while a request is pending', () => {
+    const retrying = renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[2], pendingAction: 'retry' }));
+    expect(retrying).toContain('Retrying…');
+    expect(retrying).toContain('disabled=""');
+    const acknowledging = renderToStaticMarkup(React.createElement(ActivityDetail, { activity: seed[3], pendingAction: 'acknowledge' }));
+    expect(acknowledging).toContain('Acknowledging…');
+    expect(acknowledging).toContain('disabled=""');
+  });
+
+  it('keeps the Activity back action inside the detail page contract', () => {
+    const onBack = vi.fn();
+    render(React.createElement(ActivityDetail, { activity: seed[2], onBack }));
+    fireEvent.click(screen.getByRole('button', { name: 'Activity' }));
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it('associates question errors with the shared answer field', async () => {
+    const onAnswerQuestion = vi.fn(() => Promise.reject(new Error('offline')));
+    render(React.createElement(ActivityDetail, { activity: seed[1], onAnswerQuestion }));
+    const answer = screen.getByRole('textbox', { name: 'Your answer' });
+    expect(answer.getAttribute('data-slot')).toBe('textarea');
+    fireEvent.change(answer, { target: { value: 'Use the archive folder' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Answer and continue' }));
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('Could not record the answer');
+    expect(answer.getAttribute('aria-invalid')).toBe('true');
+    expect(answer.getAttribute('aria-describedby')).toBe(error.id);
+    expect((answer as HTMLTextAreaElement).value).toBe('Use the archive folder');
   });
 
   it('is SSR-safe and delegates filter changes through the shared filter component', () => {

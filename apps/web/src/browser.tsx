@@ -11,15 +11,16 @@ import { Input } from '@/components/heroui/input.js';
 import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
 import { initialPwaState } from './pwa/state.js';
-import { HypermailShell, type ActivityItem, type ActivityState, type Draft, type Screen, type ShellData } from './ui/index.js';
+import { HypermailShell, type Draft, type Screen, type ShellData } from './ui/index.js';
+import type { ActivityPage } from './activity/contracts.js';
 import type { ManagerChoice, ManagerSettingsView, MailboxManagerView } from './agent-connections/contracts.js';
 import type { ManagerMutations } from './mailbox-managers/index.js';
 import type { ChangePasswordInput, ChangePasswordResult } from './ui/account.js';
 import type { CompleteMailboxConnectionInput, MailboxConnectionResult, PendingMailboxConnection, SettingsMailbox, StartMailboxConnectionInput } from './ui/settings.js';
 
-const empty: ShellData = { accounts: [], messages: [], activity: [] };
+const emptyActivity: ActivityPage = { items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } };
+const empty: ShellData = { accounts: [], messages: [], activity: emptyActivity };
 type BrowserDraft = Draft;
-type ActivityResponse = { id: string; state: string; version: number; title: string; accountLabel: string; createdAt: string };
 type AppState = 'loading' | 'ready' | 'empty' | 'error' | 'unauthenticated' | 'bootstrap';
 type SessionResponse = { user: { id: string; email: string }; accounts: SettingsMailbox[] };
 type MailboxApiResult =
@@ -53,8 +54,6 @@ const gmailAuthorizationUrl = (value: string): string => {
   return url.toString();
 };
 
-const toActivityState = (state: string): ActivityState => state === 'failed' ? 'failed' : state === 'waiting_question' ? 'question' : state === 'acknowledged' ? 'complete' : 'new';
-const activityItem = (item: ActivityResponse): ActivityItem => ({ id: item.id, expectedVersion: item.version, state: toActivityState(item.state), title: item.title, context: item.accountLabel, time: new Date(item.createdAt).toLocaleString(), action: item.state === 'failed' ? 'Retry' : item.state === 'handled' ? 'Acknowledge' : 'Review' });
 
 function AuthCard({ title, description, children }: { title: string; description?: React.ReactNode; children: React.ReactNode }): React.JSX.Element {
   return <main className="grid min-h-dvh place-items-center bg-background p-4" aria-labelledby="auth-title"><Card className="w-full max-w-md"><CardHeader><h1 id="auth-title" className="text-2xl font-semibold tracking-tight">{title}</h1>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent>{children}</CardContent></Card></main>;
@@ -73,18 +72,24 @@ function Bootstrap({ onComplete, onSetupCompleted }: { onComplete: () => void; o
   return <AuthCard title="Set up Hypermail" description="Create the private owner account for this Hypermail installation."><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="setup-email">Email</FieldLabel><Input id="setup-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="setup-password">Password</FieldLabel><Input id="setup-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required aria-describedby="setup-password-help" /><FieldDescription id="setup-password-help">Use at least 12 characters.</FieldDescription></Field><Field><FieldLabel htmlFor="setup-confirm-password">Confirm password</FieldLabel><Input id="setup-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required onInput={confirmPassword} aria-describedby={error ? 'setup-password-help setup-error' : 'setup-password-help'} /></Field><Button type="submit">{pending ? <><Spinner />Setting up…</> : 'Set up private owner'}</Button></FieldSet>{error ? <FieldError id="setup-error">{error}</FieldError> : null}</form></AuthCard>;
 }
 
-function PwaPresentation(): React.JSX.Element {
-  const [online, setOnline] = React.useState(() => navigator.onLine); const [installAvailable, setInstallAvailable] = React.useState(false); const [updateAvailable, setUpdateAvailable] = React.useState(false);
-  const deferredInstall = React.useRef<BeforeInstallPromptEvent | undefined>(undefined); const registration = React.useRef<ServiceWorkerRegistrationLike | undefined>(undefined);
+function useOnlineStatus(): boolean {
+  const [online, setOnline] = React.useState(() => navigator.onLine);
   React.useEffect(() => { const updateConnection = () => { setOnline(navigator.onLine); }; addEventListener('online', updateConnection); addEventListener('offline', updateConnection); return () => { removeEventListener('online', updateConnection); removeEventListener('offline', updateConnection); }; }, []);
+  return online;
+}
+
+function PwaPresentation(): React.JSX.Element {
+  const online = useOnlineStatus(); const [installAvailable, setInstallAvailable] = React.useState(false); const [updateAvailable, setUpdateAvailable] = React.useState(false);
+  const deferredInstall = React.useRef<BeforeInstallPromptEvent | undefined>(undefined); const registration = React.useRef<ServiceWorkerRegistrationLike | undefined>(undefined);
   React.useEffect(() => { const available = (event: Event) => { event.preventDefault(); deferredInstall.current = event as BeforeInstallPromptEvent; setInstallAvailable(true); }; addEventListener('beforeinstallprompt', available); return () => { removeEventListener('beforeinstallprompt', available); }; }, []);
   React.useEffect(() => { if (!('serviceWorker' in navigator)) return; let reloading = false; const reload = () => { if (!reloading) { reloading = true; location.reload(); } }; navigator.serviceWorker.addEventListener('controllerchange', reload); void registerPwaWorker(navigator.serviceWorker, (pwaState) => { setUpdateAvailable(pwaState.update === 'available'); }, initialPwaState).then((value) => { registration.current = value; }).catch(() => {}); return () => { navigator.serviceWorker.removeEventListener('controllerchange', reload); }; }, []);
   const install = () => { void deferredInstall.current?.prompt(); };
   const update = () => { if (registration.current) activateWaitingUpdate(registration.current); };
-  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p>{installAvailable || updateAvailable ? <aside aria-label="Application utilities" className="fixed inset-x-0 bottom-20 z-10 flex flex-wrap justify-center gap-2 px-4 [@media(min-width:700px)]:bottom-3"><Card className="flex-row items-center gap-2 p-2 shadow-lg">{installAvailable ? <Button type="button" variant="outline" onClick={install}>Install Hypermail</Button> : null}{updateAvailable ? <Button type="button" variant="outline" onClick={update}>Reload to update</Button> : null}</Card></aside> : null}</>;
+  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p>{installAvailable || updateAvailable ? <aside aria-label="Application utilities" className="fixed inset-x-0 bottom-20 z-10 flex flex-wrap justify-center gap-2 px-4 [@media(min-width:700px)]:bottom-3"><Card className="flex-row items-center gap-2 p-2">{installAvailable ? <Button type="button" variant="outline" onClick={install}>Install Hypermail</Button> : null}{updateAvailable ? <Button type="button" variant="outline" onClick={update}>Reload to update</Button> : null}</Card></aside> : null}</>;
 }
 
 function App(): React.JSX.Element {
+  const online = useOnlineStatus();
   const [data, setData] = React.useState<ShellData>(empty); const [drafts, setDrafts] = React.useState<readonly BrowserDraft[]>([]);
   const [dashboard, setDashboard] = React.useState<AgentDashboard | undefined>(); const [agentError, setAgentError] = React.useState('');
   const [state, setState] = React.useState<AppState>('loading'); const [loginNotice, setLoginNotice] = React.useState('');
@@ -99,11 +104,11 @@ function App(): React.JSX.Element {
     const sessionBody = await session.json() as SessionResponse;
     const [inbox, activity, draftResponse] = await Promise.all([fetch('/api/v1/inbox'), fetch(`/api/v1/activities?filter=${encodeURIComponent(activityFilter)}`), fetch('/api/v1/drafts')]);
     if (!inbox.ok || !activity.ok || !draftResponse.ok) throw new Error('load failed');
-    const accounts = sessionBody.accounts.map((account) => ({ id: account.id, label: account.displayName ?? account.email, address: account.email, unread: 0, color: 'blue' as const }));
+    const accounts = sessionBody.accounts.map((account) => ({ id: account.id, label: account.displayName ?? account.email, address: account.email, unread: 0 }));
     const messages = (await inbox.json() as { messages: Array<{ id: string; account_id: string; sender: string; subject: string; preview: string; received_at: string }> }).messages.map((message) => ({ id: message.id, accountId: message.account_id, sender: message.sender || 'Unknown sender', initials: (message.sender || '?').slice(0, 1).toUpperCase(), subject: message.subject || '(no subject)', preview: message.preview, received: new Date(message.received_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), body: message.preview }));
-    const items = (await activity.json() as { items: ActivityResponse[] }).items.map(activityItem);
+    const activityPage = await activity.json() as ActivityPage;
     setOwnerEmail(sessionBody.user.email); setSettingsMailboxes(sessionBody.accounts);
-    setDrafts((await draftResponse.json() as { drafts: BrowserDraft[] }).drafts); setData({ accounts, messages, activity: items }); setState(messages.length || items.length ? 'ready' : 'empty');
+    setDrafts((await draftResponse.json() as { drafts: BrowserDraft[] }).drafts); setData({ accounts, messages, activity: activityPage }); setState(messages.length || activityPage.items.length ? 'ready' : 'empty');
     void Promise.resolve().then(() => fetch('/api/v1/agent-connections')).then(async response => { if (!response.ok) throw new Error('manager settings unavailable'); const result = await response.json() as { settings: ManagerSettingsView }; setManagerSettings(result.settings); }).catch(() => { setManagerSettings(undefined); });
     void fetch('/api/v1/agent', { headers: { 'x-api-version': 'v1' } }).then(async (response) => response.ok ? response.json() as Promise<{ dashboard: AgentDashboard }> : Promise.reject(new Error('agent unavailable'))).then((result) => { setAgentError(''); setDashboard(result.dashboard); }).catch(() => { setDashboard(undefined); setAgentError('Could not load agent status. Try again later.'); });
   }, []);
@@ -182,7 +187,6 @@ function App(): React.JSX.Element {
   if (state === 'unauthenticated') return <Login onComplete={() => { window.location.reload(); }} notice={loginNotice} />;
   const openMessage = async (message: ShellData['messages'][number]) => { const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error('message unavailable'); const detail = (await response.json() as { message: { body: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; subject: string } }).message; return { ...message, sender: detail.sender || message.sender, subject: detail.subject || message.subject, body: detail.body || '', attachments: detail.attachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) }; };
   const saveDraft = async (draft: { id?: string; expectedVersion?: number; accountId: string; recipient: string; subject: string; body: string }) => { const response = await fetch(draft.id ? `/api/v1/drafts/${encodeURIComponent(draft.id)}` : '/api/v1/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: draft.accountId, recipients: [{ kind: 'to', address: draft.recipient }], subject: draft.subject, body: draft.body, ...(draft.id ? { expectedVersion: draft.expectedVersion } : {}) }) }); if (!response.ok) throw new Error('draft unavailable'); await load(); };
-  const mutateActivity = async (item: ActivityItem) => { const endpoint = item.action === 'Retry' ? 'retry' : item.action === 'Acknowledge' ? 'acknowledge' : null; if (!endpoint || item.expectedVersion === undefined) return; const response = await fetch(`/api/v1/activities/${encodeURIComponent(item.id)}/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedVersion: item.expectedVersion }) }); if (!response.ok) throw new Error('activity unavailable'); await load(); };
   const updateManagerSettings = async (path: string, body: Readonly<Record<string, unknown>>): Promise<void> => {
     if (!navigator.onLine) throw new Error('offline');
     const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -201,7 +205,7 @@ function App(): React.JSX.Element {
     onRetry: (action) => { void fetch(`/api/v1/agent/actions/${encodeURIComponent(action.id)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ expectedVersion: action.version }) }).then((response) => { if (!response.ok) throw new Error('retry unavailable'); return load(); }).catch(() => { setAgentError('Could not retry the agent action. Try again.'); }); },
     onAutonomy: (target: AutonomyScope, autonomyState: AutonomyState, expectedVersion: number) => { void fetch('/api/v1/agent/autonomy', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ scope: target.kind, ...(target.kind === 'account' ? { accountId: target.accountId } : {}), state: autonomyState, expectedVersion }) }).then((response) => { if (!response.ok) throw new Error('autonomy unavailable'); return load(); }).catch(() => { setAgentError('Could not update agent autonomy. Try again.'); }); },
   };
-  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} {...(settingsNotice ? { settingsNotice } : {})} onActivityAction={mutateActivity} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
+  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} online={online} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} {...(settingsNotice ? { settingsNotice } : {})} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
 }
 
 function RootApp(): React.JSX.Element { return <><App /><PwaPresentation /></>; }

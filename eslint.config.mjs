@@ -14,4 +14,12 @@ export default tseslint.config(
       '@typescript-eslint/no-import-type-side-effects': 'error',
     },
   },
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': ['error',
+        ...['a', 'button', 'details', 'fieldset', 'input', 'label', 'legend', 'optgroup', 'option', 'select', 'summary', 'textarea'].map((name) => ({ selector: `JSXOpeningElement[name.name='${name}']`, message: `Use the matching HeroUI component instead of <${name}>.` })),
+      ],
+    },
+  },
 );

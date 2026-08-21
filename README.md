@@ -9,6 +9,7 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 - Node.js 22.23.2 (see `.nvmrc`)
 - pnpm 11.11.0 through Corepack
 - PostgreSQL 16+ for migrations and integration work
+- Google Chrome or Chromium for the responsive UI checks in `pnpm check` (`CHROME_BIN` can point to a non-standard installation)
 
 ## Workspace
 
