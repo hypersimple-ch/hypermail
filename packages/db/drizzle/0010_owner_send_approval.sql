@@ -1,13 +1,15 @@
 ALTER TABLE app.agent_activity_events DROP CONSTRAINT agent_activity_events_detail_closed;
 ALTER TABLE app.agent_activity_events ADD CONSTRAINT agent_activity_events_detail_closed CHECK((detail->>'type') IN ('run_started','run_completed','run_failed','question_asked','question_answered','sensitive_read_summary','authorization_denied','action_authorized','action_started','action_provider_reported','action_verified','action_failed','action_unverifiable','no_action','safety_event','external_drift','send_approval_requested','send_approval_begun','send_rejected','send_approved','send_failed','send_unverifiable'));
 
-ALTER TYPE app.public_send_request_state ADD VALUE IF NOT EXISTS 'rejected';
---> statement-breakpoint
-ALTER TYPE app.public_send_request_state ADD VALUE IF NOT EXISTS 'sending';
---> statement-breakpoint
-ALTER TYPE app.public_send_request_state ADD VALUE IF NOT EXISTS 'failed';
---> statement-breakpoint
-ALTER TYPE app.public_send_request_state ADD VALUE IF NOT EXISTS 'unverifiable';
+-- PostgreSQL forbids using newly appended enum values before commit, while
+-- drizzle-kit batches all pending migrations in one transaction. Replace the small
+-- pre-release enum atomically so later statements can use the full vocabulary now.
+ALTER TYPE app.public_send_request_state RENAME TO public_send_request_state_legacy;
+CREATE TYPE app.public_send_request_state AS ENUM('pending_owner_approval','expired','cancelled','approved','rejected','sending','failed','unverifiable');
+ALTER TABLE app.public_mcp_send_requests ALTER COLUMN state DROP DEFAULT;
+ALTER TABLE app.public_mcp_send_requests ALTER COLUMN state TYPE app.public_send_request_state USING state::text::app.public_send_request_state;
+ALTER TABLE app.public_mcp_send_requests ALTER COLUMN state SET DEFAULT 'pending_owner_approval';
+DROP TYPE app.public_send_request_state_legacy;
 --> statement-breakpoint
 
 ALTER TABLE app.public_mcp_send_requests
