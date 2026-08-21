@@ -32,12 +32,20 @@ describe('worker runtime', () => {
     }).MODEL_API_KEY).toBeUndefined();
     expect(() => parseQueuePayload('agent.evaluate', { jobId: 'not-a-uuid' })).toThrow('QUEUE_PAYLOAD_INVALID');
     expect(() => parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', extra: true })).toThrow('QUEUE_PAYLOAD_INVALID');
+    expect(parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000' })).toEqual({ jobId: '00000000-0000-4000-8000-000000000000' });
+    expect(parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', userId: '00000000-0000-4000-8000-000000000001' })).toEqual({ jobId: '00000000-0000-4000-8000-000000000000', userId: '00000000-0000-4000-8000-000000000001' });
+    expect(() => parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', userId: 'bad' })).toThrow('QUEUE_PAYLOAD_INVALID');
   });
   it('claims durable jobs, recovers notifications, and rejects forbidden policy capabilities', async () => {
     const evaluated: string[] = []; const dispatched: string[] = [];
-    await new ClaimingAgentConsumer({ claim(jobId) { return Promise.resolve(jobId === '00000000-0000-4000-8000-000000000000' ? jobId : null); } }, { evaluate(job) { evaluated.push(job); return Promise.resolve(); } }).consume({ jobId: '00000000-0000-4000-8000-000000000000' });
+    const claims: Array<{ jobId: string; userId?: string }> = [];
+    const consumer = new ClaimingAgentConsumer({ claim(jobId, userId) { claims.push({ jobId, ...(userId ? { userId } : {}) }); return Promise.resolve(jobId); } }, { evaluate(job) { evaluated.push(job); return Promise.resolve(); } });
+    await consumer.consume({ jobId: '00000000-0000-4000-8000-000000000000' });
+    await consumer.consume({ jobId: '00000000-0000-4000-8000-000000000000', userId: '00000000-0000-4000-8000-000000000001' });
     await new DurableNotificationRecovery({ pendingNotificationIds() { return Promise.resolve(['one', 'two']); } }, { dispatch(notificationId) { dispatched.push(notificationId); return Promise.resolve(); } }).recover();
-    expect(evaluated).toEqual(['00000000-0000-4000-8000-000000000000']); expect(dispatched).toEqual(['one', 'two']);
+    expect(evaluated).toEqual(['00000000-0000-4000-8000-000000000000', '00000000-0000-4000-8000-000000000000']);
+    expect(claims).toEqual([{ jobId: '00000000-0000-4000-8000-000000000000' }, { jobId: '00000000-0000-4000-8000-000000000000', userId: '00000000-0000-4000-8000-000000000001' }]);
+    expect(dispatched).toEqual(['one', 'two']);
     expect(requireAutonomousCapability('archive')).toBe('archive'); expect(() => requireAutonomousCapability('send')).toThrow('POLICY_CAPABILITY_FORBIDDEN');
   });
   it('starts consumers and replay recovery, then closes resources in bounded shutdown order', async () => {

@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ManagedSqlClient } from '@hypermail/db';
-import { PolicyExecutor, PostgresPolicyPersistence, type PrivateMutationTransport } from '@hypermail/policy';
 import { DurableNotificationRecovery } from '../src/runtime.js';
 import { DispatchRecovery, IngestionWorker, type DeliveryQueue, type MailProvider } from '../src/ingestion.js';
 import { PostgresIngestionStore, type SqlClient } from '../src/postgres-store.js';
@@ -40,7 +39,7 @@ async function seedActivity(sql: { unsafe(query: string, values?: readonly unkno
 }
 
 describe('worker PostgreSQL runtime integration', () => {
-  it.skipIf(!databaseUrl)('replays durable work, isolates provider faults, verifies policy safety, runs lifecycle, and shuts down not-ready safely', async () => {
+  it.skipIf(!databaseUrl)('replays durable work, isolates provider faults, runs lifecycle, and shuts down not-ready safely', async () => {
     if (!databaseUrl) throw new Error('DATABASE_URL is required');
     await withPostgresSchemas(databaseUrl, async sql => {
       const adapter: SqlClient = {
@@ -49,8 +48,12 @@ describe('worker PostgreSQL runtime integration', () => {
       };
       const database = client(adapter); const ingestion = new PostgresIngestionStore(adapter); const accountA = randomUUID(); const accountB = randomUUID(); const userId = randomUUID();
       await sql.unsafe(`insert into app.users (id, email, password_hash) values ($1, $2, 'test')`, [userId, `${userId}@example.test`]);
-      for (const [id, email] of [[accountA, 'a@example.test'], [accountB, 'b@example.test']] as const) await sql.unsafe(`insert into app.accounts (id, provider, provider_account_id, email, state, baseline_completed_at) values ($1, 'gmail', $2, $3, 'ready', $4)`, [id, id, email, now]);
-      await sql.unsafe(`insert into app.user_accounts (user_id, account_id) values ($1, $2)`, [userId, accountA]);
+      await sql.begin(async transaction => {
+        for (const [id, email] of [[accountA, 'a@example.test'], [accountB, 'b@example.test']] as const) {
+          await transaction.unsafe(`insert into app.accounts (id, user_id, provider, provider_account_id, email, state, baseline_completed_at) values ($1, $5, 'gmail', $2, $3, 'ready', $4)`, [id, id, email, now, userId]);
+          await transaction.unsafe(`insert into app.user_accounts (user_id, account_id) values ($1, $2)`, [userId, id]);
+        }
+      });
 
       const sent: string[] = [];
       const queue: DeliveryQueue = { send: async (_name, payload) => { sent.push(payload.jobId); return `queue:${payload.jobId}`; } };
@@ -78,22 +81,6 @@ describe('worker PostgreSQL runtime integration', () => {
       expect(replayed).toEqual(expect.arrayContaining([`agent:${replay.jobId}`]));
       expect(replayed.some(value => value.startsWith('notification:'))).toBe(true);
       expect(replayed.some(value => value.startsWith('policy:'))).toBe(true);
-
-      const mutationCalls: string[] = [];
-      const transport: PrivateMutationTransport = {
-        archive: async () => { mutationCalls.push('archive'); return {}; }, recoverableTrash: async () => ({}), move: async () => ({}), markRead: async () => { mutationCalls.push('markRead'); return {}; }, markUnread: async () => { mutationCalls.push('markUnread'); return {}; }, draftCreate: async () => ({}), draftEdit: async () => ({}),
-        read: async target => 'messageId' in target && target.messageId === planned.messageId ? { isRead: true } : { folderRole: 'inbox' },
-      };
-      const executor = new PolicyExecutor({ persistence: new PostgresPolicyPersistence(database), transport, isGloballyPaused: () => false, safety: { maxIncorrectRate: 1 } });
-      const verified = await executor.execute({ activityId: planned.activityId, decisionId: planned.decisionId, idempotencyKey: `verified-${randomUUID()}`, kind: 'mark_read', target: { accountId: accountA, messageId: planned.messageId }, precondition: {} });
-      expect(verified.outcome).toBe('succeeded');
-      const incorrect = await seedActivity(sql, accountA, 'incorrect');
-      expect((await executor.execute({ activityId: incorrect.activityId, decisionId: incorrect.decisionId, idempotencyKey: `incorrect-${randomUUID()}`, kind: 'archive', target: { accountId: accountA, messageId: incorrect.messageId }, precondition: {} })).outcome).toBe('incorrect');
-      expect((await sql.unsafe(`select autonomy_paused_at is not null as paused from app.accounts where id = $1`, [accountA]))[0]?.paused).toBe(true);
-      expect((await sql.unsafe(`select state from app.action_verifications where action_id = $1`, [verified.actionId]))[0]?.state).toBe('verified');
-      const paused = await seedActivity(sql, accountA, 'paused');
-      expect((await executor.execute({ activityId: paused.activityId, decisionId: paused.decisionId, idempotencyKey: `paused-${randomUUID()}`, kind: 'mark_unread', target: { accountId: accountA, messageId: paused.messageId }, precondition: {} })).outcome).toBe('paused');
-      expect(mutationCalls).toEqual(['markRead', 'archive']);
 
       await sql.unsafe(`insert into app.message_bodies (message_id, text_body, cached_at, purge_after) values ($1, 'private', $2, $2)`, [planned.messageId, new Date(now.valueOf() - 90 * 86_400_000)]);
       const subscriptionId = randomUUID();

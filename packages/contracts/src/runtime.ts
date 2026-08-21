@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { actionKindSchema, idSchema, isoDateTimeSchema } from './domain.js';
 
-export const agentEvaluateJobSchema = z.strictObject({ jobId: idSchema });
+export const agentEvaluateJobSchema = z.union([
+  z.strictObject({ jobId: idSchema }),
+  z.strictObject({ jobId: idSchema, userId: idSchema }),
+]);
+export type AgentEvaluateJob = z.infer<typeof agentEvaluateJobSchema>;
 export const notificationDeliverJobSchema = z.strictObject({ notificationId: idSchema });
 export const policyExecuteJobSchema = z.strictObject({ actionId: idSchema });
 

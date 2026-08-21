@@ -1,0 +1,21 @@
+/* eslint-disable @typescript-eslint/restrict-template-expressions */
+import type { Sql } from 'postgres';
+import { PublicMcpError, type OwnerSendApprovalRequests, type TenantAuthority } from './core.js';
+import type { PublicToolArgs, PublicToolResult } from './contracts.js';
+type Row={id:string;activity_id:string;expires_at:Date;draft_id:string;state:string};
+export class PostgresOwnerSendApprovalRequests implements OwnerSendApprovalRequests{
+ constructor(private readonly sql:Sql,private readonly finalFence:(a:TenantAuthority,c:string)=>Promise<boolean>=()=>Promise.resolve(false),private readonly now:()=>Date=()=>new Date()){}
+ async requestPending(a:TenantAuthority,x:PublicToolArgs<'request_send_email'>):Promise<PublicToolResult<'request_send_email'>>{
+  const result=await this.sql.begin(async tx=>{
+   const draft=await tx<{id:string}[]>`select d.id from app.drafts d join app.user_accounts ua on ua.account_id=d.account_id where d.id=${x.draftId} and d.account_id=${a.mailboxId} and ua.user_id=${a.userId} and d.created_by='agent' and d.version=${x.expectedVersion} and d.state in ('editing','failed') for update`;
+   if(!draft[0])return {terminal:true as const};
+   const competing=await tx`select id from app.send_approvals where draft_id=${x.draftId} and draft_version=${x.expectedVersion} and state='pending' and expires_at>now() and public_send_request_id is null limit 1`;if(competing[0])return {terminal:true as const};
+   const existing=await tx<Row[]>`select id,activity_id,expires_at,draft_id,state from app.public_mcp_send_requests where user_id=${a.userId} and account_id=${a.mailboxId} and connection_id=${a.connectionId} and draft_id=${x.draftId} and draft_version=${x.expectedVersion}`;let row=existing[0];
+   if(row&&row.state==='pending_owner_approval'&&row.expires_at<=this.now()){if(!await this.finalFence(a,'send.request'))throw new PublicMcpError('forbidden');await tx`update app.public_mcp_send_requests set state='expired',reason_code='request_expired',completed_at=${this.now()},updated_at=greatest(clock_timestamp(),updated_at+interval '1 microsecond') where id=${row.id} and state='pending_owner_approval'`;return{terminal:true as const}}
+   if(row&&row.state!=='pending_owner_approval')return{terminal:true as const};
+   if(!row){if(!await this.finalFence(a,'send.request'))throw new PublicMcpError('forbidden');const activity=await tx<{id:string}[]>`insert into app.agent_activities(user_id,account_id,kind,correlation_id,state,revision) values(${a.userId},${a.mailboxId},'interactive_request',${`send-request:${a.connectionId}:${x.draftId}:${x.expectedVersion}`},'attention_required',1) returning id`;const id=activity[0]?.id;if(!id)throw new Error('Activity creation failed');const expires=new Date(this.now().getTime()+24*60*60_000);row=(await tx<Row[]>`insert into app.public_mcp_send_requests(user_id,account_id,connection_id,draft_id,draft_version,activity_id,authorization_decision_id,lifecycle_revision,assignment_revision,grant_revision,safety_revision,expires_at) values(${a.userId},${a.mailboxId},${a.connectionId},${x.draftId},${x.expectedVersion},${id},${a.authorizationDecisionId},${a.lifecycleRevision},${a.assignmentRevision},${a.grantRevision},${a.safetyRevision},${expires}) returning id,activity_id,expires_at,draft_id,state`)[0];if(!row)throw new Error('Request creation failed');await tx`insert into app.agent_activity_events(activity_id,user_id,account_id,sequence,correlation_id,occurred_at,detail) values(${id},${a.userId},${a.mailboxId},1,${`send-request:${row.id}`},${this.now()},${tx.json({type:'send_approval_requested',requestId:row.id,draftId:x.draftId,draftVersion:x.expectedVersion})})`;await tx`insert into app.audits(actor_type,actor_id,account_id,event,correlation_id,metadata) values('agent_connection',${a.connectionId},${a.mailboxId},'send.owner_approval_requested',${row.id},${tx.json({requestId:row.id,draftId:x.draftId,version:x.expectedVersion})})`}
+   return{terminal:false as const,value:{requestId:row.id,draftId:row.draft_id,state:'pending_owner_approval' as const,expiresAt:row.expires_at.toISOString()}};
+  });
+  if(result.terminal){const error=new Error('Request is no longer pending');error.name='DraftConflictError';throw error}return result.value;
+ }
+}

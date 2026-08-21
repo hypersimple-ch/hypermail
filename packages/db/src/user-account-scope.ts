@@ -1,3 +1,4 @@
+import { AgentManagerStore } from './agent-manager-store.js';
 import type { SqlClient } from './postgres-client.js';
 
 export interface AccountProjection {
@@ -38,7 +39,7 @@ export class UserAccountScopeStore {
 
   async accountIdsForUser(userId: string): Promise<readonly string[]> {
     const result = await this.sql.query<{ account_id: string }>(
-      `select account_id from app.user_accounts where user_id = $1 order by account_id`,
+      `select id as account_id from app.accounts where user_id = $1 order by id`,
       [userId],
     );
     return result.rows.map((row) => row.account_id);
@@ -53,9 +54,8 @@ export class UserAccountScopeStore {
       state: AccountProjection['state'];
     }>(
       `select a.id, a.provider, a.email, a.display_name, a.state
-       from app.user_accounts ua
-       join app.accounts a on a.id = ua.account_id
-       where ua.user_id = $1
+       from app.accounts a
+       where a.user_id = $1
        order by lower(coalesce(a.display_name, a.email)), a.id`,
       [userId],
     );
@@ -70,7 +70,7 @@ export class UserAccountScopeStore {
 
   async ownsAccount(userId: string, accountId: string): Promise<boolean> {
     const result = await this.sql.query<{ owned: boolean }>(
-      `select exists(select 1 from app.user_accounts where user_id = $1 and account_id = $2) as owned`,
+      `select exists(select 1 from app.accounts where user_id = $1 and id = $2) as owned`,
       [userId, accountId],
     );
     return result.rows[0]?.owned === true;
@@ -95,9 +95,9 @@ export class UserAccountScopeStore {
       }>(
         `select id, provider, provider_account_id, email
          from app.accounts
-         where (provider = $1 and provider_account_id = $2) or lower(email) = $2
+         where user_id = $1 and ((provider = $2 and provider_account_id = $3) or lower(email) = $3)
          for update`,
-        [account.provider, account.email],
+        [normalizedUserId, account.provider, account.email],
       );
       if (existing.rows.length > 1) throw new Error('Account identity conflict.');
 
@@ -110,29 +110,24 @@ export class UserAccountScopeStore {
         accountId = current.id;
       } else {
         const inserted = await sql.query<{ id: string }>(
-          `insert into app.accounts (provider, provider_account_id, email, display_name, state)
-           values ($1, $2, $3, $4, 'ready')
+          `insert into app.accounts (user_id, provider, provider_account_id, email, display_name, state)
+           values ($1, $2, $3, $4, $5, 'ready')
            returning id`,
-          [account.provider, account.email, account.email, account.displayName],
+          [normalizedUserId, account.provider, account.email, account.email, account.displayName],
         );
         accountId = inserted.rows[0]?.id ?? (() => { throw new Error('Account projection failed.'); })();
       }
 
-      const owners = await sql.query<{ user_id: string }>(
-        `select user_id from app.user_accounts where account_id = $1 for update`,
-        [accountId],
-      );
-      if (owners.rows.some((owner) => owner.user_id !== normalizedUserId)) throw new Error('Account is already linked to another user.');
-
       await sql.query(
-        `update app.accounts set display_name = $2, state = 'ready', updated_at = now() where id = $1`,
-        [accountId, account.displayName],
+        `update app.accounts set display_name = $3, state = 'ready', updated_at = now() where id = $1 and user_id = $2`,
+        [accountId, normalizedUserId, account.displayName],
       );
       await sql.query(
         `insert into app.user_accounts (user_id, account_id) values ($1, $2)
          on conflict (user_id, account_id) do nothing`,
         [normalizedUserId, accountId],
       );
+      await new AgentManagerStore(sql).assignCurrentDefault(normalizedUserId, accountId);
 
       return { id: accountId, provider: account.provider, email: account.email, displayName: account.displayName, state: 'ready' };
     });

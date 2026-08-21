@@ -15,7 +15,12 @@ export function createPostgresAuthStore(sql: Sql): AuthStore {
         // A transaction-scoped advisory lock makes the one-user bootstrap invariant global.
         await tx`select pg_advisory_xact_lock(743091)`;
         const rows = await tx<UserRow[]>`insert into app.users (email, password_hash) select ${email}, ${passwordHash} where not exists (select 1 from app.users) returning id, email, password_hash`;
-        return rows[0] ? user(rows[0]) : null;
+        const row = rows[0];
+        if (!row) return null;
+        // The existing local deployment explicitly uses embedded Mastra. Hosted
+        // onboarding can replace this choice before attaching its first Mailbox.
+        await tx`insert into app.user_agent_preferences (user_id, default_manager_kind, revision) values (${row.id}, 'mastra', 1)`;
+        return user(row);
       });
     },
     async findUserByEmail(email) { const rows = await sql<UserRow[]>`select id, email, password_hash from app.users where email = ${email}`; return rows[0] ? user(rows[0]) : null; },

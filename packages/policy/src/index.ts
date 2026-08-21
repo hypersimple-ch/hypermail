@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 /** The complete, intentionally small capability surface available to policy code. */
@@ -16,6 +17,9 @@ export const policyPreconditionSchema = z.record(z.string().min(1).max(80), z.un
   if (Object.keys(value).length > 20) ctx.addIssue({ code: 'custom', message: 'Too many precondition fields.' });
 });
 export const policyActionInputSchema = z.strictObject({
+  actionId: id,
+  runId: id,
+  userId: id,
   activityId: id,
   decisionId: id,
   idempotencyKey: z.string().min(16).max(200),
@@ -58,6 +62,7 @@ export type Completion = Readonly<{ outcome: ActionOutcome; receipt?: ProviderRe
 export interface PolicyPersistence {
   claim(input: PolicyActionInput, isGloballyPaused: () => boolean): Promise<Claim>;
   claimImmediatelyBeforeMutation(actionId: string, accountId: string, isGloballyPaused: () => boolean): Promise<'run' | 'paused' | 'finished'>;
+  reportProvider(actionId: string, accountId: string, receipt: ProviderReceipt): Promise<void>;
   complete(actionId: string, accountId: string, completion: Completion, safety: PolicySafetyConfig): Promise<ActionOutcome>;
 }
 export type PolicySafetyConfig = Readonly<{ maxIncorrectRate: number; windowMs: number }>;
@@ -70,7 +75,6 @@ export type PolicyExecutorOptions = Readonly<{
   safety?: Partial<PolicySafetyConfig>;
 }>;
 
-const safetyKinds = new Set<PolicyActionKind>(['archive', 'recoverable_trash', 'move']);
 const record = (value: unknown): Readonly<Record<string, unknown>> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const matches = (actual: Readonly<Record<string, unknown>> | null, expected: Readonly<Record<string, unknown>>): boolean => actual !== null && Object.entries(expected).every(([key, value]) => actual[key] === value);
 /**
@@ -122,7 +126,11 @@ export class PolicyExecutor {
     // This is the last operation before provider I/O and atomically checks global + account pause.
     const ready = await this.options.persistence.claimImmediatelyBeforeMutation(claim.actionId, claim.accountId, this.options.isGloballyPaused);
     if (ready === 'paused') return { actionId: claim.actionId, outcome: 'paused' };
-    if (ready === 'finished') throw new Error('POLICY_ACTION_NOT_READY');
+    if (ready === 'finished') {
+      const afterFence = await this.options.persistence.claim(input, this.options.isGloballyPaused);
+      if (afterFence.outcome) return { actionId: afterFence.actionId, outcome: afterFence.outcome };
+      throw new Error('POLICY_ACTION_NOT_READY');
+    }
 
     let receipt: ProviderReceipt | undefined;
     let failure: unknown;
@@ -141,6 +149,8 @@ export class PolicyExecutor {
       return this.finish(claim, await this.verify(input, undefined, false));
     }
 
+    // A connector report is durable progress, never success. Hypermail readback alone decides verification.
+    await this.options.persistence.reportProvider(claim.actionId, claim.accountId, receipt);
     return this.finish(claim, await this.verify(input, receipt, true));
   }
 
@@ -196,75 +206,147 @@ const asText = (value: unknown) => String(value);
 const jsonObject = (value: unknown): Record<string, unknown> => typeof value === 'string' ? record(JSON.parse(value)) : record(value);
 const canonical = (value: unknown): string => value && typeof value === 'object' && !Array.isArray(value) ? `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value);
 
-/** PostgreSQL adapter touching only the existing policy-related application tables. */
+
+const canonicalDigest = (value: unknown): string => createHash('sha256').update(canonical(value)).digest('hex');
+/** Canonical PostgreSQL adapter. It never creates Actions: authorization is a planner concern. */
 export class PostgresPolicyPersistence implements PolicyPersistence {
   constructor(private readonly sql: PolicySqlClient) {}
+
   async claim(input: PolicyActionInput, isGloballyPaused: () => boolean): Promise<Claim> {
     return this.sql.transaction(async sql => {
-      const accountId = input.target.accountId;
-      const account = await sql.query(`SELECT id, autonomy_paused_at FROM app.accounts WHERE id = $1::uuid FOR UPDATE`, [accountId]);
-      if (!account.rows[0]) throw new Error('POLICY_ACCOUNT_NOT_FOUND');
-      const existing = await sql.query(`SELECT id, state, activity_id, decision_id, kind, target, precondition FROM app.actions WHERE idempotency_key = $1 FOR UPDATE`, [input.idempotencyKey]);
-      if (existing.rows[0]) {
-        const current = existing.rows[0];
-        if (asText(current['activity_id']) !== input.activityId || asText(current['decision_id']) !== input.decisionId || asText(current['kind']) !== input.kind || canonical(jsonObject(current['target'])) !== canonical(input.target) || canonical(jsonObject(current['precondition'])) !== canonical(input.precondition)) throw new Error('POLICY_IDEMPOTENCY_CONFLICT');
-        const state = asText(current['state']);
-        const outcome = state === 'succeeded' || state === 'failed' || state === 'unverifiable' || state === 'incorrect' ? state : undefined;
-        return { actionId: asText(existing.rows[0]['id']), accountId, run: state === 'planned' || state === 'executing', recover: state === 'executing', ...(outcome ? { outcome } : {}) };
-      }
-      const inserted = await sql.query(`INSERT INTO app.actions (activity_id, decision_id, kind, state, idempotency_key, target, precondition, created_at, updated_at) VALUES ($1::uuid, $2::uuid, $3, 'planned', $4, $5::jsonb, $6::jsonb, now(), now()) RETURNING id`, [input.activityId, input.decisionId, input.kind, input.idempotencyKey, JSON.stringify(input.target), JSON.stringify(input.precondition)]);
-      const insertedAction = inserted.rows[0];
-      if (!insertedAction) throw new Error('POLICY_ACTION_INSERT_FAILED');
-      const actionId = asText(insertedAction['id']);
-      await this.audit(sql, accountId, input.activityId, actionId, 'policy.action_claimed', { kind: input.kind });
-      return { actionId, accountId, run: !isGloballyPaused() && !account.rows[0]['autonomy_paused_at'] };
+      const result = await sql.query(`SELECT a.*, ac.autonomy_paused_at
+        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id
+        WHERE a.id=$1::uuid AND a.user_id=$2::uuid AND a.account_id=$3::uuid FOR UPDATE OF a,ac`,
+      [input.actionId,input.userId,input.target.accountId]);
+      const row=result.rows[0];
+      if (!row) throw new Error('POLICY_ACTION_NOT_FOUND');
+      if (asText(row['activity_id'])!==input.activityId || asText(row['run_id'])!==input.runId
+        || asText(row['kind'])!==input.kind || asText(row['idempotency_key'])!==input.idempotencyKey
+        || canonical(jsonObject(row['target']))!==canonical(this.canonicalTarget(input.target))) throw new Error('POLICY_IDEMPOTENCY_CONFLICT');
+      const state=asText(row['state']);
+      const outcome: ActionOutcome|undefined = state==='verified' ? 'succeeded'
+        : state==='failed' ? 'failed' : state==='unverifiable' ? 'unverifiable' : undefined;
+      if (outcome) return { actionId: input.actionId, accountId: input.target.accountId, outcome, run:false };
+      if (state==='cancelled') return { actionId: input.actionId, accountId: input.target.accountId, outcome:'failed', run:false };
+      return { actionId:input.actionId, accountId:input.target.accountId,
+        run: state==='executing' || state==='verifying' || (state==='authorized' && !isGloballyPaused() && !bool(row['autonomy_paused_at'])),
+        recover: state==='executing' || state==='verifying' };
     });
   }
-  async claimImmediatelyBeforeMutation(actionId: string, accountId: string, isGloballyPaused: () => boolean): Promise<'run' | 'paused' | 'finished'> {
+
+  async claimImmediatelyBeforeMutation(actionId:string, accountId:string, isGloballyPaused:()=>boolean):Promise<'run'|'paused'|'finished'> {
     return this.sql.transaction(async sql => {
-      const account = await sql.query(`SELECT autonomy_paused_at FROM app.accounts WHERE id = $1::uuid FOR UPDATE`, [accountId]);
-      const action = await sql.query(`SELECT state FROM app.actions WHERE id = $1::uuid FOR UPDATE`, [actionId]);
-      if (!action.rows[0] || asText(action.rows[0]['state']) !== 'planned') return 'finished';
-      if (isGloballyPaused() || bool(account.rows[0]?.['autonomy_paused_at'])) return 'paused';
-      await sql.query(`UPDATE app.actions SET state = 'executing', started_at = now(), updated_at = now() WHERE id = $1::uuid AND state = 'planned'`, [actionId]);
+      const result=await sql.query(`SELECT a.state,a.user_id,a.run_id,a.kind,a.mode,a.assignment_id,a.assignment_revision,
+          a.grant_id,a.grant_revision,a.safety_revision,ac.autonomy_paused_at,
+          ma.id AS current_assignment_id,ma.revision AS current_assignment_revision,
+          g.id AS current_grant_id,g.revision AS current_grant_revision,g.state AS grant_state,
+          g.capabilities AS grant_capabilities,g.invocation_modes AS grant_modes,
+          s.revision AS current_safety_revision,s.capabilities AS safety_capabilities,s.invocation_modes AS safety_modes
+        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id
+        LEFT JOIN app.mailbox_manager_assignments ma ON ma.user_id=a.user_id AND ma.account_id=a.account_id
+        LEFT JOIN app.agent_capability_grants g ON g.user_id=a.user_id AND g.account_id=a.account_id
+          AND g.manager_kind::text=a.manager_kind::text AND g.agent_connection_id IS NOT DISTINCT FROM a.manager_connection_id
+        LEFT JOIN app.agent_safety_ceiling s ON s.singleton=true
+        WHERE a.id=$1::uuid AND a.account_id=$2::uuid FOR UPDATE OF a,ac`,[actionId,accountId]);
+      const row=result.rows[0];
+      if (!row || asText(row['state'])!=='authorized') return 'finished';
+      const capability=this.capability(asText(row['kind']));
+      if (isGloballyPaused() || bool(row['autonomy_paused_at'])) return 'paused';
+      const allowed=asText(row['current_assignment_id'])===asText(row['assignment_id'])
+        && Number(row['current_assignment_revision'])===Number(row['assignment_revision'])
+        && asText(row['current_grant_id'])===asText(row['grant_id'])
+        && Number(row['current_grant_revision'])===Number(row['grant_revision']) && asText(row['grant_state'])==='active'
+        && Number(row['current_safety_revision'])===Number(row['safety_revision'])
+        && this.array(row['grant_capabilities']).includes(capability) && this.array(row['safety_capabilities']).includes(capability)
+        && this.array(row['grant_modes']).includes(asText(row['mode'])) && this.array(row['safety_modes']).includes(asText(row['mode']));
+      if (!allowed) {
+        const cancelled=await sql.query(`UPDATE app.agent_authorized_actions SET state='cancelled',completed_at=now()
+          WHERE id=$1::uuid AND state='authorized' RETURNING activity_id,user_id,account_id,run_id,correlation_id`,[actionId]);
+        const denied=cancelled.rows[0];
+        if (denied) {
+          await this.event(sql,denied,'authorization_denied',{runId:asText(denied['run_id']),reasonCode:'FROZEN_AUTHORITY_REVOKED'});
+          await this.aggregateActivity(sql,denied);
+        }
+        return 'finished';
+      }
+      const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='executing',started_at=now()
+        WHERE id=$1::uuid AND state='authorized' RETURNING activity_id,user_id,account_id,run_id,correlation_id`,[actionId]);
+      const action=updated.rows[0]; if (!action) return 'finished';
+      await sql.query(`UPDATE app.actions SET state='executing',started_at=coalesce(started_at,now()),updated_at=now() WHERE id=$1::uuid AND state='planned'`,[actionId]);
+      await this.event(sql,action,'action_started',{runId:asText(action['run_id']),actionId});
       return 'run';
     });
   }
-  async complete(actionId: string, accountId: string, completion: Completion, safety: PolicySafetyConfig): Promise<ActionOutcome> {
+
+  async reportProvider(actionId:string, accountId:string, receipt:ProviderReceipt):Promise<void> {
+    void receipt;
+    await this.sql.transaction(async sql => {
+      const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='verifying',provider_reported_at=now()
+        WHERE id=$1::uuid AND account_id=$2::uuid AND state='executing'
+        RETURNING activity_id,user_id,account_id,run_id,correlation_id`,[actionId,accountId]);
+      const action=updated.rows[0]; if (!action) throw new Error('POLICY_ACTION_NOT_REPORTABLE');
+      await this.event(sql,action,'action_provider_reported',{runId:asText(action['run_id']),actionId});
+    });
+  }
+
+  async complete(actionId:string, accountId:string, completion:Completion, safety:PolicySafetyConfig):Promise<ActionOutcome> {
+    void safety;
     return this.sql.transaction(async sql => {
-      // Preconditions can fail while planned; every other completion must close an executing action.
-      const transitioned = await sql.query(`UPDATE app.actions SET state = $2::app.action_state, provider_receipt = $3::jsonb, error_code = $4, finished_at = now(), updated_at = now() WHERE id = $1::uuid AND (state = 'executing' OR (state = 'planned' AND $2 = 'failed' AND $4 = 'PRECONDITION_MISMATCH')) RETURNING state, activity_id, kind`, [actionId, completion.outcome, JSON.stringify(completion.receipt ?? {}), completion.errorCode ?? null]);
-      const row = transitioned.rows[0];
-      if (!row) {
-        const existing = await sql.query(`SELECT state FROM app.actions WHERE id = $1::uuid FOR UPDATE`, [actionId]);
-        const state = asText(existing.rows[0]?.['state']);
-        if (state === 'succeeded' || state === 'failed' || state === 'unverifiable' || state === 'incorrect') return state;
-        throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
+      const found=await sql.query(`SELECT * FROM app.agent_authorized_actions WHERE id=$1::uuid AND account_id=$2::uuid FOR UPDATE`,[actionId,accountId]);
+      let row=found.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_FOUND');
+      const terminal=asText(row['state']);
+      if (terminal==='verified') return 'succeeded';
+      if (terminal==='failed'||terminal==='unverifiable') return terminal;
+      if (completion.outcome==='succeeded') {
+        // Recovery of an interrupted dispatch preserves the absence of a connector report:
+        // authoritative readback may verify executing -> verified directly, with no report event.
+        if (asText(row['state'])!=='executing' && asText(row['state'])!=='verifying') throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
+        const priorState=asText(row['state']);
+        const digest=canonicalDigest(completion.observed);
+        const mutationId=this.providerMutationId(completion.receipt);
+        await sql.query(`INSERT INTO app.agent_action_verifications(action_id,user_id,account_id,verifier,provider_mutation_id,evidence_digest,observed_at)
+          VALUES($1::uuid,$2::uuid,$3::uuid,'hypermail_provider_readback',$4,$5,now())`,[actionId,row['user_id'],accountId,mutationId,digest]);
+        const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='verified',completed_at=now()
+          WHERE id=$1::uuid AND state=$2::app.agent_action_state RETURNING *`,[actionId,priorState]);
+        row=updated.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
+        await sql.query(`UPDATE app.actions SET state='succeeded',provider_receipt=$2::jsonb,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,JSON.stringify(completion.receipt??{})]);
+        await this.event(sql,row,'action_verified',{runId:asText(row['run_id']),actionId});
+        await this.aggregateActivity(sql,row);
+        return 'succeeded';
       }
-      const attempt = await sql.query(`SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt FROM app.action_verifications WHERE action_id = $1::uuid`, [actionId]);
-      await sql.query(`INSERT INTO app.action_verifications (action_id, attempt, state, observed, error_code) VALUES ($1::uuid, $2, $3, $4::jsonb, $5)`, [actionId, Number(attempt.rows[0]?.['attempt'] ?? 1), completion.outcome === 'succeeded' ? 'verified' : completion.outcome === 'unverifiable' ? 'unverifiable' : 'failed', JSON.stringify(completion.observed), completion.errorCode ?? null]);
-      if (safetyKinds.has(asText(row['kind']) as PolicyActionKind) && (completion.outcome === 'succeeded' || completion.outcome === 'incorrect')) {
-        const window = new Date(Math.floor(Date.now() / safety.windowMs) * safety.windowMs).toISOString();
-        const safetyRow = await sql.query(`INSERT INTO app.safety_windows (account_id, window_started_at, verified_mutations, incorrect_mutations, updated_at) VALUES ($1::uuid, $2::timestamptz, 1, $3, now()) ON CONFLICT (account_id, window_started_at) DO UPDATE SET verified_mutations = app.safety_windows.verified_mutations + 1, incorrect_mutations = app.safety_windows.incorrect_mutations + $3, updated_at = now() RETURNING verified_mutations, incorrect_mutations`, [accountId, window, completion.outcome === 'incorrect' ? 1 : 0]);
-        const stats = safetyRow.rows[0];
-        if (stats && Number(stats['incorrect_mutations']) / Number(stats['verified_mutations']) >= safety.maxIncorrectRate) {
-          await sql.query(`UPDATE app.accounts SET autonomy_paused_at = now(), autonomy_pause_reason = 'SAFETY_INCORRECT_RATE', updated_at = now() WHERE id = $1::uuid AND autonomy_paused_at IS NULL`, [accountId]);
-          await this.audit(sql, accountId, asText(row['activity_id']), actionId, 'policy.safety_paused', { verified: Number(stats['verified_mutations']), incorrect: Number(stats['incorrect_mutations']), threshold: safety.maxIncorrectRate, window });
-          // Arrivals already own a notification per activity. Create a deterministic synthetic message/activity for this account/window.
-          const systemMessage = await sql.query(`INSERT INTO app.messages (account_id, provider_message_id, sender, recipients, subject, preview, received_at, is_read, is_baseline, has_attachments, created_at, updated_at) VALUES ($1::uuid, $2, $3::jsonb, '[]'::jsonb, 'Autonomous mailbox mutations paused', 'Safety monitor paused autonomous mutations after incorrect verification.', now(), false, false, false, now(), now()) ON CONFLICT (account_id, provider_message_id) DO UPDATE SET updated_at = now() RETURNING id`, [accountId, `hypermail:safety:${window}` , JSON.stringify({ address: 'safety@hypermail.system', name: 'Hypermail safety monitor' })]);
-          const systemMessageId = systemMessage.rows[0] && asText(systemMessage.rows[0]['id']);
-          if (!systemMessageId) throw new Error('POLICY_SAFETY_MESSAGE_INSERT_FAILED');
-          const safetyActivity = await sql.query(`INSERT INTO app.activities (message_id, account_id, state, last_error_code, created_at, updated_at) VALUES ($1::uuid, $2::uuid, 'failed', 'SAFETY_INCORRECT_RATE', now(), now()) ON CONFLICT (message_id) DO UPDATE SET updated_at = now() RETURNING id`, [systemMessageId, accountId]);
-          const safetyActivityId = safetyActivity.rows[0] && asText(safetyActivity.rows[0]['id']);
-          if (!safetyActivityId) throw new Error('POLICY_SAFETY_ACTIVITY_INSERT_FAILED');
-          await sql.query(`INSERT INTO app.logical_notifications (activity_id, state, sender_label, subject, status_label, created_at, updated_at) VALUES ($1::uuid, 'pending', 'Hypermail safety monitor', 'Autonomous mailbox mutations paused', 'Safety pause', now(), now()) ON CONFLICT (activity_id) DO NOTHING`, [safetyActivityId]);
-        }
-      }
-      await this.audit(sql, accountId, asText(row['activity_id']), actionId, `policy.action_${completion.outcome}`, { errorCode: completion.errorCode ?? null });
+      const state=completion.outcome==='unverifiable' ? 'unverifiable' : 'failed';
+      const code=completion.errorCode ?? (completion.outcome==='incorrect' ? 'VERIFICATION_MISMATCH' : 'PROVIDER_MUTATION_FAILED');
+      const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state=$3::app.agent_action_state,
+          error_code=CASE WHEN $3='failed' THEN $4 ELSE NULL END,completed_at=now()
+        WHERE id=$1::uuid AND account_id=$2::uuid AND state IN ('authorized','executing','verifying') RETURNING *`,[actionId,accountId,state,code]);
+      row=updated.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
+      await sql.query(`UPDATE app.actions SET state=$2::app.action_state,error_code=$3,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,completion.outcome==='incorrect'?'incorrect':state,code]);
+      await this.event(sql,row,state==='unverifiable'?'action_unverifiable':'action_failed',state==='unverifiable'
+        ? {runId:asText(row['run_id']),actionId,reasonCode:code}:{runId:asText(row['run_id']),actionId,errorCode:code});
+      await this.aggregateActivity(sql,row);
       return completion.outcome;
     });
   }
-  private audit(sql: PolicySqlClient, accountId: string, activityId: string | null, actionId: string, event: string, metadata: Record<string, unknown>) {
-    return sql.query(`INSERT INTO app.audits (actor_type, account_id, activity_id, event, correlation_id, metadata) VALUES ('policy', $1::uuid, $2::uuid, $3, $4, $5::jsonb)`, [accountId, activityId, event, `action:${actionId}`, JSON.stringify(metadata)]);
+
+  private canonicalTarget(target:PolicyActionInput['target']):Record<string,unknown> {
+    const canonicalTarget:Record<string,unknown>={...target}; delete canonicalTarget['accountId']; return canonicalTarget;
+  }
+  private capability(kind:string):string { return ({archive:'mail.archive',recoverable_trash:'mail.trash_recoverable',move:'mail.move',mark_read:'mail.mark_read',mark_unread:'mail.mark_unread',draft_create:'draft.create',draft_edit:'draft.edit'} as Record<string,string>)[kind] ?? 'DENIED'; }
+  private array(value:unknown):string[] { return Array.isArray(value) ? value.map(String) : typeof value==='string' ? value.replace(/[{}]/g,'').split(',').filter(Boolean) : []; }
+  private providerMutationId(receipt:ProviderReceipt|undefined):string|null { const value=receipt?.['providerMutationId'] ?? receipt?.['providerMessageId'] ?? receipt?.['providerDraftId'] ?? receipt?.['id']; return typeof value==='string'&&value.length ? value : null; }
+  private async aggregateActivity(sql:PolicySqlClient,row:SqlRow):Promise<void> {
+    const summary=await sql.query(`SELECT count(*) FILTER (WHERE state IN ('authorized','executing','verifying'))::integer AS pending,
+      count(*) FILTER (WHERE state IN ('failed','unverifiable','cancelled'))::integer AS attention
+      FROM app.agent_authorized_actions WHERE run_id=$1::uuid`,[row['run_id']]);
+    const counts=summary.rows[0]; if (Number(counts?.['pending']??0)>0) return;
+    const state=Number(counts?.['attention']??0)>0?'attention_required':'resolved';
+    await sql.query(`UPDATE app.agent_activities SET state=$2::app.agent_activity_state,revision=revision+1,updated_at=now()
+      WHERE id=$1::uuid AND state='open'`,[row['activity_id'],state]);
+  }
+  private async event(sql:PolicySqlClient,row:SqlRow,type:string,detail:Record<string,unknown>):Promise<void> {
+    await sql.query(`SELECT id FROM app.agent_activities WHERE id=$1::uuid AND user_id=$2::uuid AND account_id=$3::uuid FOR UPDATE`,[row['activity_id'],row['user_id'],row['account_id']]);
+    const sequence=await sql.query(`SELECT coalesce(max(sequence),0)::integer+1 AS sequence FROM app.agent_activity_events WHERE activity_id=$1::uuid`,[row['activity_id']]);
+    await sql.query(`INSERT INTO app.agent_activity_events(activity_id,user_id,account_id,sequence,correlation_id,causation_id,occurred_at,detail)
+      VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::uuid,clock_timestamp(),$7::jsonb)`,[row['activity_id'],row['user_id'],row['account_id'],Number(sequence.rows[0]?.['sequence']??1),row['correlation_id'],row['run_id'],JSON.stringify({type,...detail})]);
   }
 }

@@ -1,0 +1,28 @@
+name: hypermail
+label: Hypermail
+kind: platform
+version: 0.1.0
+description: Secure outbound-only connector for Hypermail durable automatic tasks.
+author: Hypermail
+requires_env:
+  - name: HYPERMAIL_AGENT_URL
+    description: "HTTPS origin exposing the public Hypermail agent connector API"
+  - name: HYPERMAIL_AGENT_CONNECTION_ID
+    description: "Verified Hypermail Agent Connection UUID"
+  - name: HYPERMAIL_HERMES_PROFILE_ID
+    description: "Hermes profile identifier recorded during pairing"
+  - name: HYPERMAIL_PROFILE_PRIVATE_JWK
+    description: "P-256 private JWK used for profile verification and DPoP"
+    password: true
+  - name: HYPERMAIL_OAUTH_TOKEN_ENDPOINT
+    description: "OAuth token endpoint issuing sender-constrained DPoP tokens"
+  - name: HYPERMAIL_OAUTH_CLIENT_ID
+    description: "OAuth public client identifier"
+  - name: HYPERMAIL_OAUTH_REFRESH_TOKEN
+    description: "OAuth refresh token from the Hypermail pairing ceremony"
+    password: true
+provides_tools:
+  - hypermail_task_no_action
+  - hypermail_task_question
+  - hypermail_task_actions
+  - hypermail_task_failure

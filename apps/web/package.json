@@ -10,6 +10,7 @@
   "dependencies": {
     "@heroui/react": "3.2.4",
     "@heroui/styles": "3.2.4",
+    "@hypermail/agent-connections": "workspace:*",
     "@hypermail/auth": "workspace:*",
     "@hypermail/contracts": "workspace:*",
     "@hypermail/db": "workspace:*",
@@ -17,6 +18,7 @@
     "@hypermail/notifications": "workspace:*",
     "@hypermail/observability": "workspace:*",
     "@hypermail/send": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "clsx": "2.1.1",
     "lucide-react": "0.468.0",
     "postgres": "3.4.9",

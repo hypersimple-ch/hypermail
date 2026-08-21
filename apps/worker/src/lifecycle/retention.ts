@@ -8,6 +8,13 @@ export interface LifecycleStore {
   purgeCachedBodies(cutoff: Date, at: Date, limit: number): Promise<number>;
   /** Disables expired push endpoints; it never removes subscriptions or delivery history. */
   disableExpiredPushSubscriptions(at: Date, limit: number): Promise<number>;
+  /** Purges expired one-time OAuth material and expired application sessions. */
+  purgeExpiredOAuth(cutoff: Date, at: Date, limit: number): Promise<number>;
+  purgeExpiredSessions(cutoff: Date, at: Date, limit: number): Promise<number>;
+  /** Removes sensitive payload fields while retaining terminal task/audit identity. */
+  minimizeTerminalTaskPayloads(cutoff: Date, at: Date, limit: number): Promise<number>;
+  /** Removes bounded diagnostic text from delivered outbox rows. */
+  purgeOperationalText(cutoff: Date, at: Date, limit: number): Promise<number>;
   acquireLease(name: string, holderId: string, now: Date, ttlMilliseconds: number): Promise<boolean>;
 }
 
@@ -15,11 +22,20 @@ export interface LifecycleOptions {
   bodyRetentionDays: number;
   bodyBatchSize?: number;
   pushBatchSize?: number;
+  lifecycleBatchSize?: number;
+  oauthRetentionHours?: number;
+  sessionRetentionDays?: number;
+  taskPayloadRetentionDays?: number;
+  operationalTextRetentionDays?: number;
 }
 
 export interface LifecycleResult {
   bodiesPurged: number;
   expiredSubscriptionsDisabled: number;
+  oauthRecordsPurged: number;
+  sessionsPurged: number;
+  taskPayloadsMinimized: number;
+  operationalTextPurged: number;
 }
 
 const positiveInteger = (value: number, name: string): void => {
@@ -36,19 +52,36 @@ export class LifecycleWorker {
       bodyRetentionDays: options.bodyRetentionDays,
       bodyBatchSize: options.bodyBatchSize ?? 100,
       pushBatchSize: options.pushBatchSize ?? 100,
+      lifecycleBatchSize: options.lifecycleBatchSize ?? 100,
+      oauthRetentionHours: options.oauthRetentionHours ?? 24,
+      sessionRetentionDays: options.sessionRetentionDays ?? 30,
+      taskPayloadRetentionDays: options.taskPayloadRetentionDays ?? 30,
+      operationalTextRetentionDays: options.operationalTextRetentionDays ?? 14,
     };
     positiveInteger(this.options.bodyBatchSize, 'bodyBatchSize');
     positiveInteger(this.options.pushBatchSize, 'pushBatchSize');
+    positiveInteger(this.options.lifecycleBatchSize, 'lifecycleBatchSize');
+    positiveInteger(this.options.oauthRetentionHours, 'oauthRetentionHours');
+    positiveInteger(this.options.sessionRetentionDays, 'sessionRetentionDays');
+    positiveInteger(this.options.taskPayloadRetentionDays, 'taskPayloadRetentionDays');
+    positiveInteger(this.options.operationalTextRetentionDays, 'operationalTextRetentionDays');
   }
 
   async runCycle(): Promise<LifecycleResult> {
     const at = this.clock.now();
     const cutoff = new Date(at.valueOf() - this.options.bodyRetentionDays * 24 * 60 * 60 * 1000);
-    const [bodiesPurged, expiredSubscriptionsDisabled] = await Promise.all([
+    const day = 24 * 60 * 60 * 1000;
+    const [bodiesPurged, expiredSubscriptionsDisabled, oauthRecordsPurged, sessionsPurged,
+      taskPayloadsMinimized, operationalTextPurged] = await Promise.all([
       this.store.purgeCachedBodies(cutoff, at, this.options.bodyBatchSize),
       this.store.disableExpiredPushSubscriptions(at, this.options.pushBatchSize),
+      this.store.purgeExpiredOAuth(new Date(at.valueOf() - this.options.oauthRetentionHours * 60 * 60 * 1000), at, this.options.lifecycleBatchSize),
+      this.store.purgeExpiredSessions(new Date(at.valueOf() - this.options.sessionRetentionDays * day), at, this.options.lifecycleBatchSize),
+      this.store.minimizeTerminalTaskPayloads(new Date(at.valueOf() - this.options.taskPayloadRetentionDays * day), at, this.options.lifecycleBatchSize),
+      this.store.purgeOperationalText(new Date(at.valueOf() - this.options.operationalTextRetentionDays * day), at, this.options.lifecycleBatchSize),
     ]);
-    return { bodiesPurged, expiredSubscriptionsDisabled };
+    return { bodiesPurged, expiredSubscriptionsDisabled, oauthRecordsPurged, sessionsPurged,
+      taskPayloadsMinimized, operationalTextPurged };
   }
 }
 

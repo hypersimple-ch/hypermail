@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import { AttachmentStream } from "./attachments.js";
-import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, DraftCreateInput, DraftEditInput, DraftMutationResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, PolicyMutationResult, Provider, RetryClassification, SearchOptions } from "./types.js";
+import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, DraftCreateInput, DraftEditInput, DraftMutationResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, MessagePage, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, PolicyMutationResult, Provider, RetryClassification, SearchOptions } from "./types.js";
 
 const retryableRpcCodes = new Set([-32001, -32002, -32003]);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -47,6 +47,11 @@ export class HypermailMcpHttpClient {
     await this.notify("notifications/initialized"); this.#initialized = true; return result;
   }
   async listTools(): Promise<Json> { return this.rpc("tools/list", {}); }
+  async close(): Promise<void> {
+    if (!this.#sessionId) return;
+    const headers = new Headers(this.headers); headers.set("mcp-session-id", this.#sessionId);
+    try { await this.request(this.endpoint, { method: "DELETE", headers }); } finally { this.#sessionId = undefined; this.#initialized = false; }
+  }
   async call<T extends Json = Json>(name: string, args: Record<string, Json>): Promise<T> {
     const result = await this.rpc("tools/call", { name, arguments: args });
     if (!isRecord(result) || (!("content" in result) && !("structuredContent" in result))) return result as T;
@@ -307,6 +312,10 @@ export class HypermailReadClient {
     const hasMore = all.length > messages.length || pages.some(({ result }) => result.hasMore); const next = hasMore ? encodeCursor({ scope, ...(input.account ? { account: input.account } : {}), offsets }) : undefined;
     return { messages, hasMore, ...(next ? { cursor: next } : {}), ...(input.account ? { account: input.account } : {}) };
   }
+  async mailboxPage(account: string, input: { folder?: string; skip?: number; limit?: number } = {}): Promise<MessagePage> {
+    const page = await this.listEmails(account, input.skip ?? 0, positive(input.limit, "limit"), input.folder);
+    return { messages: page.messages, hasMore: page.hasMore };
+  }
   async readMessage(account: string, id: string, format: "markdown" | "html" | "text" = "markdown"): Promise<Message> { return message(await this.transport.call("read_email", { account, id, format }), account, true); }
   async search(options: SearchOptions): Promise<Message[]> {
     if (!options.query && !options.from && !options.to && !options.cc) throw new RangeError("search requires at least one criterion");
@@ -318,7 +327,7 @@ export class HypermailReadClient {
   async openAttachment(account: string, messageId: string, attachmentId: string, options: AttachmentStreamOptions): Promise<AttachmentStream> {
     const result = record(await this.transport.call("read_attachment", { account, messageId, attachmentId }), "read_attachment"); const metadata = attachment({ ...result, id: attachmentId }); const path = text(result.path, "read_attachment.path"); return AttachmentStream.open(metadata, path, options);
   }
-  private async listEmails(account: string, skip: number, limit: number): Promise<{ messages: Message[]; hasMore: boolean }> { const result = record(await this.transport.call("list_emails", { account, folder: "inbox", skip, limit }), "list_emails"); if (!Array.isArray(result.items) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response"); return { messages: result.items.map((raw) => message(raw, account)), hasMore: result.hasMore }; }
+  private async listEmails(account: string, skip: number, limit: number, folder?: string): Promise<{ messages: Message[]; hasMore: boolean }> { const result = record(await this.transport.call("list_emails", { account, folder: folder ?? "inbox", skip, limit }), "list_emails"); if (!Array.isArray(result.items) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response"); return { messages: result.items.map((raw) => message(raw, account)), hasMore: result.hasMore }; }
 }
 function encodeCursor(cursor: Cursor): string { return Buffer.from(JSON.stringify(cursor)).toString("base64url"); }
 function decodeCursor(value: string | undefined, scope: Cursor["scope"], account?: string): Cursor { if (!value) return { scope, ...(account ? { account } : {}), offsets: {} }; try { const raw = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown; const cursor = record(raw, "cursor"); if (cursor.scope !== scope || cursor.account !== account || !isRecord(cursor.offsets)) throw new Error(); const offsets = Object.fromEntries(Object.entries(cursor.offsets).map(([key, offset]) => [key, number(offset, "cursor offset")])); return { scope, ...(account ? { account } : {}), offsets }; } catch { throw new RangeError("Invalid Inbox cursor"); } }

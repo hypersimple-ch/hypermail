@@ -8,14 +8,17 @@ export type AuthenticatedActivityScope = Readonly<{
   accountIds: readonly string[];
 }>;
 
-export type ActivityQuestion = Readonly<{ prompt: string; state: 'open' | 'answered' | 'cancelled' }>;
+export type ActivityQuestion = Readonly<{ id?: string; version?: number; prompt: string; state: 'open' | 'answered' | 'cancelled' }>;
 export type ActivityFailure = Readonly<{ code: string; message: string; retrying: boolean }>;
 export type ActivityTimelineEvent = Readonly<{ id: string; at: string; label: string; detail?: string }>;
+
+export type ActivityRunRecord = Readonly<{ id:string; sequence:number; state:'created'|'running'|'completed'; outcome:string|null; managerKind:string; mode:'automatic'|'interactive'; assignmentRevision:number; grantRevision:number; safetyRevision:number; createdAt:string; startedAt:string|null; completedAt:string|null }>;
+export type ActivityActionRecord = Readonly<{ id:string; runId:string; kind:string; state:string; assignmentRevision:number; grantRevision:number; safetyRevision:number; authorizationRevision:number; attempt:number; verification: Readonly<{ verifier:string; observedAt:string; providerMutationId:string|null }> | null }>;
 
 export type ActivityRecord = Readonly<{
   id: string;
   accountId: string;
-  messageId: string;
+  messageId: string | null;
   state: DomainActivityState;
   version: number;
   createdAt: string;
@@ -27,6 +30,8 @@ export type ActivityRecord = Readonly<{
   failure?: ActivityFailure;
   jobState?: ActivityJobState;
   timeline: readonly ActivityTimelineEvent[];
+  runs?: readonly ActivityRunRecord[];
+  actions?: readonly ActivityActionRecord[];
 }>;
 
 export type ActivityListInput = Readonly<{
@@ -42,6 +47,7 @@ export type ActivityPage = Readonly<{ items: readonly ActivityRecord[]; nextCurs
 export interface ActivityRepository {
   list(scope: AuthenticatedActivityScope, input: ActivityListInput): Promise<ActivityPage>;
   get(scope: AuthenticatedActivityScope, activityId: string): Promise<ActivityRecord | null>;
+  forMessage(scope: AuthenticatedActivityScope, messageId: string): Promise<readonly ActivityRecord[]>;
   requestRetry(scope: AuthenticatedActivityScope, activityId: string, expectedVersion: number): Promise<ActivityMutationResult>;
   acknowledge(scope: AuthenticatedActivityScope, activityId: string, expectedVersion: number): Promise<ActivityMutationResult>;
 }

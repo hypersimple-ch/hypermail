@@ -1,0 +1,10 @@
+{
+  "name": "@hypermail/hermes-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hermes Agent platform plugin for Hypermail durable tasks",
+  "scripts": {
+    "build": "python3 -c \"import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('hermes_hypermail').glob('*.py')]\"",
+    "test": "python3 -m unittest discover -s test -p 'test_*.py'"
+  }
+}

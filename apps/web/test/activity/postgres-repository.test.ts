@@ -12,6 +12,7 @@ class RecordingSql implements SqlClient {
   readonly calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
   constructor(private readonly responses: readonly SqlQueryResult[]) {}
   query<Row extends SqlRow = SqlRow>(text: string, values?: readonly unknown[]): Promise<SqlQueryResult<Row>> {
+    if (text.includes('pg_advisory_xact_lock')) return Promise.resolve({rows:[]} as SqlQueryResult<Row>);
     this.calls.push({ text, values });
     return Promise.resolve((this.responses[this.calls.length - 1] ?? { rows: [] }) as SqlQueryResult<Row>);
   }
@@ -29,20 +30,21 @@ describe('PostgresActivityRepository', () => {
     expect(page.counts).toEqual({ new: 2, questions: 1, failed: 1, history: 3 });
     expect(page.nextCursor).toBe(encodeURIComponent('2025-01-02T00:00:00.000Z|z'));
     const list = db.calls[1] ?? { text: '', values: [] };
-    expect(list.text).toContain("a.account_id = ANY($1::uuid[])");
-    expect(list.text).toContain("a.state = 'acknowledged'");
-    expect(list.text).toContain('(a.created_at, a.id) <');
-    expect(list.text).toContain('ORDER BY a.created_at DESC, a.id DESC');
+    expect(list.text).toContain("COALESCE(ca.account_id,a.account_id)=ANY($1::uuid[])");
+    expect(list.text).toContain("WHEN 'acknowledged' THEN 'acknowledged'");
+    expect(list.text).toContain("END = 'acknowledged'");
+    expect(list.text).toContain('(COALESCE(ca.created_at,a.created_at),COALESCE(ca.id,a.id))<');
+    expect(list.text).toContain('ORDER BY COALESCE(ca.created_at,a.created_at) DESC,COALESCE(ca.id,a.id) DESC');
     expect(list.values).toContain(scope.accountIds);
     expect(list.values).toContain(`%${'x'.repeat(120)}%`);
   });
 
   it('maps each filter to its persisted state semantics', async () => {
     const cases = [
-      ['new', "(a.state = 'new' OR a.state = 'handled')"],
-      ['questions', "a.state = 'waiting_question'"],
-      ['failed', "a.state = 'failed'"],
-      ['history', "a.state = 'acknowledged'"],
+      ['new', "END IN ('new','handled')"],
+      ['questions', "END = 'waiting_question'"],
+      ['failed', "END = 'failed'"],
+      ['history', "END = 'acknowledged'"],
     ] as const;
     for (const [filter, predicate] of cases) {
       const db = new RecordingSql([{ rows: [] }, { rows: [] }]);
@@ -62,7 +64,7 @@ describe('PostgresActivityRepository', () => {
     const update = db.calls[1] ?? { text: '', values: [] };
     const enqueue = db.calls[2] ?? { text: '', values: [] };
     const audit = db.calls[3] ?? { text: '', values: [] };
-    expect(lock.text).toContain('FOR UPDATE');
+    expect(lock.text).toContain('COALESCE(ca.id,a.id)');
     expect(update.text).toContain('version = $3');
     expect(enqueue.text).toContain('INSERT INTO app.agent_jobs');
     expect(enqueue.text).toContain("state = 'pending'");
@@ -78,6 +80,6 @@ describe('PostgresActivityRepository', () => {
     const lock = db.calls[0] ?? { text: '', values: [] };
     expect(lock.text).toContain("q.state = 'open'");
     expect(lock.text).toContain("j.state IN ('pending', 'running')");
-    expect(lock.text).toContain('FOR UPDATE');
+    expect(lock.text).toContain('COALESCE(ca.id,a.id)');
   });
 });

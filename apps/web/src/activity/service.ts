@@ -28,6 +28,8 @@ export class ActivityService {
     });
   }
 
+  async forMessage(scope: AuthenticatedActivityScope, messageId: string): Promise<readonly ActivityRecord[]> { this.assertScope(scope); if (!/^[0-9a-f-]{36}$/i.test(messageId)) throw new ActivityInputError('Invalid message.'); return this.repository.forMessage(scope,messageId); }
+
   async detail(scope: AuthenticatedActivityScope, activityId: string): Promise<ActivityRecord> {
     this.assertScope(scope);
     const activity = await this.repository.get(scope, activityId);

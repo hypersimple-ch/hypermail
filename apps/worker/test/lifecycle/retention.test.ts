@@ -30,6 +30,10 @@ class FakeStore implements LifecycleStore {
     }
     return count;
   }
+  async purgeExpiredOAuth(): Promise<number> { return 0; }
+  async purgeExpiredSessions(): Promise<number> { return 0; }
+  async minimizeTerminalTaskPayloads(): Promise<number> { return 0; }
+  async purgeOperationalText(): Promise<number> { return 0; }
   async acquireLease(_name: string, holderId: string, now: Date, ttlMilliseconds: number): Promise<boolean> {
     if (this.lease && this.lease.expires > now && this.lease.holder !== holderId) return false;
     this.lease = { holder: holderId, expires: new Date(now.valueOf() + ttlMilliseconds) };

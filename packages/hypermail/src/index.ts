@@ -6,3 +6,5 @@ export type {
   CompleteAddAccountInput, CompleteAddAccountResult, DraftCreateInput, DraftEditInput, DraftMutationResult, PolicyMutationResult, EmailAddress, Folder, HypermailReadClientOptions,
   ImapAddAccountConfig, InboxPage, Message, MessagePage, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, Provider, RetryClassification, SearchOptions
 } from "./types.js";
+
+export * from "./tenant-client.js";

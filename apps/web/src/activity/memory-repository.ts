@@ -38,6 +38,8 @@ export class InMemoryActivityRepository implements ActivityRepository {
     return Promise.resolve({ items, nextCursor: filtered.length > items.length && finalItem ? encodeCursor(finalItem) : null, counts });
   }
 
+  forMessage(scope: AuthenticatedActivityScope, messageId: string): Promise<readonly ActivityRecord[]> { return Promise.resolve(this.activities.filter(activity => activity.messageId === messageId && scope.accountIds.includes(activity.accountId)).sort(newestFirst)); }
+
   get(scope: AuthenticatedActivityScope, activityId: string): Promise<ActivityRecord | null> {
     return Promise.resolve(this.activities.find((activity) => activity.id === activityId && scope.accountIds.includes(activity.accountId)) ?? null);
   }

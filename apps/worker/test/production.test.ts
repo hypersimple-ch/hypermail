@@ -9,7 +9,7 @@ const environment = () => parseWorkerEnvironment({
   DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
   MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', HEALTH_PORT: 31_002,
 });
-const job = { id: 'job', activityId: '00000000-0000-4000-8000-000000000001', accountId: '00000000-0000-4000-8000-000000000002', accountEmail: 'account@example.test', messageId: '00000000-0000-4000-8000-000000000003', providerMessageId: 'provider-id', sender: 'Sender', subject: 'Subject', receivedAt: '2025-01-01T00:00:00.000Z', attachments: [{ filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }], attempt: 1 } as const;
+const job = { userId: '00000000-0000-4000-8000-000000000004', id: 'job', activityId: '00000000-0000-4000-8000-000000000001', accountId: '00000000-0000-4000-8000-000000000002', accountEmail: 'account@example.test', messageId: '00000000-0000-4000-8000-000000000003', providerMessageId: 'provider-id', sender: 'Sender', subject: 'Subject', receivedAt: '2025-01-01T00:00:00.000Z', attachments: [{ filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }], attempt: 1 } as const;
 
 describe('production composition', () => {
   it('starts with injected resources and a model adapter that is ready without a probe request', async () => {
@@ -33,7 +33,7 @@ describe('production composition', () => {
   it('maps only fetched text and durable attachment metadata into triage', async () => {
     const inputs: TriageInput[] = []; 
     const consumer = new DeliverAgentConsumer(
-      { initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body only', attachments: [{ filename: 'ignored.bin', bytes: 'secret' }] }) },
+      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body only', attachments: [{ filename: 'ignored.bin', bytes: 'secret' }] }) }) },
       { triage: (input: TriageInput) => { inputs.push(input); return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } }); } } as never,
       { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve() }, 'Never mutate mail.',
     );
@@ -47,15 +47,48 @@ describe('production composition', () => {
   it('does not claim duplicate terminal jobs and marks pre-triage adapter failures failed', async () => {
     const queries: string[] = [];
     const database = { query: (sql: string) => { queries.push(sql); return Promise.resolve({ rows: [] }); }, transaction: async (operation: (client: never) => Promise<void>) => operation(database) } as unknown as ManagedSqlClient;
-    expect(await new PostgresAgentJobStore(database).claim('job')).toBeNull();
+    expect(await new PostgresAgentJobStore(database).claim('job', job.userId)).toBeNull();
     expect(queries[0]).toContain("state IN ('pending', 'running')");
     const failures: string[] = [];
     const consumer = new DeliverAgentConsumer(
-      { initialize: () => Promise.resolve(null), readMessage: () => Promise.reject(new Error('unavailable')) },
+      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.reject(new Error('unavailable')) }) },
       { triage: () => Promise.resolve({}) } as never,
       { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); } }, 'Never mutate mail.',
     );
     await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).rejects.toThrow('unavailable');
     expect(failures).toEqual(['AGENT_INPUT_UNAVAILABLE']);
   });
+  it.each([
+    ['agent_connection', 'EXTERNAL_MANAGER_DELIVERY_REQUIRED'],
+    ['none', 'NO_MANAGER_ASSIGNED'],
+    ['mastra', 'CANONICAL_AUTHORITY_UNAVAILABLE'],
+  ])('fails closed for %s without handing work to embedded Mastra', async (managerKind, reason) => {
+    const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
+    const row = { ...job, jobState: 'pending', runId: null, assignmentId: job.accountId,
+      assignmentRevision: 1, managerKind, automaticEnabled: true, grantId: null, grantRevision: null,
+      grantState: null, grantModes: null, grantCapabilities: null, safetyRevision: 1,
+      safetyModes: ['automatic'], safetyCapabilities: ['mail.read'] };
+    const database = { query: (sql: string, values?: readonly unknown[]) => {
+      queries.push({ sql, values }); return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] });
+    }, transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
+    expect(await new PostgresAgentJobStore(database).claim(job.id, job.userId)).toBeNull();
+    expect(queries.some(query => query.values?.includes(reason))).toBe(true);
+    expect(queries.some(query => query.sql.includes('insert into app.agent_runs'))).toBe(false);
+  });
+
+  it('claims reviewed automatic Mastra authority once and links one deterministic canonical Run', async () => {
+    const queries: string[] = [];
+    const row = { ...job, jobState: 'pending', runId: null, assignmentId: job.accountId,
+      assignmentRevision: 1, managerKind: 'mastra', automaticEnabled: true, grantId: job.messageId,
+      grantRevision: 1, grantState: 'active', grantModes: ['automatic'], grantCapabilities: ['mail.read'],
+      safetyRevision: 1, safetyModes: ['automatic'], safetyCapabilities: ['mail.read'] };
+    const database = { query: (sql: string) => { queries.push(sql);
+      return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] }); },
+      transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
+    const claimed = await new PostgresAgentJobStore(database).claim(job.id, job.userId);
+    expect(claimed?.runId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(queries.filter(query => query.includes('insert into app.agent_runs'))).toHaveLength(1);
+    expect(queries.some(query => query.includes("'running',now(),now()") && query.includes('on conflict(id) do nothing'))).toBe(true);
+  });
+
 });

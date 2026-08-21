@@ -12,6 +12,8 @@ import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
 import { initialPwaState } from './pwa/state.js';
 import { HypermailShell, type ActivityItem, type ActivityState, type Draft, type Screen, type ShellData } from './ui/index.js';
+import type { ManagerChoice, ManagerSettingsView, MailboxManagerView } from './agent-connections/contracts.js';
+import type { ManagerMutations } from './mailbox-managers/index.js';
 import type { ChangePasswordInput, ChangePasswordResult } from './ui/account.js';
 import type { CompleteMailboxConnectionInput, MailboxConnectionResult, PendingMailboxConnection, SettingsMailbox, StartMailboxConnectionInput } from './ui/settings.js';
 
@@ -86,6 +88,7 @@ function App(): React.JSX.Element {
   const [data, setData] = React.useState<ShellData>(empty); const [drafts, setDrafts] = React.useState<readonly BrowserDraft[]>([]);
   const [dashboard, setDashboard] = React.useState<AgentDashboard | undefined>(); const [agentError, setAgentError] = React.useState('');
   const [state, setState] = React.useState<AppState>('loading'); const [loginNotice, setLoginNotice] = React.useState('');
+  const [managerSettings, setManagerSettings] = React.useState<ManagerSettingsView>();
   const [ownerEmail, setOwnerEmail] = React.useState(''); const [settingsMailboxes, setSettingsMailboxes] = React.useState<readonly SettingsMailbox[]>([]);
   const [pendingMailbox, setPendingMailbox] = React.useState<PendingMailboxConnection | undefined>(readPendingMailbox); const [settingsNotice, setSettingsNotice] = React.useState('');
   const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : 'inbox'); const callbackHandled = React.useRef(false);
@@ -101,6 +104,7 @@ function App(): React.JSX.Element {
     const items = (await activity.json() as { items: ActivityResponse[] }).items.map(activityItem);
     setOwnerEmail(sessionBody.user.email); setSettingsMailboxes(sessionBody.accounts);
     setDrafts((await draftResponse.json() as { drafts: BrowserDraft[] }).drafts); setData({ accounts, messages, activity: items }); setState(messages.length || items.length ? 'ready' : 'empty');
+    void Promise.resolve().then(() => fetch('/api/v1/agent-connections')).then(async response => { if (!response.ok) throw new Error('manager settings unavailable'); const result = await response.json() as { settings: ManagerSettingsView }; setManagerSettings(result.settings); }).catch(() => { setManagerSettings(undefined); });
     void fetch('/api/v1/agent', { headers: { 'x-api-version': 'v1' } }).then(async (response) => response.ok ? response.json() as Promise<{ dashboard: AgentDashboard }> : Promise.reject(new Error('agent unavailable'))).then((result) => { setAgentError(''); setDashboard(result.dashboard); }).catch(() => { setDashboard(undefined); setAgentError('Could not load agent status. Try again later.'); });
   }, []);
   const startMailboxConnection = React.useCallback(async (input: StartMailboxConnectionInput): Promise<MailboxConnectionResult> => {
@@ -179,12 +183,25 @@ function App(): React.JSX.Element {
   const openMessage = async (message: ShellData['messages'][number]) => { const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error('message unavailable'); const detail = (await response.json() as { message: { body: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; subject: string } }).message; return { ...message, sender: detail.sender || message.sender, subject: detail.subject || message.subject, body: detail.body || '', attachments: detail.attachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) }; };
   const saveDraft = async (draft: { id?: string; expectedVersion?: number; accountId: string; recipient: string; subject: string; body: string }) => { const response = await fetch(draft.id ? `/api/v1/drafts/${encodeURIComponent(draft.id)}` : '/api/v1/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: draft.accountId, recipients: [{ kind: 'to', address: draft.recipient }], subject: draft.subject, body: draft.body, ...(draft.id ? { expectedVersion: draft.expectedVersion } : {}) }) }); if (!response.ok) throw new Error('draft unavailable'); await load(); };
   const mutateActivity = async (item: ActivityItem) => { const endpoint = item.action === 'Retry' ? 'retry' : item.action === 'Acknowledge' ? 'acknowledge' : null; if (!endpoint || item.expectedVersion === undefined) return; const response = await fetch(`/api/v1/activities/${encodeURIComponent(item.id)}/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedVersion: item.expectedVersion }) }); if (!response.ok) throw new Error('activity unavailable'); await load(); };
+  const updateManagerSettings = async (path: string, body: Readonly<Record<string, unknown>>): Promise<void> => {
+    if (!navigator.onLine) throw new Error('offline');
+    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const result = await response.json().catch(() => null) as { settings?: ManagerSettingsView } | null;
+    if (!response.ok || !result?.settings) throw new Error('manager settings unavailable');
+    setManagerSettings(result.settings);
+  };
+  const managerMutations: ManagerMutations = {
+    setDefault: (manager: ManagerChoice, revision: number) => updateManagerSettings('/api/v1/mailbox-managers/default', { manager, expectedRevision: revision }),
+    setLifecycle: (id, nextState, revision) => updateManagerSettings(`/api/v1/agent-connections/${encodeURIComponent(id)}/${nextState === 'security_revoked' ? 'security-revoke' : 'lifecycle'}`, { state: nextState, expectedRevision: revision }),
+    setAssignment: (mailbox: MailboxManagerView, manager: ManagerChoice, automatic: boolean) => updateManagerSettings(`/api/v1/mailbox-managers/${encodeURIComponent(mailbox.mailboxId)}/assignment`, { manager, automaticProcessingEnabled: automatic, expectedAssignmentRevision: mailbox.assignment.revision, ...(mailbox.grant ? { expectedGrantRevision: mailbox.grant.revision } : {}) }),
+    reapprove: (mailbox: MailboxManagerView) => updateManagerSettings(`/api/v1/mailbox-managers/${encodeURIComponent(mailbox.mailboxId)}/reapprove`, { expectedGrantRevision: mailbox.grant?.revision, idempotencyKey: crypto.randomUUID() }),
+  };
   const agentHandlers: AgentUiHandlers = {
     onAnswer: ({ questionId, answer, expectedVersion, idempotencyKey }) => { void fetch(`/api/v1/agent/questions/${encodeURIComponent(questionId)}/answer`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ answer, expectedVersion, idempotencyKey }) }).then((response) => { if (!response.ok) throw new Error('answer unavailable'); return load(); }).catch(() => { setAgentError('Could not record the agent answer. Try again.'); }); },
     onRetry: (action) => { void fetch(`/api/v1/agent/actions/${encodeURIComponent(action.id)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ expectedVersion: action.version }) }).then((response) => { if (!response.ok) throw new Error('retry unavailable'); return load(); }).catch(() => { setAgentError('Could not retry the agent action. Try again.'); }); },
     onAutonomy: (target: AutonomyScope, autonomyState: AutonomyState, expectedVersion: number) => { void fetch('/api/v1/agent/autonomy', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ scope: target.kind, ...(target.kind === 'account' ? { accountId: target.accountId } : {}), state: autonomyState, expectedVersion }) }).then((response) => { if (!response.ok) throw new Error('autonomy unavailable'); return load(); }).catch(() => { setAgentError('Could not update agent autonomy. Try again.'); }); },
   };
-  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} {...(settingsNotice ? { settingsNotice } : {})} onActivityAction={mutateActivity} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
+  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} {...(settingsNotice ? { settingsNotice } : {})} onActivityAction={mutateActivity} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
 }
 
 function RootApp(): React.JSX.Element { return <><App /><PwaPresentation /></>; }

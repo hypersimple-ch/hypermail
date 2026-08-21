@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -12,6 +13,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 export const app = pgSchema('app');
@@ -43,6 +45,15 @@ export const notificationState = app.enum('notification_state', ['pending', 'del
 export const deliveryState = app.enum('delivery_state', ['pending', 'succeeded', 'retryable', 'permanent_failure']);
 export const jobState = app.enum('job_state', ['pending', 'running', 'suspended', 'succeeded', 'failed', 'cancelled']);
 export const healthState = app.enum('health_state', ['healthy', 'degraded', 'failed', 'paused']);
+export const agentConnectionState = app.enum('agent_connection_state', ['connected', 'paused', 'disconnected', 'security_revoked']);
+export const mailboxManagerKind = app.enum('mailbox_manager_kind', ['mastra', 'agent_connection', 'none']);
+export const capabilityGrantState = app.enum('capability_grant_state', ['active', 'revoked', 'reapproval_required']);
+export const publicSendRequestState = app.enum('public_send_request_state', ['pending_owner_approval', 'expired', 'cancelled', 'approved', 'rejected', 'sending', 'failed', 'unverifiable']);
+export const agentTaskState = app.enum('agent_task_state', ['pending','leased','waiting_for_answer','awaiting_action_verification','completed','cancelled','obsolete','dead_letter']);
+export const agentTaskPendingReason = app.enum('agent_task_pending_reason', ['initial','retry','continuation','owner_resumed']);
+export const agentTaskErrorCode = app.enum('agent_task_error_code', ['MANAGER_UNAVAILABLE','RATE_LIMITED','DEPENDENCY_UNAVAILABLE','LEASE_EXPIRED','DEADLINE_EXCEEDED','INVALID_REPORT','AUTHORIZATION_REVOKED','OWNER_CANCELLED','INTERNAL']);
+export const agentTaskOutboxEvent = app.enum('agent_task_outbox_event', ['task_available','task_obsolete','question_answered','task_terminal']);
+export const agentTaskReportKind = app.enum('agent_task_report_kind', ['heartbeat','result','failure','answer']);
 
 export const users = app.table('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -152,6 +163,7 @@ export const authRateLimits = app.table('auth_rate_limits', {
 
 export const accounts = app.table('accounts', {
   id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
   provider: provider('provider').notNull(),
   providerAccountId: text('provider_account_id').notNull(),
   email: text('email').notNull(),
@@ -165,6 +177,9 @@ export const accounts = app.table('accounts', {
 }, (table) => [
   uniqueIndex('accounts_provider_identity_unique').on(table.provider, table.providerAccountId),
   uniqueIndex('accounts_email_unique').on(table.email),
+  uniqueIndex('accounts_user_provider_identity_unique').on(table.userId, table.provider, table.providerAccountId),
+  uniqueIndex('accounts_user_email_unique').on(table.userId, sql`lower(${table.email})`),
+  uniqueIndex('accounts_user_id_id_unique').on(table.userId, table.id),
 ]);
 
 export const userAccounts = app.table('user_accounts', {
@@ -173,8 +188,285 @@ export const userAccounts = app.table('user_accounts', {
   createdAt,
 }, (table) => [
   primaryKey({ columns: [table.userId, table.accountId] }),
+  uniqueIndex('user_accounts_account_unique').on(table.accountId),
   index('user_accounts_account_idx').on(table.accountId),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [accounts.userId, accounts.id], name: 'user_accounts_owned_account_fk' }).onDelete('cascade'),
 ]);
+
+export const agentConnections = app.table('agent_connections', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  adapter: text('adapter').notNull(),
+  externalProfileId: text('external_profile_id').notNull(),
+  displayName: text('display_name').notNull(),
+  state: agentConnectionState('state').notNull().default('connected'),
+  lifecycleRevision: integer('lifecycle_revision').notNull().default(1),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex('agent_connections_external_profile_unique').on(table.userId, table.adapter, table.externalProfileId),
+  uniqueIndex('agent_connections_user_id_unique').on(table.userId, table.id),
+  index('agent_connections_user_state_idx').on(table.userId, table.state),
+  check('agent_connections_adapter_valid', sql`${table.adapter} ~ '^[a-z][a-z0-9_-]*$'`),
+  check('agent_connections_external_profile_nonempty', sql`length(btrim(${table.externalProfileId})) > 0`),
+  check('agent_connections_lifecycle_revision_positive', sql`${table.lifecycleRevision} > 0`),
+]);
+
+export const agentConnectionReconnectProofs = app.table('agent_connection_reconnect_proofs', {
+  eventId: text('event_id').primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  connectionId: uuid('connection_id').notNull().references(() => agentConnections.id, { onDelete: 'restrict' }),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  lifecycleRevision: integer('lifecycle_revision'),
+});
+
+export const agentConnectionReconnectEvents = app.table('agent_connection_reconnect_events', {
+  eventId: text('event_id').primaryKey(),
+  connectionId: uuid('connection_id').notNull().references(() => agentConnections.id, { onDelete: 'restrict' }),
+  lifecycleRevision: integer('lifecycle_revision').notNull(),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+}, (table) => [uniqueIndex('agent_connection_reconnect_events_revision_unique').on(table.connectionId, table.lifecycleRevision)]);
+
+export const userAgentPreferences = app.table('user_agent_preferences', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  defaultManagerKind: mailboxManagerKind('default_manager_kind').notNull(),
+  defaultAgentConnectionId: uuid('default_agent_connection_id'),
+  revision: integer('revision').notNull().default(1),
+  updatedAt,
+}, (table) => [
+  foreignKey({
+    columns: [table.userId, table.defaultAgentConnectionId],
+    foreignColumns: [agentConnections.userId, agentConnections.id],
+    name: 'user_agent_preferences_owned_connection_fk',
+  }).onDelete('restrict'),
+  check('user_agent_preferences_manager_reference', sql`(
+    (${table.defaultManagerKind} = 'agent_connection' and ${table.defaultAgentConnectionId} is not null)
+    or (${table.defaultManagerKind} in ('mastra', 'none') and ${table.defaultAgentConnectionId} is null)
+  )`),
+  check('user_agent_preferences_revision_positive', sql`${table.revision} > 0`),
+]);
+
+export const mailboxManagerAssignments = app.table('mailbox_manager_assignments', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  managerKind: mailboxManagerKind('manager_kind').notNull(),
+  agentConnectionId: uuid('agent_connection_id'),
+  automaticProcessingEnabled: boolean('automatic_processing_enabled').notNull().default(false),
+  revision: integer('revision').notNull().default(1),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex('mailbox_manager_assignments_user_account_unique').on(table.userId, table.accountId),
+  uniqueIndex('mailbox_manager_assignments_identity_unique').on(table.id, table.userId, table.accountId),
+  foreignKey({
+    columns: [table.userId, table.accountId],
+    foreignColumns: [userAccounts.userId, userAccounts.accountId],
+    name: 'mailbox_manager_assignments_owned_mailbox_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.userId, table.agentConnectionId],
+    foreignColumns: [agentConnections.userId, agentConnections.id],
+    name: 'mailbox_manager_assignments_owned_connection_fk',
+  }).onDelete('restrict'),
+  check('mailbox_manager_assignments_manager_reference', sql`(
+    (${table.managerKind} = 'agent_connection' and ${table.agentConnectionId} is not null)
+    or (${table.managerKind} in ('mastra', 'none') and ${table.agentConnectionId} is null)
+  )`),
+  check('mailbox_manager_assignments_revision_positive', sql`${table.revision} > 0`),
+]);
+
+export const mailboxManagerAssignmentRevisions = app.table('mailbox_manager_assignment_revisions', {
+  assignmentId: uuid('assignment_id').notNull(),
+  revision: integer('revision').notNull(),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  managerKind: mailboxManagerKind('manager_kind').notNull(),
+  agentConnectionId: uuid('agent_connection_id'),
+  automaticProcessingEnabled: boolean('automatic_processing_enabled').notNull(),
+  changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.assignmentId, table.revision] }),
+  foreignKey({
+    columns: [table.assignmentId, table.userId, table.accountId],
+    foreignColumns: [mailboxManagerAssignments.id, mailboxManagerAssignments.userId, mailboxManagerAssignments.accountId],
+    name: 'mailbox_manager_assignment_revisions_assignment_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [table.userId, table.agentConnectionId],
+    foreignColumns: [agentConnections.userId, agentConnections.id],
+    name: 'mailbox_manager_assignment_revisions_owned_connection_fk',
+  }).onDelete('restrict'),
+  check('mailbox_manager_assignment_revisions_manager_reference', sql`(
+    (${table.managerKind} = 'agent_connection' and ${table.agentConnectionId} is not null)
+    or (${table.managerKind} in ('mastra', 'none') and ${table.agentConnectionId} is null)
+  )`),
+  check('mailbox_manager_assignment_revisions_revision_positive', sql`${table.revision} > 0`),
+]);
+
+export const agentCapabilityGrants = app.table('agent_capability_grants', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  managerKind: mailboxManagerKind('manager_kind').notNull(),
+  agentConnectionId: uuid('agent_connection_id'),
+  capabilities: text('capabilities').array().notNull(),
+  invocationModes: text('invocation_modes').array().notNull(),
+  state: capabilityGrantState('state').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  approvedAt: timestamp('approved_at', { withTimezone: true }).notNull(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex('agent_capability_grants_user_account_unique').on(table.userId, table.accountId),
+  uniqueIndex('agent_capability_grants_identity_unique').on(table.id, table.userId, table.accountId),
+  foreignKey({
+    columns: [table.userId, table.accountId],
+    foreignColumns: [mailboxManagerAssignments.userId, mailboxManagerAssignments.accountId],
+    name: 'agent_capability_grants_assignment_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.userId, table.agentConnectionId],
+    foreignColumns: [agentConnections.userId, agentConnections.id],
+    name: 'agent_capability_grants_owned_connection_fk',
+  }).onDelete('restrict'),
+  check('agent_capability_grants_manager_reference', sql`(
+    (${table.managerKind} = 'agent_connection' and ${table.agentConnectionId} is not null)
+    or (${table.managerKind} = 'mastra' and ${table.agentConnectionId} is null)
+  )`),
+  check('agent_capability_grants_revision_positive', sql`${table.revision} > 0`),
+  check('agent_capability_grants_capabilities_nonempty', sql`cardinality(${table.capabilities}) > 0 and app.text_array_is_unique(${table.capabilities})`),
+  check('agent_capability_grants_invocation_modes_nonempty', sql`cardinality(${table.invocationModes}) > 0 and app.text_array_is_unique(${table.invocationModes})`),
+]);
+
+export const agentCapabilityGrantRevisions = app.table('agent_capability_grant_revisions', {
+  grantId: uuid('grant_id').notNull(),
+  revision: integer('revision').notNull(),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  managerKind: mailboxManagerKind('manager_kind').notNull(),
+  agentConnectionId: uuid('agent_connection_id'),
+  capabilities: text('capabilities').array().notNull(),
+  invocationModes: text('invocation_modes').array().notNull(),
+  state: capabilityGrantState('state').notNull(),
+  approvedAt: timestamp('approved_at', { withTimezone: true }).notNull(),
+  changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.grantId, table.revision] }),
+  foreignKey({
+    columns: [table.grantId, table.userId, table.accountId],
+    foreignColumns: [agentCapabilityGrants.id, agentCapabilityGrants.userId, agentCapabilityGrants.accountId],
+    name: 'agent_capability_grant_revisions_grant_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [table.userId, table.agentConnectionId],
+    foreignColumns: [agentConnections.userId, agentConnections.id],
+    name: 'agent_capability_grant_revisions_owned_connection_fk',
+  }).onDelete('restrict'),
+  check('agent_capability_grant_revisions_manager_reference', sql`(
+    (${table.managerKind} = 'agent_connection' and ${table.agentConnectionId} is not null)
+    or (${table.managerKind} = 'mastra' and ${table.agentConnectionId} is null)
+  )`),
+  check('agent_capability_grant_revisions_revision_positive', sql`${table.revision} > 0`),
+]);
+
+export const capabilityGrantReapprovalEvents = app.table('capability_grant_reapproval_events', {
+  eventId: text('event_id').primaryKey(),
+  grantId: uuid('grant_id').notNull(),
+  grantRevision: integer('grant_revision').notNull(),
+  approverUserId: uuid('approver_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  approvedAt: timestamp('approved_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  foreignKey({ columns: [table.grantId, table.grantRevision], foreignColumns: [agentCapabilityGrantRevisions.grantId, agentCapabilityGrantRevisions.revision], name: 'capability_grant_reapproval_events_revision_fk' }).onDelete('restrict'),
+]);
+
+export const oauthPublicClients = app.table('oauth_public_clients', {
+  clientId: text('client_id').primaryKey(), displayName: text('display_name').notNull(), userId: uuid('user_id').notNull(), agentConnectionId: uuid('agent_connection_id').notNull(), allowedScope: text('allowed_scope').notNull().default('agent:mailbox'), revokedAt: timestamp('revoked_at', { withTimezone: true }), redirectUris: text('redirect_uris').array().notNull(), createdAt,
+});
+export const agentSafetyCeiling = app.table('agent_safety_ceiling', {
+  singleton: boolean('singleton').primaryKey().default(true), revision: integer('revision').notNull().default(1),
+  capabilities: text('capabilities').array().notNull(), invocationModes: text('invocation_modes').array().notNull(), updatedAt,
+});
+export const oauthConsentRequests = app.table('oauth_consent_requests', {
+  requestDigest: text('request_digest').primaryKey(), clientId: text('client_id').notNull().references(() => oauthPublicClients.clientId), redirectUri: text('redirect_uri').notNull(), userId: uuid('user_id').notNull(), connectionId: uuid('connection_id').notNull(), accountId: uuid('account_id'), scope: text('scope').notNull(), codeChallenge: text('code_challenge').notNull(), state: text('state'), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), consumedAt: timestamp('consumed_at', { withTimezone: true }), createdAt,
+});
+export const oauthAuthorizationCodes = app.table('oauth_authorization_codes', {
+  codeDigest: text('code_digest').primaryKey(), clientId: text('client_id').notNull().references(() => oauthPublicClients.clientId),
+  redirectUri: text('redirect_uri').notNull(), userId: uuid('user_id').notNull().references(() => users.id),
+  connectionId: uuid('connection_id').notNull().references(() => agentConnections.id), accountId: uuid('account_id').notNull().references(() => accounts.id),
+  codeChallenge: text('code_challenge').notNull(), scope: text('scope').notNull(), lifecycleRevision: integer('lifecycle_revision').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }), createdAt,
+});
+export const oauthTokenFamilies = app.table('oauth_token_families', {
+  id: uuid('id').defaultRandom().primaryKey(), clientId: text('client_id').notNull().references(() => oauthPublicClients.clientId),
+  userId: uuid('user_id').notNull(), connectionId: uuid('connection_id').notNull(), accountId: uuid('account_id').notNull(),
+  currentGeneration: integer('current_generation').notNull().default(0), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), revocationReason: text('revocation_reason'), revokedAt: timestamp('revoked_at', { withTimezone: true }), createdAt,
+});
+export const oauthTokens = app.table('oauth_tokens', {
+  tokenDigest: text('token_digest').primaryKey(), familyId: uuid('family_id').notNull().references(() => oauthTokenFamilies.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(), generation: integer('generation').notNull(), audience: text('audience').notNull(), scope: text('scope').notNull(), lifecycleRevision: integer('lifecycle_revision').notNull(),
+  assignmentRevision: integer('assignment_revision').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }), createdAt,
+}, (table) => [index('oauth_tokens_family_idx').on(table.familyId)]);
+
+export const agentActivityKind = app.enum('agent_activity_kind', ['arrival', 'interactive_request', 'safety_event', 'external_change']);
+export const agentActivityState = app.enum('agent_activity_state', ['open', 'waiting_for_answer', 'resolved', 'attention_required', 'acknowledged']);
+export const agentRunState = app.enum('agent_run_state', ['created', 'running', 'completed']);
+export const agentRunOutcome = app.enum('agent_run_outcome', ['action_requests_emitted', 'question_asked', 'no_action', 'failed', 'cancelled']);
+export const agentInvocationMode = app.enum('agent_invocation_mode', ['interactive', 'automatic']);
+export const agentWorkManagerKind = app.enum('agent_work_manager_kind', ['mastra', 'agent_connection', 'legacy_mastra']);
+export const agentActionKind = app.enum('agent_action_kind', ['archive', 'recoverable_trash', 'move', 'mark_read', 'mark_unread', 'draft_create', 'draft_edit', 'send']);
+export const agentActionState = app.enum('agent_action_state', ['authorized', 'executing', 'verifying', 'verified', 'failed', 'unverifiable', 'cancelled']);
+
+export const agentConnectionLifecycleRevisions = app.table('agent_connection_lifecycle_revisions', {
+  connectionId: uuid('connection_id').notNull(), revision: integer('revision').notNull(), userId: uuid('user_id').notNull(),
+  state: agentConnectionState('state').notNull(), verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(), changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [primaryKey({ columns: [table.connectionId, table.revision] })]);
+export const agentSafetyCeilingRevisions = app.table('agent_safety_ceiling_revisions', {
+  singleton: boolean('singleton').notNull().default(true), revision: integer('revision').notNull(), capabilities: text('capabilities').array().notNull(),
+  invocationModes: text('invocation_modes').array().notNull(), changedAt: timestamp('changed_at', { withTimezone: true }).notNull(),
+}, table => [primaryKey({ columns: [table.singleton, table.revision] })]);
+export const agentActivities = app.table('agent_activities', {
+  id: uuid('id').defaultRandom().primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), kind: agentActivityKind('kind').notNull(),
+  sourceMessageId: uuid('source_message_id'), correlationId: text('correlation_id').notNull(), causationId: uuid('causation_id'), state: agentActivityState('state').notNull().default('open'),
+  revision: integer('revision').notNull().default(1), createdAt, updatedAt,
+}, table => [uniqueIndex('agent_activities_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_activities_correlation_unique').on(table.userId, table.accountId, table.correlationId)]);
+export const agentRuns = app.table('agent_runs', {
+  id: uuid('id').defaultRandom().primaryKey(), activityId: uuid('activity_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), sequence: integer('sequence').notNull(),
+  managerKind: agentWorkManagerKind('manager_kind').notNull(), managerConnectionId: uuid('manager_connection_id'), managerLegacySourceId: text('manager_legacy_source_id'), managerLifecycleRevision: integer('manager_lifecycle_revision'),
+  assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
+  mode: agentInvocationMode('mode').notNull(), trigger: jsonb('trigger').$type<Record<string, unknown>>().notNull(), inputDigest: text('input_digest').notNull(), correlationId: text('correlation_id').notNull(), causationId: uuid('causation_id'),
+  state: agentRunState('state').notNull().default('created'), outcome: agentRunOutcome('outcome'), errorCode: text('error_code'), createdAt, startedAt: timestamp('started_at', { withTimezone: true }), completedAt: timestamp('completed_at', { withTimezone: true }),
+}, table => [uniqueIndex('agent_runs_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_runs_activity_sequence_unique').on(table.activityId, table.sequence)]);
+export const agentTasks = app.table('agent_tasks', {
+  id: uuid('id').primaryKey(), enqueueKey: text('enqueue_key').notNull(), activityId: uuid('activity_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  managerKind: mailboxManagerKind('manager_kind').notNull(), managerConnectionId: uuid('manager_connection_id'), managerLifecycleRevision: integer('manager_lifecycle_revision'), assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
+  state: agentTaskState('state').notNull().default('pending'), pendingReason: agentTaskPendingReason('pending_reason'), version: integer('version').notNull().default(1), attemptCount: integer('attempt_count').notNull().default(0), maxAttempts: integer('max_attempts').notNull().default(5), leaseGeneration: integer('lease_generation').notNull().default(0), leaseTokenDigest: text('lease_token_digest'), leaseClaimedBy: text('lease_claimed_by'), leaseClaimedAt: timestamp('lease_claimed_at',{withTimezone:true}), leaseHeartbeatAt: timestamp('lease_heartbeat_at',{withTimezone:true}), leaseExpiresAt: timestamp('lease_expires_at',{withTimezone:true}), currentRunId: uuid('current_run_id'), result: jsonb('result'), lastErrorCode: agentTaskErrorCode('last_error_code'), availableAt: timestamp('available_at',{withTimezone:true}).notNull(), deadlineAt: timestamp('deadline_at',{withTimezone:true}).notNull(), createdAt, updatedAt, completedAt: timestamp('completed_at',{withTimezone:true}), obsoleteAt: timestamp('obsolete_at',{withTimezone:true}),
+}, table => [uniqueIndex('agent_tasks_enqueue_key_unique').on(table.enqueueKey), index('agent_tasks_claim_idx').on(table.managerKind,table.managerConnectionId,table.availableAt,table.createdAt), index('agent_tasks_expired_lease_idx').on(table.leaseExpiresAt)]);
+export const agentTaskDeliveryAttempts = app.table('agent_task_delivery_attempts', { id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),number:integer('number').notNull(),leaseGeneration:integer('lease_generation').notNull(),runId:uuid('run_id').notNull(),managerKind:mailboxManagerKind('manager_kind').notNull(),managerConnectionId:uuid('manager_connection_id'),requestId:text('request_id').notNull(),requestDigest:text('request_digest').notNull(),startedAt:timestamp('started_at',{withTimezone:true}).notNull(),endedAt:timestamp('ended_at',{withTimezone:true}),errorCode:agentTaskErrorCode('error_code') }, table=>[uniqueIndex('agent_task_attempt_number_unique').on(table.taskId,table.number),uniqueIndex('agent_task_attempt_generation_unique').on(table.taskId,table.leaseGeneration),uniqueIndex('agent_task_attempt_request_unique').on(table.taskId,table.requestId)]);
+export const agentTaskReports = app.table('agent_task_reports', { id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),attemptId:uuid('attempt_id'),leaseGeneration:integer('lease_generation').notNull(),kind:agentTaskReportKind('kind').notNull(),requestId:text('request_id').notNull(),requestDigest:text('request_digest').notNull(),accepted:boolean('accepted').notNull(),errorCode:agentTaskErrorCode('error_code'),occurredAt:timestamp('occurred_at',{withTimezone:true}).notNull() },table=>[uniqueIndex('agent_task_reports_request_unique').on(table.taskId,table.requestId)]);
+export const agentTaskReceipts = app.table('agent_task_receipts',{id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),outboxId:uuid('outbox_id'),transport:text('transport').notNull(),receiptId:text('receipt_id').notNull(),receivedAt:timestamp('received_at',{withTimezone:true}).notNull()},table=>[uniqueIndex('agent_task_receipts_transport_unique').on(table.transport,table.receiptId)]);
+export const agentTaskOutbox = app.table('agent_task_outbox',{id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),activityId:uuid('activity_id').notNull(),accountId:uuid('account_id').notNull(),event:agentTaskOutboxEvent('event').notNull(),taskVersion:integer('task_version').notNull(),payloadDigest:text('payload_digest').notNull(),correlationId:text('correlation_id').notNull(),occurredAt:timestamp('occurred_at',{withTimezone:true}).notNull(),availableAt:timestamp('available_at',{withTimezone:true}).notNull(),publishedAt:timestamp('published_at',{withTimezone:true}),publishAttempts:integer('publish_attempts').notNull().default(0),lastError:text('last_error')},table=>[uniqueIndex('agent_task_outbox_version_event_unique').on(table.taskId,table.taskVersion,table.event),index('agent_task_outbox_pending_idx').on(table.availableAt,table.occurredAt)]);
+export const agentMutationIdempotency = app.table('agent_mutation_idempotency',{accountId:uuid('account_id').notNull(),operation:text('operation').notNull(),idempotencyKey:text('idempotency_key').notNull(),requestDigest:text('request_digest').notNull(),state:text('state').notNull(),result:jsonb('result'),createdAt,updatedAt},table=>[primaryKey({columns:[table.accountId,table.operation,table.idempotencyKey]})]);
+
+export const agentAuthorizedActions = app.table('agent_authorized_actions', {
+  id: uuid('id').defaultRandom().primaryKey(), activityId: uuid('activity_id').notNull(), runId: uuid('run_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), correlationId: text('correlation_id').notNull(), causationId: uuid('causation_id').notNull(),
+  managerKind: agentWorkManagerKind('manager_kind').notNull(), managerConnectionId: uuid('manager_connection_id'), managerLifecycleRevision: integer('manager_lifecycle_revision'), managerLegacySourceId: text('manager_legacy_source_id'), mode: agentInvocationMode('mode').notNull(),
+  assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
+  kind: agentActionKind('kind').notNull(), target: jsonb('target').$type<Record<string, string>>().notNull(), authorizationRevision: integer('authorization_revision').notNull(), idempotencyKey: text('idempotency_key').notNull(), attempt: integer('attempt').notNull(), retryOfActionId: uuid('retry_of_action_id'),
+  state: agentActionState('state').notNull().default('authorized'), errorCode: text('error_code'), authorizedAt: timestamp('authorized_at', { withTimezone: true }).notNull().defaultNow(), startedAt: timestamp('started_at', { withTimezone: true }), providerReportedAt: timestamp('provider_reported_at', { withTimezone: true }), completedAt: timestamp('completed_at', { withTimezone: true }),
+}, table => [uniqueIndex('agent_authorized_actions_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_authorized_actions_idempotency_unique').on(table.userId, table.accountId, table.idempotencyKey)]);
+export const agentActionVerifications = app.table('agent_action_verifications', {
+  actionId: uuid('action_id').primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), verifier: text('verifier').notNull(), providerMutationId: text('provider_mutation_id'), evidenceDigest: text('evidence_digest').notNull(), observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+});
+export const agentActivityEvents = app.table('agent_activity_events', {
+  id: uuid('id').defaultRandom().primaryKey(), activityId: uuid('activity_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), sequence: integer('sequence').notNull(), correlationId: text('correlation_id').notNull(), causationId: uuid('causation_id'), occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(), detail: jsonb('detail').$type<Record<string, unknown>>().notNull(),
+}, table => [uniqueIndex('agent_activity_events_sequence_unique').on(table.activityId, table.sequence)]);
 
 export const folders = app.table('folders', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -375,10 +667,26 @@ export const sendApprovals = app.table('send_approvals', {
   idempotencyKey: text('idempotency_key').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  publicSendRequestId: uuid('public_send_request_id').references((): AnyPgColumn => publicMcpSendRequests.id, { onDelete: 'restrict' }),
   createdAt,
 }, (table) => [
+  uniqueIndex('send_approvals_public_request_unique').on(table.publicSendRequestId),
   uniqueIndex('send_approvals_confirmation_unique').on(table.confirmationHash),
   uniqueIndex('send_approvals_idempotency_unique').on(table.idempotencyKey),
+]);
+
+export const publicMcpSendRequests = app.table('public_mcp_send_requests', {
+  id: uuid('id').defaultRandom().primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), connectionId: uuid('connection_id').notNull(),
+  draftId: uuid('draft_id').notNull().references(() => drafts.id, { onDelete: 'restrict' }), draftVersion: integer('draft_version').notNull(), activityId: uuid('activity_id').notNull(), authorizationDecisionId: uuid('authorization_decision_id').notNull(),
+  lifecycleRevision: integer('lifecycle_revision').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
+  state: publicSendRequestState('state').notNull().default('pending_owner_approval'), approvalId: uuid('approval_id').references(() => sendApprovals.id, { onDelete: 'restrict' }), runId: uuid('run_id'), actionId: uuid('action_id'),
+  providerMessageId: text('provider_message_id'), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), completedAt: timestamp('completed_at', { withTimezone: true }), reason: text('reason_code'), createdAt, updatedAt,
+}, table => [
+  uniqueIndex('public_send_request_retry_unique').on(table.userId, table.accountId, table.connectionId, table.draftId, table.draftVersion),
+  uniqueIndex('public_send_request_approval_unique').on(table.approvalId), uniqueIndex('public_send_request_run_unique').on(table.runId), uniqueIndex('public_send_request_action_unique').on(table.actionId),
+  index('public_send_request_owner_pending').on(table.userId, table.state, table.createdAt),
+  foreignKey({ columns: [table.runId, table.userId, table.accountId], foreignColumns: [agentRuns.id, agentRuns.userId, agentRuns.accountId], name: 'public_send_request_owned_run' }).onDelete('restrict'),
+  foreignKey({ columns: [table.actionId, table.userId, table.accountId], foreignColumns: [agentAuthorizedActions.id, agentAuthorizedActions.userId, agentAuthorizedActions.accountId], name: 'public_send_request_owned_action' }).onDelete('restrict'),
 ]);
 
 export const logicalNotifications = app.table('logical_notifications', {

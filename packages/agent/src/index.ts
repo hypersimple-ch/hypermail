@@ -9,7 +9,7 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 
 /** A stable Mastra resource for one account. Never use an email address as a resource id. */
-export const accountResourceId = (accountId: string) => `account:${accountId}`;
+export const accountResourceId = (userId: string, accountId: string) => `user:${userId}:account:${accountId}`;
 /** Shared, read-only operational constraints belong to this separate resource. */
 export const GLOBAL_CONSTRAINTS_RESOURCE_ID = 'global:constraints';
 
@@ -24,6 +24,7 @@ export const triageEmailSchema = z.strictObject({
 });
 export const triageInputSchema = z.strictObject({
   activityId: z.uuid(),
+  userId: z.uuid(),
   accountId: z.uuid(),
   attempt: z.number().int().positive(),
   email: triageEmailSchema,
@@ -54,7 +55,7 @@ export interface DecisionPersistence {
   /** Inserts a whole attempt and returns the canonical decision already stored for it. */
   persistOutcome(outcome: OutcomePersistence): Promise<AgentDecision>;
   /** Claims an answer and returns answered after a retry following a crash. */
-  claimQuestion(questionId: string, answer: string): Promise<'claimed' | 'answered' | 'missing'>;
+  claimQuestion(questionId: string, answer: string, userId: string, accountId: string): Promise<'claimed' | 'answered' | 'missing'>;
 }
 
 /** Minimal source-history port. It intentionally has no recall, inspect, reset, or correction API. */
@@ -84,7 +85,7 @@ export function digestTriageInput(input: TriageInput): string {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
-export const activityThreadId = (activityId: string) => `activity:${activityId}`;
+export const activityThreadId = (userId: string, activityId: string) => `user:${userId}:activity:${activityId}`;
 
 function deterministicUuid(seed: string): string {
   const hex = createHash('sha256').update(seed).digest('hex');
@@ -93,7 +94,7 @@ function deterministicUuid(seed: string): string {
 }
 
 /** Deterministic UUIDs make retries refer to the same decision and question rows. */
-export function attemptId(activityId: string, attempt: number, kind: 'decision' | 'question'): string {
+export function attemptId(activityId: string, attempt: number, kind: 'decision' | 'question' | 'run-event' | 'continuation-run' | 'answer-event'): string {
   return deterministicUuid(`${kind}:${activityId}:${String(attempt)}`);
 }
 
@@ -140,16 +141,16 @@ export class TriageService {
   async triage(rawInput: TriageInput): Promise<{ decision: AgentDecision; questionId?: string }> {
     const input = triageInputSchema.parse(rawInput);
     const digest = digestTriageInput(input);
-    const accountId = accountResourceId(input.accountId);
+    const accountId = accountResourceId(input.userId, input.accountId);
     const sourceText = JSON.stringify({ from: input.email.from, subject: input.email.subject, receivedAt: input.email.receivedAt, bodyText: input.email.bodyText, attachments: input.email.attachments });
     let decision: AgentDecision;
     try {
-      await this.options.sourceHistory?.append({ resourceId: accountId, threadId: `activity:${input.activityId}`, text: sourceText });
+      await this.options.sourceHistory?.append({ resourceId: accountId, threadId: activityThreadId(input.userId, input.activityId), text: sourceText });
       const rawOutput = await withinTimeout((signal) => this.options.model.generate({
         systemPrompt: TRIAGE_SYSTEM_PROMPT,
         email: input.email,
         accountResourceId: accountId,
-        thread: activityThreadId(input.activityId),
+        thread: activityThreadId(input.userId, input.activityId),
         globalConstraintsResourceId: GLOBAL_CONSTRAINTS_RESOURCE_ID,
         globalConstraints: input.globalConstraints,
         sourceHistory: [],
@@ -182,11 +183,11 @@ export class TriageService {
 
   async resumeQuestion(input: TriageInput, questionId: string, answer: string): Promise<{ duplicate: boolean; decision?: AgentDecision; questionId?: string }> {
     if (!answer.trim()) throw new Error('Question answers must not be empty');
-    const claim = await this.options.persistence.claimQuestion(questionId, answer);
+    const claim = await this.options.persistence.claimQuestion(questionId, answer, input.userId, input.accountId);
     if (claim === 'missing') return { duplicate: true };
     // A retry after a crash may see an already-claimed answer. Both this append and the
     // deterministic next-attempt outcome are idempotent, so it is safe to continue.
-    await this.options.sourceHistory?.append({ resourceId: accountResourceId(input.accountId), threadId: activityThreadId(input.activityId), text: JSON.stringify({ userAnswer: answer }) });
+    await this.options.sourceHistory?.append({ resourceId: accountResourceId(input.userId, input.accountId), threadId: activityThreadId(input.userId, input.activityId), text: JSON.stringify({ userAnswer: answer }) });
     return { duplicate: false, ...await this.triage({ ...input, attempt: input.attempt + 1 }) };
   }
 }
@@ -261,21 +262,83 @@ export class PostgresDecisionPersistence implements DecisionPersistence {
       const jobState = canonical.state === 'question' ? 'suspended' : canonical.state === 'failed' ? 'failed' : 'succeeded';
       await tx`update app.activities set state = ${activityState}, updated_at = now() where id = ${decision.activityId}`;
       await tx`update app.agent_jobs set state = ${jobState}, attempt = greatest(attempt, ${decision.attempt}), updated_at = now() where activity_id = ${decision.activityId}`;
+      // Canonical Run completion is in this same transaction as the legacy decision,
+      // question, Activity and job projection. "actionable" records emitted requests;
+      // it never claims a provider mutation succeeded.
+      const runOutcome = canonical.state === 'actionable' ? 'action_requests_emitted'
+        : canonical.state === 'question' ? 'question_asked'
+          : canonical.state === 'failed' ? 'failed' : 'no_action';
+      const errorCode = canonical.state === 'failed' ? canonical.errorCode : null;
+      await tx`update app.agent_runs r set state='completed', outcome=${runOutcome}::app.agent_run_outcome,
+        error_code=${errorCode}, completed_at=now()
+        from app.agent_jobs j where j.activity_id=${decision.activityId} and j.agent_run_id=r.id and r.state='running'`;
+      if (canonical.state === 'question') {
+        await tx`update app.agent_activities set state='waiting_for_answer', revision=revision+1, updated_at=now()
+          where id=${decision.activityId} and state='open'`;
+      } else if (canonical.state === 'failed') {
+        await tx`update app.agent_activities set state='attention_required', revision=revision+1, updated_at=now()
+          where id=${decision.activityId} and state='open'`;
+      } else if (canonical.state === 'no_action') {
+        await tx`update app.agent_activities set state='resolved', revision=revision+1, updated_at=now()
+          where id=${decision.activityId} and state='open'`;
+      }
+      // The Run is complete at decision time, but actionable Activities stay open until
+      // every authorized Action reaches a verified or attention terminal state.
+      const [run] = await tx<{ id: string; userId: string; accountId: string; correlationId: string }[]>`select r.id,r.user_id as "userId",r.account_id as "accountId",r.correlation_id as "correlationId"
+        from app.agent_runs r join app.agent_jobs j on j.agent_run_id=r.id where j.activity_id=${decision.activityId}`;
+      if (run) {
+        await tx`select id from app.agent_activities where id=${decision.activityId} for update`;
+        const [next] = await tx<{ sequence: number }[]>`select coalesce(max(sequence),0)::integer+1 as sequence from app.agent_activity_events where activity_id=${decision.activityId}`;
+        const detail = canonical.state === 'failed' ? { type: 'run_failed', runId: run.id, errorCode: canonical.errorCode }
+          : canonical.state === 'question' ? { type: 'question_asked', runId: run.id, question: canonical.question }
+            : canonical.state === 'no_action' ? { type: 'no_action', runId: run.id, reason: canonical.rationale }
+              : { type: 'run_completed', runId: run.id, outcome: 'action_requests_emitted' };
+        await tx`insert into app.agent_activity_events(id,activity_id,user_id,account_id,sequence,correlation_id,causation_id,occurred_at,detail)
+          values(${attemptId(run.id,decision.attempt,'run-event')},${decision.activityId},${run.userId},${run.accountId},${next?.sequence ?? 1},${run.correlationId},${run.id},clock_timestamp(),${tx.json(detail)}) on conflict(id) do nothing`;
+      }
       return canonical;
     });
   }
 
-  async claimQuestion(questionId: string, answer: string): Promise<'claimed' | 'answered' | 'missing'> {
+  async claimQuestion(questionId: string, answer: string, userId: string, accountId: string): Promise<'claimed' | 'answered' | 'missing'> {
     return this.sql.begin(async (tx) => {
-      const claimed = await tx<{ activityId: string }[]>`update app.questions set state = 'answered', answer = ${answer}, answered_at = now(), updated_at = now() where id = ${questionId} and state = 'open' returning activity_id as "activityId"`;
-      const [claimedQuestion] = claimed;
-      if (claimedQuestion) {
-        await tx`update app.activities set state = 'new', updated_at = now() where id = ${claimedQuestion.activityId}`;
-        await tx`update app.agent_jobs set state = 'running', updated_at = now() where activity_id = ${claimedQuestion.activityId}`;
-        return 'claimed';
+      const [context] = await tx<{
+        activityId:string; userId:string; accountId:string; runId:string; sequence:number; mode:'automatic'|'interactive';
+        assignmentId:string; assignmentRevision:number; managerKind:string; managerConnectionId:string|null;
+        grantId:string; grantRevision:number; safetyRevision:number; correlationId:string;
+      }[]>`select q.activity_id as "activityId",aa.user_id as "userId",aa.account_id as "accountId",
+          r.id as "runId",r.sequence,r.mode,ma.id as "assignmentId",ma.revision as "assignmentRevision",
+          ma.manager_kind::text as "managerKind",ma.agent_connection_id as "managerConnectionId",
+          g.id as "grantId",g.revision as "grantRevision",s.revision as "safetyRevision",r.correlation_id as "correlationId"
+        from app.questions q join app.agent_activities aa on aa.id=q.activity_id
+        join lateral (select * from app.agent_runs where activity_id=aa.id order by sequence desc limit 1) r on true
+        join app.mailbox_manager_assignments ma on ma.user_id=aa.user_id and ma.account_id=aa.account_id
+        join app.agent_capability_grants g on g.user_id=aa.user_id and g.account_id=aa.account_id
+          and g.manager_kind=ma.manager_kind and g.agent_connection_id is not distinct from ma.agent_connection_id
+          and g.state='active' and r.mode::text=any(g.invocation_modes) and 'mail.read'=any(g.capabilities)
+        join app.agent_safety_ceiling s on s.singleton=true and r.mode::text=any(s.invocation_modes) and 'mail.read'=any(s.capabilities)
+        where q.id=${questionId} and q.state='open' and aa.user_id=${userId}::uuid and aa.account_id=${accountId}::uuid and (r.mode<>'automatic' or ma.automatic_processing_enabled) for update of q,aa`;
+      if (!context) {
+        const open = await tx<{id:string}[]>`select q.id from app.questions q join app.agent_activities aa on aa.id=q.activity_id where q.id=${questionId} and q.state='open' and aa.user_id=${userId}::uuid and aa.account_id=${accountId}::uuid`;
+        if (open.length) throw new Error('CANONICAL_CONTINUATION_AUTHORITY_UNAVAILABLE');
+        const answered = await tx<{ id: string }[]>`select q.id from app.questions q join app.agent_activities aa on aa.id=q.activity_id where q.id=${questionId} and q.state='answered' and q.answer=${answer} and aa.user_id=${userId}::uuid and aa.account_id=${accountId}::uuid`;
+        return answered.length === 1 ? 'answered' : 'missing';
       }
-      const answered = await tx<{ id: string }[]>`select id from app.questions where id = ${questionId} and state = 'answered' and answer = ${answer}`;
-      return answered.length === 1 ? 'answered' : 'missing';
+      // Embedded continuation is authorized only for the embedded Manager; external and
+      // none assignments never fall back to Mastra.
+      if (context.managerKind !== 'mastra' || context.managerConnectionId !== null) throw new Error('CANONICAL_CONTINUATION_AUTHORITY_UNAVAILABLE');
+      const answerDigest=createHash('sha256').update(answer).digest('hex');
+      const nextSequence=context.sequence+1; const continuationId=attemptId(questionId,nextSequence,'continuation-run');
+      await tx`update app.questions set state='answered',answer=${answer},answered_at=now(),updated_at=now() where id=${questionId} and state='open'`;
+      const [eventSequence]=await tx<{sequence:number}[]>`select coalesce(max(sequence),0)::integer+1 as sequence from app.agent_activity_events where activity_id=${context.activityId}`;
+      await tx`insert into app.agent_activity_events(id,activity_id,user_id,account_id,sequence,correlation_id,causation_id,occurred_at,detail)
+        values(${attemptId(questionId,nextSequence,'answer-event')},${context.activityId},${context.userId},${context.accountId},${eventSequence?.sequence ?? 1},${context.correlationId},${context.runId},clock_timestamp(),${tx.json({type:'question_answered',runId:context.runId,answerDigest})}) on conflict(id) do nothing`;
+      await tx`insert into app.agent_runs(id,activity_id,user_id,account_id,sequence,manager_kind,manager_lifecycle_revision,assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,mode,trigger,input_digest,correlation_id,causation_id,state,created_at,started_at)
+        values(${continuationId},${context.activityId},${context.userId},${context.accountId},${nextSequence},'mastra',null,${context.assignmentId},${context.assignmentRevision},${context.grantId},${context.grantRevision},${context.safetyRevision},${context.mode},${tx.json({kind:'question_answer',questionId})},${answerDigest},${`question-answer:${questionId}`},${context.runId},'running',now(),now())`;
+      await tx`update app.activities set state='new',updated_at=now() where id=${context.activityId}`;
+      await tx`update app.agent_jobs set state='running',agent_run_id=${continuationId},updated_at=now() where activity_id=${context.activityId}`;
+      await tx`update app.agent_activities set state='open',revision=revision+1,updated_at=now() where id=${context.activityId} and state='waiting_for_answer'`;
+      return 'claimed';
     });
   }
 }

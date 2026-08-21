@@ -20,7 +20,7 @@ export interface DraftEditInput {
 }
 export interface MessagePage { messages: Message[]; cursor?: string; hasMore: boolean }
 export interface InboxPage extends MessagePage { account?: string }
-export interface SearchOptions { query?: string; from?: string; to?: string; cc?: string; limit?: number }
+export interface SearchOptions { account?: string; query?: string; from?: string; to?: string; cc?: string; limit?: number }
 export interface RetryClassification { retryable: boolean; reason: "network" | "http" | "json-rpc" | "malformed" | "aborted" }
 export interface HypermailReadClientOptions {
   endpoint: string;

@@ -29,4 +29,24 @@ describe('PrivateApprovedSendHttpProvider', () => {
     const rejected = new PrivateApprovedSendHttpProvider({ endpoint: 'https://send.internal.test/approved', authorization: 'Bearer secret', fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 503 })) });
     await expect(rejected.send(approved)).rejects.toMatchObject({ status: 503 });
   });
+  it('reconciles by fixed status path and header without leaking the key in the URL', async () => {
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ state: 'verified', providerMessageId: 'provider-1', observedAt: '2025-01-01T00:00:00.000Z', evidence: { source: 'hypermail_readback' } }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const provider = new PrivateApprovedSendHttpProvider({ endpoint: 'https://send.internal.test/approved?unsafe=old', authorization: 'Bearer secret', fetch: request });
+    await expect(provider.status(approved.idempotencyKey)).resolves.toMatchObject({ state: 'verified', providerMessageId: 'provider-1' });
+    const [url, init] = request.mock.calls[0] ?? [];
+    const requestedUrl = url instanceof URL ? url.toString() : typeof url === 'string' ? url : url?.url ?? '';
+    expect(requestedUrl).toBe('https://send.internal.test/approved/status');
+    expect(requestedUrl).not.toContain(approved.idempotencyKey);
+    expect(new Headers(init?.headers).get('idempotency-key')).toBe(approved.idempotencyKey);
+  });
+  it('cancels a chunked trusted response once the byte cap is crossed', async () => {
+    let cancelled = false; const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(new Uint8Array(33_000)); controller.enqueue(new Uint8Array(33_000)); }, cancel() { cancelled = true; } });
+    const provider = new PrivateApprovedSendHttpProvider({ endpoint: 'https://send.internal.test/approved', authorization: 'Bearer secret', fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })) });
+    await expect(provider.send(approved)).rejects.toThrow('too large'); expect(cancelled).toBe(true);
+  });
+  it('bounds trusted response bodies', async () => {
+    const provider = new PrivateApprovedSendHttpProvider({ endpoint: 'https://send.internal.test/approved', authorization: 'Bearer secret', fetch: vi.fn<typeof fetch>().mockResolvedValue(new Response('x', { status: 200, headers: { 'content-type': 'application/json', 'content-length': '64001' } })) });
+    await expect(provider.send(approved)).rejects.toThrow('too large');
+  });
+
 });

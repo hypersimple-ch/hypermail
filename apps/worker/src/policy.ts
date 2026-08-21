@@ -7,7 +7,8 @@ import type { JobConsumer } from './runtime.js';
 import type { PgBossLike } from './pg-boss-queue.js';
 
 type JsonObject = Readonly<Record<string, unknown>>;
-type ActionRow = { activityId: string; decisionId: string; idempotencyKey: string; kind: string; target: unknown; precondition: unknown };
+type CanonicalRunRow = Record<string, unknown> & { grant_capabilities: unknown; safety_capabilities: unknown };
+type ActionRow = { actionId: string; runId: string; userId: string; accountId: string; activityId: string; decisionId: string; idempotencyKey: string; kind: string; target: unknown; precondition: unknown };
 type DraftRow = { email: string; providerDraftId: string | null; sourceProviderMessageId: string | null; recipients: unknown; subject: string; body: string; version: number };
 const object = (value: unknown): JsonObject | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
 const json = (value: unknown): JsonObject => {
@@ -29,6 +30,8 @@ const recipients = (value: unknown): { to: EmailAddress[]; cc: EmailAddress[]; b
   return result;
 };
 const keyFor = (decisionId: string, index: number): string => `policy:${createHash('sha256').update(`${decisionId}:${String(index)}`).digest('hex')}`;
+const uuidFor = (seed: string): string => { const hex=createHash('sha256').update(seed).digest('hex'); const variant=['8','9','a','b'][Number.parseInt(hex.charAt(16),16)&3] ?? '8'; return `${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-${variant}${hex.slice(17,20)}-${hex.slice(20,32)}`; };
+const capabilityFor = (kind: string): string | undefined => ({ archive:'mail.archive',recoverable_trash:'mail.trash_recoverable',move:'mail.move',mark_read:'mail.mark_read',mark_unread:'mail.mark_unread',draft_create:'draft.create',draft_edit:'draft.edit' } as Record<string,string>)[kind];
 
 /** Sends only durable policy jobs and gives pg-boss a stable deduplication key. */
 export class PgBossPolicyDispatcher {
@@ -43,38 +46,59 @@ export class PgBossPolicyDispatcher {
 export class DurablePolicyRecovery {
   constructor(private readonly database: ManagedSqlClient, private readonly dispatcher: PgBossPolicyDispatcher, private readonly limit = 100) {}
   async recover(): Promise<void> {
-    const result = await this.database.query<{ id: string }>(`select id from app.actions where state = 'planned' order by created_at, id limit $1`, [this.limit]);
+    const result = await this.database.query<{ id: string }>(`select id from (select id,authorized_at as queued_at from app.agent_authorized_actions where state in ('authorized','executing','verifying') union all select id,created_at as queued_at from app.actions where state='planned') recoverable order by queued_at,id limit $1`, [this.limit]);
     for (const row of result.rows) await this.dispatcher.dispatch(row.id);
   }
 }
 
-/** Projects a persisted actionable decision into idempotent pending policy actions. */
+/** Authorizes each mutation against its frozen canonical Run, then dual-writes legacy projection. */
 export class PostgresPolicyPlanner {
   constructor(private readonly database: ManagedSqlClient, private readonly dispatcher: PgBossPolicyDispatcher) {}
   async plan(activityId: string, attempt: number, decision: JsonObject): Promise<void> {
     if (decision['state'] !== 'actionable' || !Array.isArray(decision['actions'])) return;
-    const actionIds = await this.database.transaction(async database => {
-      const persisted = await database.query<{ id: string; output: unknown }>(`select id, output from app.decisions where activity_id = $1::uuid and attempt = $2 for update`, [activityId, attempt]);
-      const row = persisted.rows[0];
-      const output = row ? json(row.output) : undefined;
-      if (!row || !output || output['state'] !== 'actionable' || !Array.isArray(output['actions'])) throw new Error('POLICY_DECISION_NOT_PERSISTED');
-      const ids: string[] = [];
-      for (const [index, raw] of output['actions'].entries()) {
-        const action = object(raw);
-        const target = action && object(action['target']);
-        if (!action || !target || typeof action['kind'] !== 'string') throw new Error('POLICY_DECISION_INVALID');
-        const result = await database.query<{ id: string }>(`insert into app.actions (activity_id, decision_id, kind, state, idempotency_key, target, precondition, created_at, updated_at)
-          values ($1::uuid, $2::uuid, $3::app.action_kind, 'planned', $4, $5::jsonb, '{}'::jsonb, now(), now())
-          on conflict (idempotency_key) do update set updated_at = app.actions.updated_at
-          returning id`, [activityId, row.id, action['kind'], keyFor(row.id, index), JSON.stringify(target)]);
-        const actionRow = result.rows[0];
-        if (!actionRow) throw new Error('POLICY_ACTION_INSERT_FAILED');
-        ids.push(actionRow.id);
+    const actionIds=await this.database.transaction(async database => {
+      const persisted=await database.query<{id:string;output:unknown}>(`select id,output from app.decisions where activity_id=$1::uuid and attempt=$2 for update`,[activityId,attempt]);
+      const decisionRow=persisted.rows[0]; const output=decisionRow ? json(decisionRow.output) : undefined;
+      if (!decisionRow || !output || output['state']!=='actionable' || !Array.isArray(output['actions'])) throw new Error('POLICY_DECISION_NOT_PERSISTED');
+      const runResult=await database.query<CanonicalRunRow>(`select r.*,g.capabilities as grant_capabilities,s.capabilities as safety_capabilities
+        from app.agent_jobs j join app.agent_runs r on r.id=j.agent_run_id
+        join app.agent_capability_grant_revisions g on g.grant_id=r.grant_id and g.revision=r.grant_revision and g.user_id=r.user_id and g.account_id=r.account_id
+        join app.agent_safety_ceiling_revisions s on s.revision=r.safety_revision
+        where j.activity_id=$1::uuid for update of r`,[activityId]);
+      const run=runResult.rows[0]; if (!run || run['state']!=='running') throw new Error('POLICY_CANONICAL_RUN_NOT_RUNNING');
+      const allowed=new Set((Array.isArray(run.grant_capabilities)?run.grant_capabilities:[]).filter((value):value is string=>typeof value==='string'));
+      const ceiling=new Set((Array.isArray(run.safety_capabilities)?run.safety_capabilities:[]).filter((value):value is string=>typeof value==='string'));
+      const ids:string[]=[];
+      for (const [index,raw] of output['actions'].entries()) {
+        const action=object(raw); const rawTarget=action&&object(action['target']); const kind=action?.['kind']; const capability=typeof kind==='string'?capabilityFor(kind):undefined;
+        if (!action||!rawTarget||typeof kind!=='string'||!capability) throw new Error('POLICY_DECISION_INVALID');
+        if (!allowed.has(capability)||!ceiling.has(capability)) { await this.event(database,run,{type:'authorization_denied',runId:String(run['id']),reasonCode:'CAPABILITY_NOT_FROZEN'}); continue; }
+        if (typeof rawTarget['accountId']!=='string' || typeof run['account_id']!=='string' || rawTarget['accountId']!==run['account_id']) throw new Error('POLICY_TARGET_OUTSIDE_RUN_MAILBOX');
+        const target={...rawTarget}; delete target['accountId']; const id=uuidFor(`canonical-action:${decisionRow.id}:${String(index)}`); const key=keyFor(decisionRow.id,index);
+        const inserted=await database.query<{id:string}>(`insert into app.agent_authorized_actions
+          (id,activity_id,run_id,user_id,account_id,correlation_id,causation_id,manager_kind,manager_connection_id,manager_legacy_source_id,manager_lifecycle_revision,mode,assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,kind,target,authorization_revision,idempotency_key,attempt,retry_of_action_id,state,authorized_at)
+          values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,1,null,'authorized',now())
+          on conflict(user_id,account_id,idempotency_key) do nothing returning id`,[id,activityId,run['id'],run['user_id'],run['account_id'],run['correlation_id'],decisionRow.id,run['manager_kind'],run['manager_connection_id']??null,run['manager_legacy_source_id']??null,run['manager_lifecycle_revision']??null,run['mode'],run['assignment_id'],run['assignment_revision'],run['grant_id'],run['grant_revision'],run['safety_revision'],kind,JSON.stringify(target),Number(run['grant_revision']),key]);
+        const canonicalId=inserted.rows[0]?.id ?? id;
+        if (inserted.rows[0]) await this.event(database,run,{type:'action_authorized',runId:String(run['id']),actionId:canonicalId});
+        // Compatibility only: execution/recovery authority always reads canonical tables.
+        await database.query(`insert into app.actions(id,activity_id,decision_id,kind,state,idempotency_key,target,precondition,created_at,updated_at)
+          values($1,$2,$3,$4,'planned',$5,$6::jsonb,'{}'::jsonb,now(),now()) on conflict(idempotency_key) do nothing`,[canonicalId,activityId,decisionRow.id,kind,key,JSON.stringify(rawTarget)]);
+        ids.push(canonicalId);
+      }
+      if (ids.length===0) {
+        await this.event(database,run,{type:'no_action',runId:String(run['id']),reason:output['actions'].length===0?'The decision requested no mailbox mutation.':'All requested mutations were denied by frozen authority.'});
+        await database.query(`update app.agent_activities set state=$2::app.agent_activity_state,revision=revision+1,updated_at=now() where id=$1::uuid and state='open'`,[activityId,output['actions'].length===0?'resolved':'attention_required']);
       }
       return ids;
     });
-    // Publishing follows the committed decision/action projection; recovery closes this crash window.
-    for (const actionId of actionIds) await this.dispatcher.dispatch(actionId);
+    for (const id of actionIds) await this.dispatcher.dispatch(id);
+  }
+  private async event(database:Pick<ManagedSqlClient, 'query'>,run:Readonly<Record<string,unknown>>,detail:Record<string,unknown>):Promise<void> {
+    await database.query(`select id from app.agent_activities where id=$1::uuid and user_id=$2::uuid and account_id=$3::uuid for update`,[run['activity_id'],run['user_id'],run['account_id']]);
+    const next=await database.query<{sequence:number}>(`select coalesce(max(sequence),0)::integer+1 as sequence from app.agent_activity_events where activity_id=$1::uuid`,[run['activity_id']]);
+    await database.query(`insert into app.agent_activity_events(activity_id,user_id,account_id,sequence,correlation_id,causation_id,occurred_at,detail)
+      values($1,$2,$3,$4,$5,$6,clock_timestamp(),$7::jsonb)`,[run['activity_id'],run['user_id'],run['account_id'],next.rows[0]?.sequence??1,run['correlation_id'],run['id'],JSON.stringify(detail)]);
   }
 }
 
@@ -82,9 +106,9 @@ export class PostgresPolicyPlanner {
 export class PostgresPolicyActionInputStore {
   constructor(private readonly database: ManagedSqlClient) {}
   async get(actionId: string): Promise<PolicyActionInput | null> {
-    const result = await this.database.query<ActionRow>(`select activity_id as "activityId", decision_id as "decisionId", idempotency_key as "idempotencyKey", kind, target, precondition from app.actions where id = $1::uuid`, [actionId]);
+    const result = await this.database.query<ActionRow>(`select ca.id as "actionId",ca.run_id as "runId",ca.user_id as "userId",ca.account_id as "accountId",ca.activity_id as "activityId",ca.causation_id as "decisionId",ca.idempotency_key as "idempotencyKey",ca.kind,ca.target,coalesce(la.precondition,'{}'::jsonb) as precondition from app.agent_authorized_actions ca left join app.actions la on la.id=ca.id where ca.id=$1::uuid`, [actionId]);
     const row = result.rows[0];
-    return row ? policyActionInputSchema.parse({ ...row, target: json(row.target), precondition: json(row.precondition) }) : null;
+    return row ? policyActionInputSchema.parse({ ...row, target: { accountId: row.accountId, ...json(row.target) }, precondition: json(row.precondition) }) : null;
   }
 }
 
@@ -167,12 +191,17 @@ export class HypermailPrivateMutationTransport implements PrivateMutationTranspo
   }
 }
 
+type TenantPolicyExecutorLease = Readonly<{ executor: Pick<PolicyExecutor, 'execute'>; release(): Promise<void> }>;
+type TenantPolicyExecutorFactory = (userId: string) => Promise<TenantPolicyExecutorLease>;
 export class DeliverPolicyConsumer implements JobConsumer {
-  constructor(private readonly input: PostgresPolicyActionInputStore, private readonly executor: Pick<PolicyExecutor, 'execute'>) {}
+  constructor(private readonly input: PostgresPolicyActionInputStore, private readonly executor: Pick<PolicyExecutor, 'execute'> | TenantPolicyExecutorFactory) {}
   async consume(payload: Parameters<JobConsumer['consume']>[0]): Promise<void> {
     if (!('actionId' in payload)) throw new Error('QUEUE_PAYLOAD_INVALID');
     const action = await this.input.get(payload.actionId);
-    if (action) await this.executor.execute(action);
+    if (!action) return;
+    if (typeof this.executor !== 'function') { await this.executor.execute(action); return; }
+    const lease = await this.executor(action.userId);
+    try { await lease.executor.execute(action); } finally { await lease.release(); }
   }
 }
 

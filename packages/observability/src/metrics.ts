@@ -1,8 +1,8 @@
-export type MetricName = 'poll_cycle' | 'job' | 'autonomous_action' | 'push' | 'backup' | 'safety_pause';
+export type MetricName = 'poll_cycle' | 'job' | 'autonomous_action' | 'push' | 'backup' | 'safety_pause' | 'queue_age' | 'oauth_reuse' | 'connection_health' | 'provider_error' | 'authorization_denial' | 'quota_denial';
 export type MetricOutcome = 'success' | 'failure' | 'retrying' | 'paused' | 'unavailable';
 export type MetricPoint = Readonly<{ name: MetricName; outcome: MetricOutcome; value: number }>;
 
-const NAMES = new Set<MetricName>(['poll_cycle', 'job', 'autonomous_action', 'push', 'backup', 'safety_pause']);
+const NAMES = new Set<MetricName>(['poll_cycle', 'job', 'autonomous_action', 'push', 'backup', 'safety_pause', 'queue_age', 'oauth_reuse', 'connection_health', 'provider_error', 'authorization_denial', 'quota_denial']);
 const OUTCOMES = new Set<MetricOutcome>(['success', 'failure', 'retrying', 'paused', 'unavailable']);
 
 /** Fixed metric dimensions prevent account, message, provider, and token cardinality leaks. */
@@ -30,7 +30,7 @@ export function actionableAlerts(signals: readonly OperationalSignal[], safetyPa
   for (const signal of signals) {
     if (!NAMES.has(signal.name) || signal.failed <= 0) continue;
     const severity = signal.name === 'backup' || signal.name === 'safety_pause' || signal.failed >= 3 || (signal.name === 'autonomous_action' && signal.failed / Math.max(signal.total, 1) > 0.01) ? 'critical' : 'warning';
-    const action = ({ poll_cycle: 'Check provider credentials and connectivity; keep polling other accounts.', job: 'Inspect durable queue depth and retry workers.', autonomous_action: 'Review verification failures and pause the affected account when safety policy requires.', push: 'Check push subscription delivery and retain the in-app notification queue.', backup: 'Check encrypted backup job and perform the documented restore verification.', safety_pause: 'Keep autonomous mutations paused, review the safety rate, and require explicit operator resume.' } as const)[signal.name];
+    const action = ({ poll_cycle: 'Check provider credentials and connectivity; keep polling other accounts.', job: 'Inspect durable queue depth and retry workers.', autonomous_action: 'Review verification failures and pause the affected account when safety policy requires.', push: 'Check push subscription delivery and retain the in-app notification queue.', backup: 'Check encrypted backup job and perform the documented restore verification.', safety_pause: 'Keep autonomous mutations paused, review the safety rate, and require explicit operator resume.', queue_age: 'Inspect oldest queue age and worker capacity.', oauth_reuse: 'Revoke the affected token family and inspect replay volume.', connection_health: 'Inspect connection probes without exposing tenant diagnostics.', provider_error: 'Inspect provider availability and retry policy.', authorization_denial: 'Inspect authorization policy denial counts.', quota_denial: 'Inspect per-user capacity and safely reject excess work.' } as const)[signal.name];
     alerts.push({ name: signal.name, severity, action });
   }
   if (safetyPaused && !alerts.some((alert) => alert.name === 'safety_pause')) alerts.push({ name: 'safety_pause', severity: 'critical', action: 'Keep autonomous mutations paused, review the safety rate, and require explicit operator resume.' });

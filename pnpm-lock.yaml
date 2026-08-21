@@ -46,6 +46,9 @@ importers:
       '@heroui/styles':
         specifier: 3.2.4
         version: 3.2.4(tailwind-merge@3.5.0)(tailwindcss@4.1.18)
+      '@hypermail/agent-connections':
+        specifier: workspace:*
+        version: link:../../packages/agent-connections
       '@hypermail/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -67,6 +70,9 @@ importers:
       '@hypermail/send':
         specifier: workspace:*
         version: link:../../packages/send
+      '@modelcontextprotocol/sdk':
+        specifier: 1.30.0
+        version: 1.30.0(zod@4.4.3)
       clsx:
         specifier: 2.1.1
         version: 2.1.1
@@ -189,6 +195,15 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  packages/agent-connections:
+    dependencies:
+      '@hypermail/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   packages/auth:
     dependencies:
       better-auth:
@@ -213,16 +228,24 @@ importers:
 
   packages/db:
     dependencies:
+      '@hypermail/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@types/pg@8.15.5)(kysely@0.29.4)(pg@8.16.3)(postgres@3.4.9)
       postgres:
         specifier: 3.4.9
         version: 3.4.9
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
+
+  packages/hermes-connector: {}
 
   packages/hypermail:
     dependencies:
@@ -1040,6 +1063,9 @@ packages:
   '@humanwhocodes/retry@0.4.3':
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
+
+  '@hypermail/contracts@file:packages/contracts':
+    resolution: {directory: packages/contracts, type: directory}
 
   '@hypermail/db@file:packages/db':
     resolution: {directory: packages/db, type: directory}
@@ -4789,10 +4815,16 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
+  '@hypermail/contracts@file:packages/contracts':
+    dependencies:
+      zod: 4.4.3
+
   '@hypermail/db@file:packages/db(@types/pg@8.15.5)(kysely@0.29.4)(pg@8.22.0)':
     dependencies:
+      '@hypermail/contracts': file:packages/contracts
       drizzle-orm: 0.45.2(@types/pg@8.15.5)(kysely@0.29.4)(pg@8.22.0)(postgres@3.4.9)
       postgres: 3.4.9
+      zod: 4.4.3
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cloudflare/workers-types'

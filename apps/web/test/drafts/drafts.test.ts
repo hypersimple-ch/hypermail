@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import * as React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ApprovedSend, MailSendProvider } from '@hypermail/send';
+import { PrivateApprovedSendError, type ApprovedSend, type MailSendProvider } from '@hypermail/send';
 import { type ApprovalClaim, type DraftRecord, type DraftScope, type DraftSource, type DraftSourceReader, DraftCompose, DraftConflictError, DraftInputError, DraftService, InMemoryDraftRepository, createDraftRoutes } from '../../src/drafts/index.js';
 
 const account = '00000000-0000-4000-8000-000000000001';
@@ -18,8 +18,8 @@ class SourceReader implements DraftSourceReader {
   constructor(private readonly sources: readonly DraftSource[] = [source]) {}
   read(readerScope: DraftScope, accountId: string, id: string) { return Promise.resolve(this.sources.find((item) => item.id === id && item.accountId === accountId && readerScope.accountIds.includes(accountId)) ?? null); }
 }
-class Provider implements MailSendProvider { calls: ApprovedSend[] = []; fail = false; send(message: ApprovedSend) { this.calls.push(message); return this.fail ? Promise.reject(new Error('provider unavailable')) : Promise.resolve({ providerMessageId: 'message-1' }); } }
-const service = (provider = new Provider(), sourceReader = new SourceReader()) => {
+class Provider implements MailSendProvider { calls: ApprovedSend[] = []; fail = false; send(message: ApprovedSend) { this.calls.push(message); return this.fail ? Promise.reject(new PrivateApprovedSendError('rejected', 400, true)) : Promise.resolve({ providerMessageId: 'message-1' }); } status() { return Promise.resolve({ state: 'verified' as const, providerMessageId: 'message-1', observedAt: '2025-01-01T00:01:00.000Z', evidence: { source: 'hypermail_readback' } }); } }
+const service = (provider: MailSendProvider = new Provider(), sourceReader = new SourceReader()) => {
   let sequence = 99;
   return new DraftService(new InMemoryDraftRepository(), provider, sourceReader, clock, () => `00000000-0000-4000-8000-${String(sequence++).padStart(12, '0')}`);
 };
@@ -106,6 +106,12 @@ describe('draft composition and isolated send boundary', () => {
     const approval = await draftService.beginApproval(scope, draft.id, 1, 'y'.repeat(16));
     await expect(draftService.confirmSend(scope, approval.approvalId, 'y'.repeat(16))).rejects.toThrow('completion unavailable');
     expect(provider.calls).toHaveLength(1); expect(repository.outcomes).toEqual(['sent']);
+  });
+  it('leaves mismatched report and readback identities in sending', async () => {
+    const provider: MailSendProvider = { send: () => Promise.resolve({ providerMessageId: 'reported' }), status: () => Promise.resolve({ state: 'verified', providerMessageId: 'different', observedAt: clock().toISOString(), evidence: { source: 'hypermail' } }) }; const draftService = service(provider); const draft = await draftService.createUser(scope, { ...fields, accountId: account }); const approval = await draftService.beginApproval(scope, draft.id, 1, 'm'.repeat(16)); expect((await draftService.confirmSend(scope, approval.approvalId, 'm'.repeat(16))).state).toBe('sending');
+  });
+  it('leaves ambiguous provider outcomes noneditable and never claims sent', async () => {
+    const provider: MailSendProvider = { send: () => Promise.reject(new Error('timeout')) }; const draftService = service(provider); const draft = await draftService.createUser(scope, { ...fields, accountId: account }); const approval = await draftService.beginApproval(scope, draft.id, 1, 'z'.repeat(16)); const result = await draftService.confirmSend(scope, approval.approvalId, 'z'.repeat(16)); expect(result.state).toBe('sending'); await expect(draftService.editUser(scope, draft.id, 1, fields)).rejects.toThrow('editable');
   });
   it('keeps agent and policy packages structurally unable to use the provider boundary', async () => {
     const root = resolve(process.cwd());

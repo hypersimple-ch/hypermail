@@ -6,11 +6,15 @@ import {
   runtimeHealthSchema,
 } from '../src/runtime.js';
 
+const userId = '00000000-0000-4000-8000-000000000001';
 const id = 'b2c3d4e5-f678-4abc-8def-1234567890ab';
 
 describe('runtime contracts', () => {
   it('rejects queue payload confusion and unknown fields', () => {
     expect(agentEvaluateJobSchema.parse({ jobId: id })).toEqual({ jobId: id });
+    expect(agentEvaluateJobSchema.parse({ jobId: id, userId })).toEqual({ jobId: id, userId });
+    expect(() => agentEvaluateJobSchema.parse({ jobId: id, userId: 'bad' })).toThrow();
+    expect(() => agentEvaluateJobSchema.parse({ jobId: id, userId, extra: true })).toThrow();
     expect(() => queueJobSchema.parse({ name: 'agent.evaluate', payload: { notificationId: id } })).toThrow();
     expect(() => queueJobSchema.parse({ name: 'send.email', payload: { draftId: id } })).toThrow();
   });

@@ -41,6 +41,24 @@ describe('PostgreSQL lifecycle store', () => {
     expect(query).not.toContain('DELETE FROM app.push_subscriptions');
   });
 
+  it('bounds and audits OAuth/session deletion and task/log minimization without payload metadata', async () => {
+    const sql = new CapturingSql(); const store = new PostgresLifecycleStore(sql);
+    const at = new Date('2026-04-01T00:00:00Z'); const cutoff = new Date('2026-03-01T00:00:00Z');
+    await store.purgeExpiredOAuth(cutoff,at,7);
+    await store.purgeExpiredSessions(cutoff,at,7);
+    await store.minimizeTerminalTaskPayloads(cutoff,at,7);
+    await store.purgeOperationalText(cutoff,at,7);
+    expect(sql.statements).toHaveLength(4);
+    for (const entry of sql.statements) {
+      expect(entry.statement).toContain('LIMIT $3');
+      expect(entry.statement).toContain('INSERT INTO app.audits');
+      expect(entry.values).toEqual([cutoff,at,7]);
+      expect(entry.statement).not.toMatch(/result->|last_error\s*[,)]/);
+    }
+    expect(sql.statements[2]?.statement).toContain('SET result=NULL');
+    expect(sql.statements[3]?.statement).toContain('SET last_error=NULL');
+  });
+
   it.skipIf(!process.env.DATABASE_URL)('purges only cache rows while PostgreSQL retains related history and foreign keys', async () => {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) throw new Error('DATABASE_URL is required');
@@ -52,7 +70,10 @@ describe('PostgreSQL lifecycle store', () => {
       const userId = randomUUID(); const accountId = randomUUID(); const messageId = randomUUID();
       const activityId = randomUUID(); const subscriptionId = randomUUID(); const at = new Date('2026-04-01T00:00:00.000Z');
       await sql.unsafe(`INSERT INTO app.users (id, email, password_hash) VALUES ($1, $2, 'test')`, [userId, `user-${userId}@example.test`]);
-      await sql.unsafe(`INSERT INTO app.accounts (id, provider, provider_account_id, email) VALUES ($1, 'gmail', $2, $3)`, [accountId, accountId, `account-${accountId}@example.test`]);
+      await sql.begin(async transaction => {
+        await transaction.unsafe(`INSERT INTO app.accounts (id, user_id, provider, provider_account_id, email) VALUES ($1, $4, 'gmail', $2, $3)`, [accountId, accountId, `account-${accountId}@example.test`, userId]);
+        await transaction.unsafe(`INSERT INTO app.user_accounts (user_id, account_id) VALUES ($1, $2)`, [userId, accountId]);
+      });
       await sql.unsafe(`INSERT INTO app.messages (id, account_id, provider_message_id, sender, recipients, received_at) VALUES ($1, $2, 'message', '{"address":"sender@example.test"}', '[]', $3)`, [messageId, accountId, at]);
       await sql.unsafe(`INSERT INTO app.activities (id, account_id, message_id) VALUES ($1, $2, $3)`, [activityId, accountId, messageId]);
       await sql.unsafe(`INSERT INTO app.logical_notifications (activity_id, sender_label, subject, status_label) VALUES ($1, 'Sender', 'Subject', 'New email')`, [activityId]);

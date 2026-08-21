@@ -4,7 +4,7 @@ import type { ManagedSqlClient } from '@hypermail/db';
 import { PolicyExecutor, type Completion, type PolicyPersistence } from '@hypermail/policy';
 import { DurablePolicyRecovery, HypermailPrivateMutationTransport, PgBossPolicyDispatcher, PostgresPolicyPlanner } from '../src/policy.js';
 
-const ids = { account: '11111111-1111-4111-8111-111111111111', message: '22222222-2222-4222-8222-222222222222', folder: '33333333-3333-4333-8333-333333333333', activity: '44444444-4444-4444-8444-444444444444', decision: '55555555-5555-4555-8555-555555555555' };
+const ids = { account: '11111111-1111-4111-8111-111111111111', run: '77777777-7777-4777-8777-777777777777', user: '88888888-8888-4888-8888-888888888888', message: '22222222-2222-4222-8222-222222222222', folder: '33333333-3333-4333-8333-333333333333', activity: '44444444-4444-4444-8444-444444444444', decision: '55555555-5555-4555-8555-555555555555' };
 const database = (query: (sql: string, values?: readonly unknown[]) => Promise<{ rows: readonly Record<string, unknown>[] }>) => {
   const db = { query, transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(db as unknown as ManagedSqlClient), close: () => Promise.resolve() };
   return db as unknown as ManagedSqlClient;
@@ -34,22 +34,22 @@ describe('worker policy boundary', () => {
   it('does not fabricate folder verification facts', async () => {
     const completed: Completion[] = [];
     const persistence: PolicyPersistence = {
-      claim: async () => ({ actionId: ids.activity, accountId: ids.account, run: true }), claimImmediatelyBeforeMutation: async () => 'run',
+      claim: async () => ({ actionId: ids.activity, accountId: ids.account, run: true }), claimImmediatelyBeforeMutation: async () => 'run', reportProvider: async () => undefined,
       complete: async (_action, _account, completion) => { completed.push(completion); return completion.outcome; },
     };
     const transport = new HypermailPrivateMutationTransport(database(async () => ({ rows: [{ email: 'a@example.test', providerMessageId: 'provider' }] })), { call: async name => name === 'archive_email' ? { archived: true, id: 'provider' } : name === 'read_email' ? { isRead: true } : name === 'list_emails' ? { items: [], hasMore: false } : {} }, () => Promise.resolve());
-    await new PolicyExecutor({ persistence, transport, isGloballyPaused: () => false }).execute({ activityId: ids.activity, decisionId: ids.decision, idempotencyKey: 'x'.repeat(16), kind: 'archive', target: { accountId: ids.account, messageId: ids.message }, precondition: {} });
+    await new PolicyExecutor({ persistence, transport, isGloballyPaused: () => false }).execute({ actionId: ids.activity, runId: ids.run, userId: ids.user, activityId: ids.activity, decisionId: ids.decision, idempotencyKey: 'x'.repeat(16), kind: 'archive', target: { accountId: ids.account, messageId: ids.message }, precondition: {} });
     expect(completed[0]).toMatchObject({ outcome: 'unverifiable', errorCode: 'VERIFICATION_INSUFFICIENT', observed: {} });
   });
 
   it('does not mutate while an account pause is authoritative', async () => {
     let mutations = 0;
     const persistence: PolicyPersistence = {
-      claim: async () => ({ actionId: ids.activity, accountId: ids.account, run: false }), claimImmediatelyBeforeMutation: async () => 'paused',
+      claim: async () => ({ actionId: ids.activity, accountId: ids.account, run: false }), claimImmediatelyBeforeMutation: async () => 'paused', reportProvider: async () => undefined,
       complete: async (_action, _account, completion) => completion.outcome,
     };
     const transport = { archive: async () => { mutations += 1; return {}; }, recoverableTrash: async () => ({}), move: async () => ({}), markRead: async () => ({}), markUnread: async () => ({}), draftCreate: async () => ({}), draftEdit: async () => ({}) };
-    await expect(new PolicyExecutor({ persistence, transport, isGloballyPaused: () => false }).execute({ activityId: ids.activity, decisionId: ids.decision, idempotencyKey: 'x'.repeat(16), kind: 'archive', target: { accountId: ids.account, messageId: ids.message }, precondition: {} })).resolves.toMatchObject({ outcome: 'paused' });
+    await expect(new PolicyExecutor({ persistence, transport, isGloballyPaused: () => false }).execute({ actionId: ids.activity, runId: ids.run, userId: ids.user, activityId: ids.activity, decisionId: ids.decision, idempotencyKey: 'x'.repeat(16), kind: 'archive', target: { accountId: ids.account, messageId: ids.message }, precondition: {} })).resolves.toMatchObject({ outcome: 'paused' });
     expect(mutations).toBe(0);
   });
 
@@ -57,8 +57,11 @@ describe('worker policy boundary', () => {
     const sends: string[] = []; let inserts = 0;
     const db = database(async sql => {
       if (sql.includes('app.decisions')) return { rows: [{ id: ids.decision, output: { state: 'actionable', actions: [{ kind: 'mark_read', target: { accountId: ids.account, messageId: ids.message } }] } }] };
-      if (sql.includes('insert into app.actions')) { inserts += 1; return { rows: [{ id: ids.activity }] }; }
-      if (sql.includes("state = 'planned'")) return { rows: [{ id: ids.activity }] };
+      if (sql.includes('from app.agent_jobs')) return { rows: [{ id: ids.run, activity_id: ids.activity, user_id: ids.user, account_id: ids.account, state: 'running', correlation_id: 'arrival:test', manager_kind: 'mastra', manager_connection_id: null, manager_legacy_source_id: null, manager_lifecycle_revision: null, mode: 'automatic', assignment_id: ids.folder, assignment_revision: 1, grant_id: ids.decision, grant_revision: 1, safety_revision: 1, grant_capabilities: ['mail.mark_read'], safety_capabilities: ['mail.mark_read'] }] };
+      if (sql.includes('insert into app.agent_authorized_actions')) { inserts += 1; return { rows: [{ id: ids.activity }] }; }
+      if (sql.includes('max(sequence)')) return { rows: [{ sequence: 1 }] };
+      if (sql.includes('insert into app.actions')) { return { rows: [{ id: ids.activity }] }; }
+      if (sql.includes("where state in ('authorized','executing','verifying')")) return { rows: [{ id: ids.activity }] };
       return { rows: [] };
     });
     const dispatcher = new PgBossPolicyDispatcher({ send: async (_name, data) => { sends.push((data as { actionId: string }).actionId); return 'job'; } });

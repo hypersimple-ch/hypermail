@@ -13,18 +13,18 @@ class FakeStore implements IngestionStore {
   async recordArrival(arrival: Arrival) { const key = `${arrival.accountId}:${arrival.message.id}`; if (this.baselineMessages.has(key)) return null; const created = !this.messages.has(key); this.messages.add(key); this.activities.add(key); this.notifications.add(key); const job = `job:${key}`; this.jobs.set(job, this.jobs.get(job) ?? { key: `agent:evaluate:${job}` }); return { jobId: job, idempotencyKey: `agent:evaluate:${job}`, created }; }
   async markPollSucceeded(id: string): Promise<void> { this.failures.set(id, 0); }
   async markPollFailed(id: string, _at: Date, failure: SanitizedFailure): Promise<number> { this.health.push(failure); const count = (this.failures.get(id) ?? 0) + 1; this.failures.set(id, count); return count; }
-  async pendingDispatches() { return [...this.jobs].filter(([, job]) => !job.queue).map(([jobId, job]) => ({ jobId, idempotencyKey: job.key })); }
+  async pendingDispatches() { return [...this.jobs].filter(([, job]) => !job.queue).map(([jobId, job]) => ({ jobId, userId: this.accounts.find((a) => a.id === jobId.split(':')[1])?.userId ?? 'tenant', idempotencyKey: job.key })); }
   async markDispatched(id: string, queue: string): Promise<void> { const job = this.jobs.get(id); if (job && !job.queue) job.queue = queue; }
   async acquireLease(_name: string, holder: string, now: Date, ttl: number): Promise<boolean> { if (this.lease && this.lease.expires > now && this.lease.holder !== holder) return false; this.lease = { holder, expires: new Date(now.valueOf() + ttl) }; return true; }
 }
 class FakeProvider implements MailProvider {
   baseline: string[] = []; polls = new Map<string, MailMessage[]>(); recent = new Map<string, MailMessage[]>(); fail = new Set<string>();
-  async establishBaseline(account: string): Promise<void> { this.baseline.push(account); }
-  async pollNewInbox(account: string): Promise<MailMessage[]> { if (this.fail.has(account)) throw new Error('network https://secret.example token-abcdefghijklmnopqrstuv'); return this.polls.get(account) ?? []; }
-  async recentInbox(account: string): Promise<MailMessage[]> { return this.recent.get(account) ?? []; }
+  async establishBaseline(_userId: string, account: string): Promise<void> { this.baseline.push(account); }
+  async pollNewInbox(_userId: string, account: string): Promise<MailMessage[]> { if (this.fail.has(account)) throw new Error('network https://secret.example token-abcdefghijklmnopqrstuv'); return this.polls.get(account) ?? []; }
+  async recentInbox(_userId: string, account: string): Promise<MailMessage[]> { return this.recent.get(account) ?? []; }
 }
-class FakeQueue implements DeliveryQueue { sends: string[] = []; fail = false; async send(_name: 'agent.evaluate', payload: { jobId: string }, key: string): Promise<string> { if (this.fail) throw new Error('queue unavailable'); this.sends.push(`${payload.jobId}:${key}`); return `queue:${payload.jobId}`; } }
-const account = (id: string, email = `${id}@example.test`, baseline = new Date('2025-12-31T00:00:00Z')): Account => ({ id, email, provider: 'gmail', baselineCompletedAt: baseline, consecutiveFailures: 0 });
+class FakeQueue implements DeliveryQueue { sends: string[] = []; fail = false; async send(_name: 'agent.evaluate', payload: { jobId: string; userId: string }, key: string): Promise<string> { if (this.fail) throw new Error('queue unavailable'); this.sends.push(`${payload.jobId}:${key}`); return `queue:${payload.jobId}`; } }
+const account = (id: string, email = `${id}@example.test`, baseline = new Date('2025-12-31T00:00:00Z')): Account => ({ userId: '00000000-0000-4000-8000-000000000001', id, email, provider: 'gmail', baselineCompletedAt: baseline, consecutiveFailures: 0 });
 const mail = (id: string, email: string): MailMessage => ({ id, account: email, subject: 'Hello', from: { address: 'sender@example.test' } });
 const setup = (accounts = [account('a')]) => { const store = new FakeStore(accounts); const provider = new FakeProvider(); const clock = new FakeClock(); const queue = new FakeQueue(); return { store, provider, clock, queue, worker: new IngestionWorker(store, provider, new DispatchRecovery(store, queue), clock) }; };
 

@@ -22,9 +22,14 @@ const validWorker = {
 };
 
 describe('environment contracts', () => {
+  it('accepts tenant routing as an env-only opaque JSON contract and redacts it', () => {
+    const configured = parseEnvironment(workerEnvSchema, { ...validWorker, HYPERMAIL_TENANT_ROUTES: '{"tenant":"configuration"}' });
+    expect(configured.HYPERMAIL_TENANT_ROUTES).toBe('{"tenant":"configuration"}');
+    expect(redactEnvironment(configured).HYPERMAIL_TENANT_ROUTES).toBe('[REDACTED]');
+  });
   it('requires a private attachment directory and HTTPS approved-send endpoint', () => {
     const base = {
-      NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32),
+      NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32), OAUTH_TOKEN_HASH_KEY: 'o'.repeat(32),
       RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
       HYPERMAIL_PROTOCOL_VERSION: validWorker.HYPERMAIL_PROTOCOL_VERSION, VAPID_SUBJECT: 'mailto:owner@example.test', VAPID_PUBLIC_KEY: 'public-key-value-123', VAPID_PRIVATE_KEY: 'private-key-value-123',
       PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY, ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments', APPROVED_SEND_URL: 'https://approved-send.private.test', APPROVED_SEND_TOKEN: 'approved-send-token-value',
@@ -40,7 +45,7 @@ describe('environment contracts', () => {
 
   it('allows HTTPS APP_ORIGIN everywhere and HTTP only for development loopback URLs', () => {
     const base = {
-      NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32),
+      NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32), OAUTH_TOKEN_HASH_KEY: 'o'.repeat(32),
       RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
       HYPERMAIL_PROTOCOL_VERSION: validWorker.HYPERMAIL_PROTOCOL_VERSION, VAPID_SUBJECT: validWorker.VAPID_SUBJECT, VAPID_PUBLIC_KEY: validWorker.VAPID_PUBLIC_KEY,
       VAPID_PRIVATE_KEY: validWorker.VAPID_PRIVATE_KEY, PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY,

@@ -1,13 +1,13 @@
 export type Provider = 'microsoft' | 'gmail' | 'imap';
 
 export interface Clock { now(): Date; sleep(milliseconds: number): Promise<void>; }
-export interface Account { id: string; email: string; provider: Provider; baselineCompletedAt: Date | null; consecutiveFailures: number; }
+export interface Account { userId: string; id: string; email: string; provider: Provider; baselineCompletedAt: Date | null; consecutiveFailures: number; }
 export interface MailAddress { address: string; name?: string; }
 export interface MailMessage { id: string; account: string; subject?: string; from?: MailAddress; to?: MailAddress[]; cc?: MailAddress[]; receivedAt?: string; isRead?: boolean; attachments?: ReadonlyArray<{ id: string; name: string; contentType?: string; size?: number }>; }
 export interface MailProvider {
-  establishBaseline(account: string): Promise<void>;
-  pollNewInbox(account: string, limit: number): Promise<MailMessage[]>;
-  recentInbox(account: string, limit: number): Promise<MailMessage[]>;
+  establishBaseline(userId: string, account: string): Promise<void>;
+  pollNewInbox(userId: string, account: string, limit: number): Promise<MailMessage[]>;
+  recentInbox(userId: string, account: string, limit: number): Promise<MailMessage[]>;
 }
 export interface Arrival { accountId: string; message: MailMessage; observedAt: Date; }
 export interface ArrivalResult { jobId: string; idempotencyKey: string; created: boolean; }
@@ -19,11 +19,11 @@ export interface IngestionStore {
   recordArrival(arrival: Arrival): Promise<ArrivalResult | null>;
   markPollSucceeded(accountId: string, at: Date, reconciled: boolean): Promise<void>;
   markPollFailed(accountId: string, at: Date, failure: SanitizedFailure): Promise<number>;
-  pendingDispatches(limit: number): Promise<ReadonlyArray<{ jobId: string; idempotencyKey: string }>>;
+  pendingDispatches(limit: number): Promise<ReadonlyArray<{ jobId: string; userId: string; idempotencyKey: string }>>;
   markDispatched(jobId: string, queueJobId: string): Promise<void>;
   acquireLease(name: string, holderId: string, now: Date, ttlMilliseconds: number): Promise<boolean>;
 }
-export interface DeliveryQueue { send(name: 'agent.evaluate', payload: { jobId: string }, singletonKey: string): Promise<string>; }
+export interface DeliveryQueue { send(name: 'agent.evaluate', payload: { jobId: string; userId: string }, singletonKey: string): Promise<string>; }
 export interface SanitizedFailure { code: string; detail: string; }
 
 const safeDetail = (value: unknown): string => {
@@ -44,7 +44,7 @@ export class DispatchRecovery {
   async dispatch(limit = 100): Promise<void> {
     for (const job of await this.store.pendingDispatches(limit)) {
       try {
-        const queueJobId = await this.queue.send('agent.evaluate', { jobId: job.jobId }, job.idempotencyKey);
+        const queueJobId = await this.queue.send('agent.evaluate', { jobId: job.jobId, userId: job.userId }, job.idempotencyKey);
         await this.store.markDispatched(job.jobId, queueJobId);
       } catch {
         // The durable pending job is retried on the next dispatcher pass.
@@ -67,18 +67,18 @@ export class IngestionWorker {
   private async pollAccount(account: Account): Promise<void> {
     try {
       if (!account.baselineCompletedAt) {
-        await this.provider.establishBaseline(account.email);
+        await this.provider.establishBaseline(account.userId, account.email);
         // Project identities before completing the baseline. Repeating this after a
         // provider or database crash is safe, and keeps reconciliation from turning
         // pre-existing Inbox content into arrivals.
-        await this.persistBaseline(account, await this.provider.recentInbox(account.email, this.options.recentLimit));
+        await this.persistBaseline(account, await this.provider.recentInbox(account.userId, account.email, this.options.recentLimit));
         await this.store.markBaseline(account.id, this.clock.now());
         this.options.observer?.record('poll_cycle', 'success');
         return; // Baseline content never creates activities or jobs.
       }
       // Reconciliation closes the external checkpoint -> DB commit crash window.
-      await this.persistAll(account, await this.provider.recentInbox(account.email, this.options.recentLimit));
-      await this.persistAll(account, await this.provider.pollNewInbox(account.email, this.options.pollLimit));
+      await this.persistAll(account, await this.provider.recentInbox(account.userId, account.email, this.options.recentLimit));
+      await this.persistAll(account, await this.provider.pollNewInbox(account.userId, account.email, this.options.pollLimit));
       await this.store.markPollSucceeded(account.id, this.clock.now(), true);
       this.options.observer?.record('poll_cycle', 'success');
     } catch (error) {

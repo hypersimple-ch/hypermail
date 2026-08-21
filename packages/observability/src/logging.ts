@@ -27,10 +27,36 @@ export function redact(value: unknown, key = '', depth = 0): unknown {
   return '[unsupported]';
 }
 
+const OPERATIONAL_NUMERIC_FIELDS = new Set(['count','value','durationMs','ageSeconds','attempt','limit','statusCode']);
+const OPERATIONAL_BOOLEAN_FIELDS = new Set(['healthy','retryable','denied']);
+const OPERATIONAL_CATEGORIES: Readonly<Record<string, ReadonlySet<string>>> = {
+  queue: new Set(['agent.evaluate','notification.deliver','policy.execute','agent.task']),
+  outcome: new Set(['success','failure','retrying','paused','unavailable','denied','observed']),
+  dependency: new Set(['database','queue','hypermail','scheduler','model','notifications','policy']),
+  providerKind: new Set(['microsoft','gmail','imap','unknown']),
+  reasonCode: new Set(['quota','rate_limit','concurrency','authorization','oauth_reuse','provider','invalid_input','unknown']),
+};
+
+/** Strict projection: arbitrary strings are never accepted as operational fields. */
+export function allowlistedFields(fields: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  for (const [key,value] of Object.entries(fields)) {
+    if (OPERATIONAL_NUMERIC_FIELDS.has(key) && typeof value === 'number' && Number.isFinite(value)) safe[key]=value;
+    else if (OPERATIONAL_BOOLEAN_FIELDS.has(key) && typeof value === 'boolean') safe[key]=value;
+    else if (typeof value === 'string' && OPERATIONAL_CATEGORIES[key]?.has(value)) safe[key]=value;
+  }
+  return safe;
+}
+
+function safeCorrelationId(value: string | undefined): string | undefined {
+  return value && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : undefined;
+}
+
 export function createStructuredLogger(sink: LogSink, now: () => Date = () => new Date()) {
   return {
     log(level: LogLevel, event: string, fields: Readonly<Record<string, unknown>> = {}, correlationId?: string): void {
-      sink({ timestamp: now().toISOString(), level, event: EVENT.test(event) ? event : 'invalid_event', ...(correlationId ? { correlationId } : {}), fields: redact(fields) as Record<string, unknown> });
+      const safeCorrelation = safeCorrelationId(correlationId);
+      sink({ timestamp: now().toISOString(), level, event: EVENT.test(event) ? event : 'invalid_event', ...(safeCorrelation ? { correlationId: safeCorrelation } : {}), fields: allowlistedFields(fields) });
     },
   };
 }

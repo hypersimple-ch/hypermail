@@ -11,22 +11,26 @@ import {
   type StartMailboxResult,
 } from './contracts.js';
 
-/** Explicit owner-only mailbox onboarding. This service is never composed into worker or agent ports. */
+export type TenantMailboxOnboardingLease = Readonly<{ provider: MailboxOnboardingProvider; release(): Promise<void> }>;
+export interface TenantMailboxOnboardingProvider { leaseForUser(userId: string): Promise<TenantMailboxOnboardingLease>; }
+
+/** Explicit owner-only mailbox onboarding. Provider selection is always derived from authenticated User scope. */
 export class MailboxService {
   private initialized: Promise<void> | undefined;
 
   constructor(
-    private readonly provider: MailboxOnboardingProvider,
+    private readonly provider: MailboxOnboardingProvider | TenantMailboxOnboardingProvider,
     private readonly projector: ReadyAccountProjector,
   ) {}
 
   async start(scope: MailboxScope, input: StartMailboxInput): Promise<StartMailboxResult> {
     this.requireScope(scope);
     try {
-      await this.initialize();
-      const result = await this.provider.addAccount(input);
-      if (result.status === 'pending') return result;
-      return { status: 'ready', account: await this.project(scope.subjectId, result.account) };
+      return await this.withProvider(scope.subjectId, async provider => {
+        const result = await provider.addAccount(input);
+        if (result.status === 'pending') return result;
+        return { status: 'ready' as const, account: await this.project(scope.subjectId, result.account) };
+      });
     } catch (error) {
       throw this.safeError(error);
     }
@@ -35,10 +39,11 @@ export class MailboxService {
   async complete(scope: MailboxScope, input: CompleteMailboxInput): Promise<CompleteMailboxResult> {
     this.requireScope(scope);
     try {
-      await this.initialize();
-      const result = await this.provider.completeAddAccount(input);
-      if (result.status !== 'ready') return result;
-      return { status: 'ready', account: await this.project(scope.subjectId, result.account) };
+      return await this.withProvider(scope.subjectId, async provider => {
+        const result = await provider.completeAddAccount(input);
+        if (result.status !== 'ready') return result;
+        return { status: 'ready' as const, account: await this.project(scope.subjectId, result.account) };
+      });
     } catch (error) {
       throw this.safeError(error);
     }
@@ -48,9 +53,18 @@ export class MailboxService {
     if (!scope.subjectId.trim()) throw new MailboxInputError();
   }
 
-  private async initialize(): Promise<void> {
+  private async withProvider<Result>(userId: string, operation: (provider: MailboxOnboardingProvider) => Promise<Result>): Promise<Result> {
+    if ('leaseForUser' in this.provider) {
+      const lease = await this.provider.leaseForUser(userId);
+      try { await lease.provider.initialize(); return await operation(lease.provider); }
+      finally { await lease.release(); }
+    }
+    const provider = this.provider; await this.initializeLegacy(provider); return operation(provider);
+  }
+
+  private async initializeLegacy(provider: MailboxOnboardingProvider): Promise<void> {
     if (!this.initialized) {
-      this.initialized = this.provider.initialize().then(() => undefined).catch((error: unknown) => {
+      this.initialized = provider.initialize().then(() => undefined).catch((error: unknown) => {
         this.initialized = undefined;
         throw error;
       });

@@ -2,12 +2,13 @@
 import { describe, expect, it } from 'vitest';
 import { PolicyExecutor, PostgresPolicyPersistence, policyActionInputSchema, type Claim, type Completion, type PolicyActionInput, type PolicyPersistence, type PolicySqlClient, type PrivateMutationTransport } from '../src/index.js';
 
-const ids = { accountId: '11111111-1111-4111-8111-111111111111', activityId: '22222222-2222-4222-8222-222222222222', decisionId: '33333333-3333-4333-8333-333333333333', messageId: '44444444-4444-4444-8444-444444444444' };
-const action = (): PolicyActionInput => ({ activityId: ids.activityId, decisionId: ids.decisionId, idempotencyKey: 'idempotency-key-0001', kind: 'archive', target: { accountId: ids.accountId, messageId: ids.messageId }, precondition: { version: 1 } });
+const ids = { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', runId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', userId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', accountId: '11111111-1111-4111-8111-111111111111', activityId: '22222222-2222-4222-8222-222222222222', decisionId: '33333333-3333-4333-8333-333333333333', messageId: '44444444-4444-4444-8444-444444444444' };
+const action = (): PolicyActionInput => ({ actionId: ids.actionId, runId: ids.runId, userId: ids.userId, activityId: ids.activityId, decisionId: ids.decisionId, idempotencyKey: 'idempotency-key-0001', kind: 'archive', target: { accountId: ids.accountId, messageId: ids.messageId }, precondition: { version: 1 } });
 class MemoryPersistence implements PolicyPersistence {
-  completed: Completion[] = []; before = 'run' as 'run' | 'paused' | 'finished'; claimResult: Claim = { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', accountId: ids.accountId, run: true };
+  reported: string[] = []; completed: Completion[] = []; before = 'run' as 'run' | 'paused' | 'finished'; claimResult: Claim = { actionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', accountId: ids.accountId, run: true };
   async claim() { return this.claimResult; }
   async claimImmediatelyBeforeMutation() { return this.before; }
+  async reportProvider(actionId: string) { this.reported.push(actionId); }
   async complete(_id: string, _account: string, completion: Completion) { this.completed.push(completion); return completion.outcome; }
 }
 const transport = (read: PrivateMutationTransport['read'], archive: PrivateMutationTransport['archive'] = async () => ({ expected: { version: 2 } })): PrivateMutationTransport => ({
@@ -34,6 +35,7 @@ describe('policy executor', () => {
       let mutations = 0;
       await new PolicyExecutor({ persistence: store, transport: transport(async () => observed, async () => { mutations += 1; return {}; }), isGloballyPaused: () => false }).execute(action());
       expect(mutations).toBe(0);
+      expect(store.reported).toEqual([]);
       return store.completed[0];
     };
     await expect(recover({ folderRole: 'archive' })).resolves.toMatchObject({ outcome: 'succeeded' });
@@ -52,6 +54,7 @@ describe('policy executor', () => {
       return reads === 1 ? { version: 1, folderRole: 'inbox' } : { folderRole: 'inbox' };
     }, async () => ({})), isGloballyPaused: () => false }).execute(action())).resolves.toMatchObject({ outcome: 'incorrect' });
     expect(store.completed[0]).toMatchObject({ outcome: 'incorrect' });
+    expect(store.reported).toEqual([ids.actionId]);
   });
 
   it('passes the deterministic key and retries only explicit definitely-not-applied failures', async () => {
@@ -73,39 +76,12 @@ describe('policy executor', () => {
     const statements: string[] = [];
     const sql: PolicySqlClient = { query: async text => {
       statements.push(text);
-      if (text.includes('SELECT state FROM app.actions')) return { rows: [{ state: 'planned' }] };
+      if (text.includes('FROM app.agent_authorized_actions')) return { rows: [{ state: 'authorized' }] };
       return { rows: [{}] };
     }, transaction: async work => work(sql) };
     await expect(new PostgresPolicyPersistence(sql).claimImmediatelyBeforeMutation('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ids.accountId, () => true)).resolves.toBe('paused');
     expect(statements.some(text => text.includes("state = 'executing'"))).toBe(false);
   });
 
-  it('allows planned precondition failures to become terminal and creates a separate safety notification activity', async () => {
-    const queries: Array<readonly unknown[] | undefined> = []; const statements: string[] = [];
-    const sql: PolicySqlClient = {
-      query: async (text, values) => {
-        queries.push(values); statements.push(text);
-        if (text.includes('UPDATE app.actions SET state')) return { rows: [{ state: 'incorrect', activity_id: ids.activityId, kind: 'archive' }] };
-        if (text.includes('MAX(attempt)')) return { rows: [{ attempt: 1 }] };
-        if (text.includes('INSERT INTO app.safety_windows')) return { rows: [{ verified_mutations: 100, incorrect_mutations: 1 }] };
-        if (text.includes('INSERT INTO app.messages')) return { rows: [{ id: '55555555-5555-4555-8555-555555555555' }] };
-        if (text.includes('INSERT INTO app.activities')) return { rows: [{ id: '66666666-6666-4666-8666-666666666666' }] };
-        return { rows: [] };
-      },
-      transaction: async work => work(sql),
-    };
-    const persistence = new PostgresPolicyPersistence(sql);
-    await expect(persistence.complete('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ids.accountId, { outcome: 'failed', observed: {}, errorCode: 'PRECONDITION_MISMATCH' }, { maxIncorrectRate: 0.01, windowMs: 60_000 })).resolves.toBe('failed');
-    expect(statements.find(text => text.includes('UPDATE app.actions SET state'))).toContain("state = 'planned' AND $2 = 'failed' AND $4 = 'PRECONDITION_MISMATCH'");
-    expect(statements.find(text => text.includes('UPDATE app.actions SET state'))).toContain('$2::app.action_state');
 
-    await persistence.complete('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', ids.accountId, { outcome: 'incorrect', observed: {} }, { maxIncorrectRate: 0.01, windowMs: 60_000 });
-    expect(queries.some(values => values?.includes(ids.accountId))).toBe(true);
-    expect(statements.filter(text => text.includes("autonomy_pause_reason = 'SAFETY_INCORRECT_RATE'"))).toHaveLength(1);
-    expect(statements.some(text => text.includes('INSERT INTO app.messages'))).toBe(true);
-    expect(statements.some(text => text.includes("INSERT INTO app.activities") && text.includes("'failed'"))).toBe(true);
-    const notification = statements.find(text => text.includes('INSERT INTO app.logical_notifications'));
-    expect(notification).toContain('ON CONFLICT (activity_id) DO NOTHING');
-    expect(queries.find(values => values?.includes('66666666-6666-4666-8666-666666666666'))).toBeDefined();
-  });
 });

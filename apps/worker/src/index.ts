@@ -9,3 +9,4 @@ export * from './hypermail-provider.js';
 export * from './observability/index.js';
 export * from './lifecycle/retention.js';
 export * from './lifecycle/postgres-store.js';
+export * from './operational-safety.js';

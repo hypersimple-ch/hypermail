@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { workerEnvSchema, type WorkerEnv } from '@hypermail/contracts';
+import { workerEnvSchema, type AgentEvaluateJob, type WorkerEnv } from '@hypermail/contracts';
 import { liveness, readiness, type DependencyState, type WorkerDependency } from './health.js';
 import type { Clock } from './ingestion.js';
 
@@ -8,10 +8,12 @@ import type { Clock } from './ingestion.js';
 export type WorkerEnvironment = Readonly<WorkerEnv>;
 
 const workerEnvironmentNames = [
-  'NODE_ENV', 'DATABASE_URL', 'HYPERMAIL_URL', 'HYPERMAIL_KEY', 'HYPERMAIL_PROTOCOL_VERSION',
+  'NODE_ENV', 'DATABASE_URL', 'HYPERMAIL_URL', 'HYPERMAIL_KEY', 'HYPERMAIL_PROTOCOL_VERSION', 'HYPERMAIL_TENANT_ROUTES',
   'MODEL_PROVIDER', 'MODEL_NAME', 'MODEL_API_KEY', 'VAPID_SUBJECT', 'VAPID_PUBLIC_KEY',
   'VAPID_PRIVATE_KEY', 'PUSH_SUBSCRIPTION_ENCRYPTION_KEY', 'AGENT_GLOBAL_CONSTRAINTS', 'HEALTH_PORT', 'POLL_INTERVAL_SECONDS',
   'LIFECYCLE_INTERVAL_SECONDS', 'SHUTDOWN_TIMEOUT_SECONDS', 'BODY_RETENTION_DAYS',
+  'OAUTH_RETENTION_HOURS', 'SESSION_RETENTION_DAYS', 'TASK_PAYLOAD_RETENTION_DAYS', 'OPERATIONAL_TEXT_RETENTION_DAYS',
+  'LIFECYCLE_BATCH_SIZE', 'USER_TASK_RATE_PER_MINUTE', 'USER_TASK_CONCURRENCY', 'USER_PENDING_TASK_QUOTA',
   'INCORRECT_MUTATION_THRESHOLD',
 ] as const;
 
@@ -27,20 +29,20 @@ export function parseWorkerEnvironment(values: Readonly<Record<string, string | 
 }
 
 export type QueueName = 'agent.evaluate' | 'notification.deliver' | 'policy.execute';
-export type QueuePayload = Readonly<{ jobId: string }> | Readonly<{ notificationId: string }> | Readonly<{ actionId: string }>;
+export type QueuePayload = Readonly<AgentEvaluateJob> | Readonly<{ notificationId: string }> | Readonly<{ actionId: string }>;
 export interface BossJob { readonly data: unknown; }
 export interface BossRuntime { start(): Promise<void>; createQueue(name: QueueName): Promise<void>; stop(options?: { graceful?: boolean; timeout?: number }): Promise<void>; work(name: QueueName, handler: (job: BossJob) => Promise<void>): Promise<void>; }
 export interface Scheduler { start(): Promise<void>; stop(): void; }
 export interface Recovery { recover(): Promise<void>; }
 export interface JobConsumer { consume(payload: QueuePayload): Promise<void>; }
 /** A durable agent job must be claimed from the database before model work starts. */
-export interface AgentJobStore<Job> { claim(jobId: string): Promise<Job | null>; }
+export interface AgentJobStore<Job> { claim(jobId: string, userId?: string): Promise<Job | null>; }
 export interface AgentJobHandler<Job> { evaluate(job: Job): Promise<void>; }
 export class ClaimingAgentConsumer<Job> implements JobConsumer {
   constructor(private readonly store: AgentJobStore<Job>, private readonly handler: AgentJobHandler<Job>) {}
   async consume(payload: QueuePayload): Promise<void> {
     if (!('jobId' in payload)) throw new Error('QUEUE_PAYLOAD_INVALID');
-    const job = await this.store.claim(payload.jobId);
+    const job = await this.store.claim(payload.jobId, 'userId' in payload ? payload.userId : undefined);
     if (job !== null) await this.handler.evaluate(job);
   }
 }
@@ -60,7 +62,7 @@ export function requireAutonomousCapability(value: string): AutonomousCapability
 }
 export interface RuntimeProbe { (): Promise<boolean>; }
 export interface WorkerRuntimeDependencies {
-  readonly boss: BossRuntime; readonly ingestion: Scheduler; readonly lifecycle: Scheduler; readonly dispatchRecovery: Recovery; readonly notificationRecovery: Recovery; readonly policyRecovery: Recovery;
+  readonly boss: BossRuntime; readonly ingestion: Scheduler; readonly lifecycle: Scheduler; readonly dispatchRecovery: Recovery; readonly notificationRecovery: Recovery; readonly policyRecovery: Recovery; readonly agentTaskRecovery?: Recovery;
   readonly agentConsumer: JobConsumer; readonly notificationConsumer: JobConsumer; readonly policyConsumer: JobConsumer;
   readonly closeDatabase: () => Promise<void>; readonly probes: Readonly<Partial<Record<WorkerDependency, RuntimeProbe>>>;
   readonly clock?: Clock; readonly holderId?: string;
@@ -71,7 +73,14 @@ const id = (value: unknown): value is string => typeof value === 'string' && /^[
 /** Rejects malformed, extra-field, and cross-queue payloads before domain code sees them. */
 export function parseQueuePayload(name: QueueName, raw: unknown): QueuePayload {
   if (!isRecord(raw)) throw new Error('QUEUE_PAYLOAD_INVALID');
-  const field = name === 'agent.evaluate' ? 'jobId' : name === 'notification.deliver' ? 'notificationId' : 'actionId';
+  if (name === 'agent.evaluate') {
+    const keys = Object.keys(raw).sort();
+    const legacy = keys.length === 1 && keys[0] === 'jobId';
+    const tenantQualified = keys.length === 2 && keys[0] === 'jobId' && keys[1] === 'userId';
+    if ((!legacy && !tenantQualified) || !id(raw['jobId']) || (tenantQualified && !id(raw['userId']))) throw new Error('QUEUE_PAYLOAD_INVALID');
+    return tenantQualified ? { jobId: raw['jobId'], userId: raw['userId'] as string } : { jobId: raw['jobId'] };
+  }
+  const field = name === 'notification.deliver' ? 'notificationId' : 'actionId';
   if (Object.keys(raw).length !== 1 || !id(raw[field])) throw new Error('QUEUE_PAYLOAD_INVALID');
   return { [field]: raw[field] } as QueuePayload;
 }
@@ -97,8 +106,8 @@ export class WorkerRuntime {
         this.deps.boss.work('policy.execute', async ({ data }) => { await this.deps.policyConsumer.consume(parseQueuePayload('policy.execute', data)); }),
       ]);
       this.status.queue = true;
-      await Promise.all([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover()]);
-      this.notificationTimer = setInterval(() => { void Promise.allSettled([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover()]); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
+      await Promise.all([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(), this.deps.agentTaskRecovery?.recover() ?? Promise.resolve()]);
+      this.notificationTimer = setInterval(() => { void Promise.allSettled([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(), this.deps.agentTaskRecovery?.recover() ?? Promise.resolve()]); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
     } catch { this.status.queue = false; }
     void this.deps.ingestion.start().catch(() => { this.status.scheduler = false; });
     void this.deps.lifecycle.start().catch(() => { this.status.scheduler = false; });

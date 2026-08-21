@@ -39,6 +39,11 @@ export function createActivityRoutes(service: ActivityService) {
         }) };
       } catch (error) { return errorResponse(error); }
     },
+    async forMessage(request: ActivityRouteRequest, messageId: string): Promise<ActivityRouteResponse> {
+      if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
+      const authenticated = scope(request); if (!authenticated) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
+      try { return { status: 200, body: { items: await service.forMessage(authenticated, messageId) } }; } catch (error) { return errorResponse(error); }
+    },
     async detail(request: ActivityRouteRequest, activityId: string): Promise<ActivityRouteResponse> {
       if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
       const authenticated = scope(request); if (!authenticated) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };

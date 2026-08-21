@@ -6,12 +6,9 @@ const httpsOrigin = z.url().refine(
   (value) => new URL(value).protocol === 'https:',
   'must use https',
 );
-const appOrigin = z.url().refine(
-  (value) => {
-    try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
-  },
-  'must use http or https',
-);
+const appOrigin = z.url().refine((value) => {
+  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash && value === url.origin; } catch { return false; }
+}, 'must be an exact root http(s) origin without credentials, path, query, fragment, or trailing slash');
 const loopbackHostnames = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function isHttpsOrigin(origin: string): boolean {
@@ -35,10 +32,12 @@ export const webEnvSchema = z.strictObject({
   ...shared,
   APP_ORIGIN: appOrigin,
   AUTH_SECRET: z.string().min(32),
+  OAUTH_TOKEN_HASH_KEY: z.string().min(32),
   RECOVERY_RECIPIENT: z.email(),
   HYPERMAIL_URL: z.url(),
   HYPERMAIL_KEY: secret,
   HYPERMAIL_PROTOCOL_VERSION: z.string().min(1),
+  HYPERMAIL_TENANT_ROUTES: z.string().min(2).optional(),
   VAPID_SUBJECT: z.string().startsWith('mailto:'),
   VAPID_PUBLIC_KEY: secret,
   VAPID_PRIVATE_KEY: secret,
@@ -62,6 +61,7 @@ export const workerEnvSchema = z.strictObject({
   HYPERMAIL_URL: z.url(),
   HYPERMAIL_KEY: secret,
   HYPERMAIL_PROTOCOL_VERSION: z.string().min(1),
+  HYPERMAIL_TENANT_ROUTES: z.string().min(2).optional(),
   MODEL_PROVIDER: z.enum(['codex-cli', 'openai', 'anthropic', 'google']).optional(),
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: secret.optional(),
@@ -75,6 +75,14 @@ export const workerEnvSchema = z.strictObject({
   LIFECYCLE_INTERVAL_SECONDS: positiveInteger.default(3600),
   SHUTDOWN_TIMEOUT_SECONDS: z.coerce.number().int().min(5).max(120).default(30),
   BODY_RETENTION_DAYS: positiveInteger.default(90),
+  OAUTH_RETENTION_HOURS: positiveInteger.default(24),
+  SESSION_RETENTION_DAYS: positiveInteger.default(30),
+  TASK_PAYLOAD_RETENTION_DAYS: positiveInteger.default(30),
+  OPERATIONAL_TEXT_RETENTION_DAYS: positiveInteger.default(14),
+  LIFECYCLE_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  USER_TASK_RATE_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(60),
+  USER_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
+  USER_PENDING_TASK_QUOTA: z.coerce.number().int().min(1).max(100_000).default(1_000),
   INCORRECT_MUTATION_THRESHOLD: z.coerce.number().min(0.001).max(0.01).default(0.01),
 }).superRefine((environment, context) => {
   if (environment.NODE_ENV !== 'development' && environment.MODEL_PROVIDER === undefined) {
@@ -104,7 +112,7 @@ export type WebEnv = z.infer<typeof webEnvSchema>;
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;
 export type BackupEnv = z.infer<typeof backupEnvSchema>;
 
-const secretName = /(SECRET|KEY|TOKEN|PASSWORD|DATABASE_URL)/i;
+const secretName = /(SECRET|KEY|TOKEN|PASSWORD|DATABASE_URL|HYPERMAIL_TENANT_ROUTES)/i;
 
 export function redactEnvironment(values: Readonly<Record<string, unknown>>): Record<string, unknown> {
   return Object.fromEntries(

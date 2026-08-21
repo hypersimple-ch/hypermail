@@ -102,4 +102,19 @@ describe('owner mailbox routes', () => {
     expect(second.status).toBe(503);
     expect(provider.initialize).toHaveBeenCalledTimes(1);
   });
+
+  it('routes identical provider identities to isolated tenant onboarding sessions', async () => {
+    const calls: string[] = []; const released: string[] = [];
+    const tenantProvider = { leaseForUser: (userId: string) => Promise.resolve({
+      provider: { initialize: () => Promise.resolve({}), addAccount: (input: { provider: string; email?: string }) => { const email=input.email ?? 'same@example.test'; calls.push(`${userId}:${email}`); return Promise.resolve({ status: 'ready' as const, account: { provider: 'gmail' as const, email } }); }, completeAddAccount: () => Promise.resolve({ status: 'pending' as const }) },
+      release: () => { released.push(userId); return Promise.resolve(); },
+    }) };
+    const projector = { projectReadyAccount: (userId: string, account: { provider: 'gmail'; email: string }) => Promise.resolve({ id: `${userId}-account`, state: 'ready' as const, ...account }) };
+    const service = new MailboxService(tenantProvider, projector);
+    await service.start({ subjectId: 'tenant-one' }, { provider: 'gmail', email: 'same@example.test' });
+    await service.start({ subjectId: 'tenant-two' }, { provider: 'gmail', email: 'same@example.test' });
+    expect(calls).toEqual(['tenant-one:same@example.test', 'tenant-two:same@example.test']);
+    expect(released).toEqual(['tenant-one', 'tenant-two']);
+  });
+
 });

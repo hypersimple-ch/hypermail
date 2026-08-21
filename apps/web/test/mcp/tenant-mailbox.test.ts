@@ -1,0 +1,29 @@
+/* eslint-disable @typescript-eslint/require-await */
+import { Readable } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import type { TenantHypermailSessionProvider } from '@hypermail/hypermail';
+import { PublicMcpError, TenantRoutedMailboxAdapter, type TenantAuthority } from '../../src/mcp/index.js';
+const authority:TenantAuthority={authorizationDecisionId:'decision',credentialId:'digest',userId:'11111111-1111-4111-8111-111111111111',connectionId:'22222222-2222-4222-8222-222222222222',mailboxId:'33333333-3333-4333-8333-333333333333',mode:'interactive',lifecycleRevision:1,assignmentRevision:1,grantRevision:1,safetyRevision:1};
+const fakeSql=((parts:TemplateStringsArray)=>{const query=parts.join('');if(query.includes('select ac.email'))return Promise.resolve([{email:'owner@example.test'}]);if(query.includes('select m.provider_message_id'))return Promise.resolve([{provider_message_id:'opaque-provider-message'}]);throw new Error('unexpected query')}) as unknown as Sql;
+describe('TenantRoutedMailboxAdapter final mutation fence',()=>{it('revocation during preparation causes zero provider mutations',async()=>{const archive=vi.fn(()=>Promise.resolve({id:'opaque-provider-message'}));let prepared=false;const sessions={leaseForUser:vi.fn(()=>{prepared=true;return Promise.resolve({bundle:{read:{},policy:{archive}},release:vi.fn(()=>Promise.resolve())})})} as unknown as TenantHypermailSessionProvider;const fence=vi.fn(()=>Promise.resolve(false));const adapter=new TenantRoutedMailboxAdapter(fakeSql,sessions,fence);await expect(adapter.archive(authority,{messageId:'44444444-4444-4444-8444-444444444444'})).rejects.toEqual(new PublicMcpError('forbidden'));expect(prepared).toBe(true);expect(fence).toHaveBeenCalledWith(authority,'mail.archive');expect(archive).not.toHaveBeenCalled()})});
+
+
+describe('TenantRoutedMailboxAdapter attachment bounds',()=>{
+ it('holds a global encoded-byte reservation through response completion and releases it on abort',async()=>{
+  const cleanups=[vi.fn(()=>Promise.resolve()),vi.fn(()=>Promise.resolve())];let opened=0;const reservations:number[]=[];
+  const sql=((parts:TemplateStringsArray)=>{const query=parts.join('');if(query.includes('select ac.email'))return Promise.resolve([{email:'owner@example.test'}]);if(query.includes('select m.provider_message_id'))return Promise.resolve([{provider_message_id:'provider-message'}]);if(query.includes('from app.attachments at join'))return Promise.resolve([{provider_attachment_id:'provider-attachment',filename:'a.txt',media_type:'text/plain',size_bytes:3}]);throw new Error('unexpected query')}) as unknown as Sql;
+  const bundle={read:{openAttachment:vi.fn(()=>{const index=opened++;return{stream:Readable.from([Buffer.from('abc')]),cleanup:cleanups[index]}})},policy:{}};
+  const releaseLease=vi.fn(()=>Promise.resolve());const sessions={leaseForUser:vi.fn(()=>Promise.resolve({bundle,release:releaseLease}))} as unknown as TenantHypermailSessionProvider;
+  const adapter=new TenantRoutedMailboxAdapter(sql,sessions,()=>Promise.resolve(true),{tempDirectory:'/tmp',maxBytes:6,maxEncodedBytes:8,globalMaxEncodedBytes:8,onReservationChange:used=>reservations.push(used)});
+  const firstController=new AbortController(),secondController=new AbortController();const first=await adapter.readAttachment({...authority,signal:firstController.signal},{messageId:'44444444-4444-4444-8444-444444444444',attachmentId:'55555555-5555-4555-8555-555555555555'});expect(first.content).toBe('YWJj');
+  let secondDone=false;const second=adapter.readAttachment({...authority,signal:secondController.signal},{messageId:'44444444-4444-4444-8444-444444444444',attachmentId:'66666666-6666-4666-8666-666666666666'}).then(value=>{secondDone=true;return value});await new Promise(resolve=>setTimeout(resolve,0));expect(secondDone).toBe(false);expect(reservations).toEqual([8]);
+  firstController.abort();expect((await second).content).toBe('YWJj');secondController.abort();await new Promise(resolve=>setTimeout(resolve,0));expect(reservations).toEqual([8,0,8,0]);expect(cleanups.every(cleanup=>cleanup.mock.calls.length===1)).toBe(true);
+ });
+ it('aborts a disconnected stream and guarantees cleanup without retaining a reservation',async()=>{
+  const cleanup=vi.fn(()=>Promise.resolve());const reservations:number[]=[];const controller=new AbortController();
+  const sql=((parts:TemplateStringsArray)=>{const query=parts.join('');if(query.includes('select ac.email'))return Promise.resolve([{email:'owner@example.test'}]);if(query.includes('select m.provider_message_id'))return Promise.resolve([{provider_message_id:'provider-message'}]);if(query.includes('from app.attachments at join'))return Promise.resolve([{provider_attachment_id:'provider-attachment',filename:'a.txt',media_type:'text/plain',size_bytes:3}]);throw new Error('unexpected query')}) as unknown as Sql;
+  const sessions={leaseForUser:vi.fn(async()=>({bundle:{read:{openAttachment:async(_a:string,_m:string,_id:string,options:{signal?:AbortSignal})=>{const stream=new Readable({read(){}});options.signal?.addEventListener('abort',()=>stream.destroy(new Error('aborted')),{once:true});return{stream,cleanup}}},policy:{}},release:vi.fn(()=>Promise.resolve())}))} as unknown as TenantHypermailSessionProvider;
+  const adapter=new TenantRoutedMailboxAdapter(sql,sessions,()=>Promise.resolve(true),{tempDirectory:'/tmp',maxBytes:6,maxEncodedBytes:8,globalMaxEncodedBytes:8,onReservationChange:used=>reservations.push(used)});const pending=adapter.readAttachment({...authority,signal:controller.signal},{messageId:'44444444-4444-4444-8444-444444444444',attachmentId:'55555555-5555-4555-8555-555555555555'});await new Promise(resolve=>setTimeout(resolve,0));controller.abort();await expect(pending).rejects.toThrow();expect(cleanup).toHaveBeenCalledOnce();expect(reservations.at(-1)).toBe(0);
+ });
+});

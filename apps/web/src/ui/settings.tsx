@@ -9,6 +9,8 @@ import { Input } from '@/components/heroui/input.js';
 import { NativeSelect, NativeSelectOption } from '@/components/heroui/native-select.js';
 import { Separator } from '@/components/heroui/separator.js';
 import { Spinner } from '@/components/heroui/spinner.js';
+import { MailboxManagerSettings, type ManagerMutations } from '../mailbox-managers/index.js';
+import type { ManagerSettingsView } from '../agent-connections/contracts.js';
 import { PageHeader, StatePanel } from '@/components/app/patterns.js';
 
 export type MailboxProvider = 'microsoft' | 'gmail' | 'imap';
@@ -69,6 +71,9 @@ export interface SettingsProps {
   onCompleteConnection?: (input: CompleteMailboxConnectionInput) => Promise<MailboxConnectionResult>;
   pendingConnection?: PendingMailboxConnection;
   statusNotice?: string;
+  managerSettings?: ManagerSettingsView;
+  managerMutations?: ManagerMutations;
+  online?: boolean;
 }
 
 const providerLabel: Record<MailboxProvider, string> = { microsoft: 'Outlook', gmail: 'Gmail', imap: 'IMAP' };
@@ -130,7 +135,7 @@ function AddMailboxForm({ disabled, onStart }: { disabled: boolean; onStart: (in
   </form></CardContent></Card>;
 }
 
-export function Settings({ mailboxes, onBack, onStartConnection, onCompleteConnection, pendingConnection, statusNotice }: SettingsProps): React.JSX.Element {
+export function Settings({ mailboxes, onBack, onStartConnection, onCompleteConnection, pendingConnection, statusNotice, managerSettings, managerMutations, online = true }: SettingsProps): React.JSX.Element {
   const [adding, setAdding] = React.useState(false);
   const [pending, setPending] = React.useState<PendingMailboxConnection | undefined>(pendingConnection);
   const [busy, setBusy] = React.useState(false);
@@ -143,6 +148,7 @@ export function Settings({ mailboxes, onBack, onStartConnection, onCompleteConne
   return <section className={pageClass} aria-label="Settings"><PageHeader title="Settings" description="Connected mailboxes" actions={<>{onBack ? <Button type="button" variant="ghost" onClick={onBack}><ArrowLeft aria-hidden="true" />More</Button> : null}<Button type="button" onClick={() => { setAdding((value) => !value); }} disabled={busy}><Plus aria-hidden="true" />Add mailbox</Button></>} /><div className="mt-6 space-y-4">
     {statusNotice ? <Alert aria-live="polite"><AlertDescription>{statusNotice}</AlertDescription></Alert> : null}{feedback && !error ? <div role="status" aria-live="polite" className="text-sm">{feedback}</div> : null}{error ? <Alert variant="destructive" aria-live="assertive"><AlertDescription>{error}</AlertDescription></Alert> : null}
     <section aria-labelledby="connected-mailboxes"><h2 id="connected-mailboxes" className="text-lg font-semibold">Current mailboxes</h2>{mailboxes.length ? <div className="mt-3 space-y-3">{mailboxes.map((mailbox) => <Card key={mailbox.id} className="gap-0 py-0"><CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4"><div className="min-w-0"><strong className="block truncate">{mailbox.displayName || mailbox.email}</strong><p className="mt-1 truncate text-sm text-muted-foreground">{providerLabel[mailbox.provider]} · {mailbox.email}</p></div><Badge variant={stateVariant[mailbox.state]}>{stateLabel[mailbox.state]}</Badge></CardContent></Card>)}</div> : <StatePanel className="mt-3" title="No mailboxes connected." description="Add Gmail, Outlook, or an IMAP mailbox to get started." />}</section>
+    {managerSettings && managerMutations ? <MailboxManagerSettings settings={managerSettings} mutations={managerMutations} online={online} /> : null}
     {pending ? <PendingConnection pending={pending} disabled={busy || !onCompleteConnection} onComplete={complete} /> : null}{adding ? <AddMailboxForm disabled={busy || !onStartConnection} onStart={start} /> : null}
   </div></section>;
 }
