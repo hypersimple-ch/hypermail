@@ -106,9 +106,13 @@ export class WorkerRuntime {
         this.deps.boss.work('policy.execute', async ({ data }) => { await this.deps.policyConsumer.consume(parseQueuePayload('policy.execute', data)); }),
       ]);
       this.status.queue = true;
-      await Promise.all([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(), this.deps.agentTaskRecovery?.recover() ?? Promise.resolve()]);
-      this.notificationTimer = setInterval(() => { void Promise.allSettled([this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(), this.deps.agentTaskRecovery?.recover() ?? Promise.resolve()]); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
     } catch { this.status.queue = false; }
+    const recover = (): Promise<unknown[]> => Promise.allSettled([
+      this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(),
+      this.deps.agentTaskRecovery?.recover() ?? Promise.resolve(),
+    ]);
+    await recover();
+    this.notificationTimer = setInterval(() => { void recover(); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
     void this.deps.ingestion.start().catch(() => { this.status.scheduler = false; });
     void this.deps.lifecycle.start().catch(() => { this.status.scheduler = false; });
     this.status.scheduler = true;

@@ -8,9 +8,9 @@ const date = (value: string | undefined, fallback: Date): Date => { const parsed
 
 /** Parameterized PostgreSQL implementation. SQL values are never interpolated. */
 export class PostgresIngestionStore implements IngestionStore {
-  constructor(private readonly sql: SqlClient,private readonly taskAdmission?:{bind?(sql:SqlClient):{authorizeTaskCreation(input:{userId:string;accountId:string;providerMessageId:string}):Promise<{allowed:boolean;reason?:string}>};authorizeTaskCreation(input:{userId:string;accountId:string;providerMessageId:string}):Promise<{allowed:boolean;reason?:string}>}) {}
+  constructor(private readonly sql: SqlClient) {}
   transaction<T>(operation: (store: IngestionStore) => Promise<T>): Promise<T> {
-    return this.sql.transaction((client) => operation(new PostgresIngestionStore(client,this.taskAdmission?.bind?.(client) ?? this.taskAdmission)));
+    return this.sql.transaction((client) => operation(new PostgresIngestionStore(client)));
   }
   async readyAccounts(): Promise<ReadonlyArray<Account>> {
     const result = await this.sql.query<{ user_id: string; id: string; email: string; provider: Account['provider']; baseline_completed_at: Date | null; consecutive_failures: number }>(
@@ -36,8 +36,6 @@ export class PostgresIngestionStore implements IngestionStore {
     );
   }
   async recordArrival(arrival: Arrival): Promise<ArrivalResult | null> {
-    const owner=one(await this.sql.query<{user_id:string}>('select user_id from app.accounts where id=$1',[arrival.accountId]));
-    const admission=this.taskAdmission?await this.taskAdmission.authorizeTaskCreation({userId:owner.user_id,accountId:arrival.accountId,providerMessageId:arrival.message.id}):{allowed:true as const};
     const message = arrival.message;
     const recipients = [...(message.to ?? []).map((item) => ({ kind: 'to', ...item })), ...(message.cc ?? []).map((item) => ({ kind: 'cc', ...item }))];
     const sender = message.from ?? { address: 'unknown@invalid' };
@@ -69,50 +67,6 @@ export class PostgresIngestionStore implements IngestionStore {
          from activity a join app.accounts ac on ac.id = $1
          on conflict (id) do nothing
          returning id
-       ), inserted_task as (
-         -- Canonical Task and its exact Manager authority are frozen before this
-         -- transaction can advance any poll checkpoint or delivery cursor.
-         insert into app.agent_tasks
-           (id,enqueue_key,activity_id,user_id,account_id,manager_kind,manager_connection_id,
-            manager_lifecycle_revision,assignment_id,assignment_revision,grant_id,grant_revision,
-            safety_revision,state,pending_reason,version,attempt_count,max_attempts,lease_generation,
-            available_at,deadline_at,created_at,updated_at)
-         select (substr(md5('agent-task:'||a.id::text),1,8)||'-'||substr(md5('agent-task:'||a.id::text),9,4)||
-                 '-5'||substr(md5('agent-task:'||a.id::text),14,3)||'-8'||substr(md5('agent-task:'||a.id::text),18,3)||
-                 '-'||substr(md5('agent-task:'||a.id::text),21,12))::uuid,
-                'arrival:'||a.id::text, a.id, ac.user_id, $1, ma.manager_kind, ma.agent_connection_id,
-                case when ma.manager_kind='agent_connection' then c.lifecycle_revision end,
-                ma.id,ma.revision,g.id,g.revision,s.revision,'pending','initial',1,0,5,0,$10,$10 + interval '24 hours',$10,$10
-         from activity a join app.accounts ac on ac.id=$1
-         join app.mailbox_manager_assignments ma on ma.user_id=ac.user_id and ma.account_id=$1
-         join app.agent_capability_grants g on g.user_id=ac.user_id and g.account_id=$1
-              and g.manager_kind=ma.manager_kind and g.agent_connection_id is not distinct from ma.agent_connection_id
-         join app.agent_safety_ceiling s on s.singleton=true
-         left join app.agent_connections c on c.id=ma.agent_connection_id
-         where $11::boolean and ma.automatic_processing_enabled and ma.manager_kind<>'none' and g.state='active'
-           and 'automatic'=any(g.invocation_modes) and 'mail.read'=any(g.capabilities)
-           and 'automatic'=any(s.invocation_modes) and 'mail.read'=any(s.capabilities)
-         on conflict(enqueue_key) do nothing returning id,activity_id,account_id,version,created_at
-       ), blocked_task as (
-         -- Never let a poll checkpoint erase an arrival merely because assignment,
-         -- connection, grant, or safety authority is temporarily unavailable.
-         insert into app.agent_task_blocks(activity_id,user_id,account_id,reason,available_at,created_at,updated_at)
-         select a.id,ac.user_id,$1,
-           case when not $11::boolean then 'OPERATIONAL_ADMISSION_DENIED:'||$12::text
-                when ma.id is null or ma.manager_kind='none' then 'NO_MANAGER_ASSIGNED'
-                when ma.manager_kind='agent_connection' and coalesce(c.state::text,'')<>'connected' then 'MANAGER_UNAVAILABLE'
-                else 'CANONICAL_AUTHORITY_UNAVAILABLE' end,$10,$10,$10
-         from activity a join app.accounts ac on ac.id=$1
-         left join app.mailbox_manager_assignments ma on ma.user_id=ac.user_id and ma.account_id=$1
-         left join app.agent_connections c on c.id=ma.agent_connection_id
-         where not exists(select 1 from inserted_task)
-         on conflict(activity_id) do update set reason=excluded.reason,available_at=excluded.available_at,updated_at=excluded.updated_at
-       ), inserted_task_outbox as (
-         insert into app.agent_task_outbox
-           (id,task_id,activity_id,account_id,event,task_version,payload_digest,correlation_id,occurred_at,available_at)
-         select gen_random_uuid(),t.id,t.activity_id,t.account_id,'task_available',t.version,
-                md5(t.id::text)||md5('task:'||t.id::text),'arrival:'||t.activity_id::text,t.created_at,t.created_at
-         from inserted_task t on conflict(task_id,task_version,event) do nothing
        ), inserted_notification as (
          insert into app.logical_notifications (activity_id, state, sender_label, subject, status_label)
          select a.id, 'pending', $9, $5, 'New email' from activity a
@@ -131,7 +85,7 @@ export class PostgresIngestionStore implements IngestionStore {
        )
        select j.id as job_id, j.idempotency_key, m.created from activity a
        join job j on j.activity_id = a.id cross join inserted_message m`,
-      [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0, text(sender.name ?? sender.address, 200), arrival.observedAt, admission.allowed, admission.allowed ? '' : admission.reason ?? 'unknown'],
+      [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0, text(sender.name ?? sender.address, 200), arrival.observedAt],
     );
     const row = result.rows[0];
     return row ? { jobId: row.job_id, idempotencyKey: row.idempotency_key, created: row.created } : null;

@@ -115,11 +115,18 @@ export class PostgresLifecycleStore implements LifecycleStore {
     const result = await this.sql.query<{ count: number }>(`
       WITH candidates AS MATERIALIZED (
         SELECT id FROM app.agent_tasks
-        WHERE state IN ('completed','dead_letter','cancelled','obsolete') AND result IS NOT NULL
-          AND coalesce(completed_at,obsolete_at,updated_at) <= $1
-        ORDER BY coalesce(completed_at,obsolete_at,updated_at),id LIMIT $3 FOR UPDATE SKIP LOCKED
+        WHERE state='completed' AND result IS NOT NULL AND result->>'kind'<>'redacted'
+          AND completed_at <= $1
+        ORDER BY completed_at,id LIMIT $3 FOR UPDATE SKIP LOCKED
+      ), minimized_reports AS (
+        UPDATE app.agent_task_reports r
+        SET response_snapshot=jsonb_set(r.response_snapshot,'{task,result}',jsonb_build_object('kind','redacted'))
+        FROM candidates c WHERE r.task_id=c.id
+          AND r.response_snapshot #>> '{task,state}'='completed'
+          AND r.response_snapshot #>> '{task,result,kind}'<>'redacted' RETURNING r.id
       ), minimized AS (
-        UPDATE app.agent_tasks t SET result=NULL,updated_at=$2 FROM candidates c WHERE t.id=c.id AND t.result IS NOT NULL RETURNING t.id
+        UPDATE app.agent_tasks t SET result=jsonb_build_object('kind','redacted'),updated_at=$2
+        FROM candidates c WHERE t.id=c.id RETURNING t.id
       ), total AS (SELECT count(*)::int count FROM minimized), audited AS (
         INSERT INTO app.audits (occurred_at,actor_type,actor_id,event,correlation_id,metadata)
         SELECT $2,'system','lifecycle','terminal_task_payloads_minimized','lifecycle:task-payload:'||extract(epoch from $2)::text,jsonb_build_object('count',count,'retentionCutoff',$1)

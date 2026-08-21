@@ -2,8 +2,7 @@ import postgres from 'postgres';
 import { AuthService, createPostgresAuthStore, expiredSessionCookie, readSessionToken, sessionCookie } from '@hypermail/auth';
 import { webEnvSchema } from '@hypermail/contracts';
 import { createPostgresClient, UserAccountScopeStore } from '@hypermail/db';
-import type { HypermailReadClient} from '@hypermail/hypermail';
-import { createTenantHypermailSessionProvider, parseTenantHypermailRoutes, TenantHypermailRouteResolver } from '@hypermail/hypermail';
+import { HypermailReadClient, createTenantHypermailSessionProvider, parseTenantHypermailRoutes, TenantHypermailRouteResolver } from '@hypermail/hypermail';
 import { PostgresNotificationPersistence } from '@hypermail/notifications';
 import { PrivateApprovedSendHttpProvider, type AuthoritativeMailSendProvider, type MailSendProvider } from '@hypermail/send';
 import { PostgresActivityRepository } from './activity/postgres-repository.js';
@@ -55,6 +54,9 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const databaseUrl = config.DATABASE_URL; const appOrigin = config.APP_ORIGIN;
   const tenantRoutes = config.HYPERMAIL_TENANT_ROUTES ? parseTenantHypermailRoutes(config.HYPERMAIL_TENANT_ROUTES) : undefined;
   const tenantResolver = tenantRoutes ? new TenantHypermailRouteResolver(tenantRoutes) : undefined;
+  const developmentHypermail = !tenantRoutes && config.NODE_ENV === 'development'
+    ? new HypermailReadClient({ endpoint: config.HYPERMAIL_URL, protocolVersion: config.HYPERMAIL_PROTOCOL_VERSION, headers: { authorization: `Bearer ${config.HYPERMAIL_KEY}` } })
+    : undefined;
   const sessionCookieOptions = { insecureLocalDevelopment: config.NODE_ENV === 'development' && new URL(appOrigin).protocol === 'http:' } as const;
 
   const authSql = postgres(databaseUrl, { max: 5, prepare: true }); const sql = createPostgresClient(databaseUrl); const scopes = new UserAccountScopeStore(sql);
@@ -98,9 +100,9 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
   const sendRequestRoutes = createOwnerSendRequestRoutes(new OwnerSendRequestService(new PostgresOwnerSendRequestRepository(authSql), tenantSender ?? { send: (message) => disabledSendProvider.send(message), status: () => Promise.resolve({ state: 'unknown' }) }), appOrigin);
   const draftList = new PostgresDraftList(sql);
   const unavailableReadClient = { initialize: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')), openAttachment: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')) } as unknown as HypermailReadClient;
-  const attachmentReader = tenantSessions ? new ScopedHypermailAttachmentReader(sql, tenantSessions) : new ScopedHypermailAttachmentReader(sql, unavailableReadClient);
+  const attachmentReader = tenantSessions ? new ScopedHypermailAttachmentReader(sql, tenantSessions) : new ScopedHypermailAttachmentReader(sql, developmentHypermail ?? unavailableReadClient);
   const attachmentRoutes = createAttachmentRoutes(new AttachmentDeliveryService(attachmentReader, { maxBytes: config.ATTACHMENT_MAX_BYTES, tempDirectory: config.ATTACHMENT_TEMP_DIRECTORY }), { expectedOrigin: appOrigin, apiVersion: 'v1' });
-  const onboardingProvider = tenantSessions ? { leaseForUser: async (userId: string) => { const lease = await tenantSessions.leaseForUser(userId); return { provider: lease.bundle.read, release: () => lease.release() }; } } : { initialize: unavailableReadClient.initialize.bind(unavailableReadClient), addAccount: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')), completeAddAccount: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')) };
+  const onboardingProvider = tenantSessions ? { leaseForUser: async (userId: string) => { const lease = await tenantSessions.leaseForUser(userId); return { provider: lease.bundle.read, release: () => lease.release() }; } } : developmentHypermail ?? { initialize: unavailableReadClient.initialize.bind(unavailableReadClient), addAccount: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')), completeAddAccount: () => Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED')) };
   const mailboxRoutes = createMailboxRoutes(new MailboxService(onboardingProvider, scopes), { expectedOrigin: appOrigin });
   const subscriptionPersistence = new PostgresNotificationPersistence(sql, new AuthSecretPushSubscriptionCodec(config.PUSH_SUBSCRIPTION_ENCRYPTION_KEY));
 
@@ -158,5 +160,5 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
     const draft = /^\/api\/v1\/drafts\/(?:([^/]+)(?:\/(history|approval))?|approvals\/([^/]+)\/send)$/.exec(request.pathname); if (request.pathname === '/api/v1/drafts') return draftRoutes.create({ method: request.method, auth: scope, origin: request.origin, body: request.body }); if (request.pathname === '/api/v1/drafts/reply') return draftRoutes.reply({ method: request.method, auth: scope, origin: request.origin, body: request.body }); if (draft?.[1] && !draft[2]) return draftRoutes.save({ method: request.method, auth: scope, origin: request.origin, body: request.body }, draft[1]); if (draft?.[2] === 'history' && draft[1]) return draftRoutes.history({ method: request.method, auth: scope, origin: request.origin, body: request.body }, draft[1]); if (draft?.[2] === 'approval' && draft[1]) return draftRoutes.beginApproval({ method: request.method, auth: scope, origin: request.origin, body: request.body }, draft[1]); if (draft?.[3]) return (tenantSender) ? draftRoutes.confirmSend({ method: request.method, auth: scope, origin: request.origin, body: request.body }, draft[3]) : { status: 503, body: { error: { code: 'SEND_DISABLED', message: 'Approved send is not configured.' } } };
     return null;
   };
-  return { dispatch: route, publicMcp, close: async () => { await publicMcp.close(); await tenantSessions?.close(); await Promise.all([sql.close(), authSql.end({ timeout: 5 })]); } };
+  return { dispatch: route, publicMcp, close: async () => { await publicMcp.close(); await tenantSessions?.close(); await developmentHypermail?.transport.close(); await Promise.all([sql.close(), authSql.end({ timeout: 5 })]); } };
 }

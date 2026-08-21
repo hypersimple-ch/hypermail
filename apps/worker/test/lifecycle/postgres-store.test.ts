@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unnecessary-type-parameters */
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { agentTaskSchema } from '@hypermail/contracts';
 import { describe, expect, it } from 'vitest';
 import { PostgresLifecycleStore } from '../../src/lifecycle/postgres-store.js';
 import type { SqlClient } from '../../src/postgres-store.js';
@@ -53,9 +54,11 @@ describe('PostgreSQL lifecycle store', () => {
       expect(entry.statement).toContain('LIMIT $3');
       expect(entry.statement).toContain('INSERT INTO app.audits');
       expect(entry.values).toEqual([cutoff,at,7]);
-      expect(entry.statement).not.toMatch(/result->|last_error\s*[,)]/);
+      expect(entry.statement).not.toMatch(/last_error\s*[,)]/);
     }
-    expect(sql.statements[2]?.statement).toContain('SET result=NULL');
+    expect(sql.statements[2]?.statement).toContain("SET result=jsonb_build_object('kind','redacted')");
+    expect(sql.statements[2]?.statement).toContain('UPDATE app.agent_task_reports');
+    expect(sql.statements[2]?.statement).toContain("#>> '{task,state}'='completed'");
     expect(sql.statements[3]?.statement).toContain('SET last_error=NULL');
   });
 
@@ -90,4 +93,28 @@ describe('PostgreSQL lifecycle store', () => {
       expect((await sql.unsafe(`SELECT count(*)::int AS count FROM app.audits WHERE event IN ('message_body_purged', 'push_subscription_expired')`))[0]?.count).toBe(2);
     });
   });
+  it.skipIf(!process.env.DATABASE_URL)('retains a valid completed Task marker and redacts replay snapshots', async () => {
+    const databaseUrl=process.env.DATABASE_URL;if(!databaseUrl)throw new Error('DATABASE_URL is required');
+    await withPostgresSchemas(databaseUrl,async sql=>{
+      const client=(connection:Sql):SqlClient=>({query:async<Row extends Record<string,unknown>>(text:string,values?:readonly unknown[])=>({rows:await connection.unsafe(text,values as never[]) as Row[]}),transaction:async<T>(work:(transaction:SqlClient)=>Promise<T>)=>connection.begin(tx=>work(client(tx)))});
+      const user=randomUUID(),account=randomUUID(),assignment=randomUUID(),grant=randomUUID(),activity=randomUUID(),task=randomUUID(),report=randomUUID();
+      const created='2026-01-01T00:00:00.000Z',completed='2026-01-01T00:01:00.000Z',deadline='2026-01-02T00:00:00.000Z';
+      await sql.begin(async tx=>{
+        await tx`insert into app.users(id,email,password_hash) values(${user},${`${user}@example.test`},'hash')`;
+        await tx`insert into app.accounts(id,user_id,provider,provider_account_id,email,state) values(${account},${user},'gmail',${account},${`${account}@example.test`},'ready')`;
+        await tx`insert into app.user_accounts(user_id,account_id) values(${user},${account})`;
+        await tx`insert into app.mailbox_manager_assignments(id,user_id,account_id,manager_kind,automatic_processing_enabled) values(${assignment},${user},${account},'mastra',true)`;
+        await tx`insert into app.agent_capability_grants(id,user_id,account_id,manager_kind,capabilities,invocation_modes,state,approved_at) values(${grant},${user},${account},'mastra',array['mail.read']::text[],array['automatic']::text[],'active',${completed})`;
+      });
+      await sql`insert into app.agent_activities(id,user_id,account_id,kind,correlation_id,state,revision,created_at,updated_at) values(${activity},${user},${account},'interactive_request','retention-test','resolved',1,${created},${completed})`;
+      await sql`insert into app.agent_tasks(id,enqueue_key,activity_id,user_id,account_id,manager_kind,assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,state,version,attempt_count,max_attempts,lease_generation,result,available_at,deadline_at,created_at,updated_at,completed_at) values(${task},${`retention:${task}`},${activity},${user},${account},'mastra',${assignment},1,${grant},1,1,'completed',1,1,5,1,${sql.json({kind:'action_requests_emitted',actionIds:[randomUUID()]} )},${created},${deadline},${created},${completed},${completed})`;
+      const snapshot={id:task,activityId:activity,userId:user,mailboxId:account,manager:{kind:'mastra'},managerLifecycleRevision:null,assignmentId:assignment,assignmentRevision:1,grantId:grant,grantRevision:1,safetyRevision:1,state:'completed',pendingReason:null,version:1,attemptCount:1,maxAttempts:5,leaseGeneration:1,lease:null,currentRunId:null,result:{kind:'action_requests_emitted',actionIds:[randomUUID()]},lastErrorCode:null,availableAt:created,deadlineAt:deadline,createdAt:created,updatedAt:completed,completedAt:completed,obsoleteAt:null};
+      await sql`insert into app.agent_task_reports(id,task_id,lease_generation,kind,request_id,request_digest,accepted,occurred_at,response_snapshot) values(${report},${task},1,'result','retention-report-1',${'a'.repeat(64)},true,${completed},${sql.json({task:snapshot})})`;
+      expect(await new PostgresLifecycleStore(client(sql)).minimizeTerminalTaskPayloads(new Date('2026-02-01T00:00:00Z'),new Date('2026-02-02T00:00:00Z'),10)).toBe(1);
+      expect((await sql<{result:{kind:string}}[]>`select result from app.agent_tasks where id=${task}`)[0]?.result).toEqual({kind:'redacted'});
+      const redacted=(await sql<{response_snapshot:{task:unknown}}[]>`select response_snapshot from app.agent_task_reports where id=${report}`)[0]?.response_snapshot.task;
+      expect(agentTaskSchema.parse(redacted).result).toEqual({kind:'redacted'});
+    });
+  });
+
 });

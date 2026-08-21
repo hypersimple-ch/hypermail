@@ -26,6 +26,14 @@ describe('production composition', () => {
     expect(calls).toEqual(expect.arrayContaining(['boss-stop', 'database-close']));
   });
 
+  it('uses the legacy single-owner Hypermail route only in local development', () => {
+    const database: ManagedSqlClient={query:()=>Promise.resolve({rows:[]}),transaction:async<T>(work:(client:ManagedSqlClient)=>Promise<T>)=>work(database),close:()=>Promise.resolve()};
+    const boss={start:()=>Promise.resolve(),createQueue:()=>Promise.resolve(),stop:()=>Promise.resolve(),send:()=>Promise.resolve('job'),work:()=>Promise.resolve()};
+    const factories={createDatabase:()=>database,createBoss:()=>boss,createTriageService:()=>({triage:()=>Promise.resolve({decision:{state:'handled',rationale:'test'}})}) as never,createNotificationTransport:()=>({send:()=>Promise.resolve({ok:true})}),holderId:()=> 'holder'};
+    const local=environment();expect(()=>composeWorkerRuntime(local,factories)).not.toThrow();
+    expect(()=>composeWorkerRuntime({...local,NODE_ENV:'production'},factories)).toThrow('HYPERMAIL_TENANT_ROUTES_REQUIRED');
+  });
+
   it.each(['codex-cli', 'openai', 'anthropic', 'google'] as const)('constructs the configured %s provider without a request', (MODEL_PROVIDER) => {
     expect(createModel({ MODEL_PROVIDER, MODEL_NAME: 'test-model', ...(MODEL_PROVIDER === 'codex-cli' ? {} : { MODEL_API_KEY: 'test-key' }) })).toBeDefined();
   });

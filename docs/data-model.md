@@ -18,6 +18,7 @@ Application code must not write directly to Mastra or pg-boss internal tables.
 | Account projections | `accounts`, `user_accounts`, `folders`, `account_health`, `poll_states` | Retained; mailbox removal is unavailable; no provider secrets |
 | Mail cache | `messages`, `message_bodies`, `attachments` | Metadata retained; bodies purged after 90 days; no attachment bytes |
 | Activity | `activities`, `agent_jobs`, `questions`, `decisions` | Indefinite |
+| Hosted-agent foundation | `agent_connections`, Manager assignments/revisions, capability grants/revisions, canonical Agent activities/runs/actions, durable Task history | Identity retained; completed Task result payloads minimized |
 | Actions | `actions`, `action_verifications`, `safety_windows` | Indefinite |
 | Draft/send | `drafts`, `draft_revisions`, `send_approvals` | History retained; approvals expire and are single-use |
 | Push | `logical_notifications`, `push_subscriptions`, `notification_deliveries` | Logical history retained; stale subscriptions cleaned |
@@ -38,7 +39,7 @@ Application code must not write directly to Mastra or pg-boss internal tables.
 
 Domain state is authoritative even when a library also tracks execution:
 
-- `agent_jobs.state` is the user-visible job state; pg-boss is delivery machinery.
+- `agent_jobs.state` is the user-visible job state; pg-boss is delivery machinery. Canonical durable Task storage is present, but arrival execution remains on this legacy path until a real Mastra/external transport and receipt-producing outbox publisher are mounted. Ingestion does not create deliverable canonical Tasks in the interim.
 - `activities.state` is the user-visible review state; Mastra workflow state does not close it.
 - `actions.state` plus `action_verifications` determine mutation outcome; a provider response alone is not verified success.
 - `logical_notifications` represent the one-notification-per-activity promise; delivery attempts may be many.

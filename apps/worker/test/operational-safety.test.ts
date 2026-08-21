@@ -21,15 +21,15 @@ const limits={tasksPerMinute:2,claimsPerMinute:2,concurrentTasks:1,pendingTasks:
 describe('per-user operational guard',()=>{
   it('admits within all limits without storing payloads',async()=>{
     const db=new FakeSql(); const guard=new PostgresOperationalGuard(db,limits,key);
-    expect(await guard.authorizeTask('00000000-0000-4000-8000-000000000001',new Date())).toEqual({allowed:true});
+    expect(await guard.authorizeTaskClaim({userId:'00000000-0000-4000-8000-000000000001',taskId:'task-1',requestId:'claim-1'})).toEqual({allowed:true,replay:false,databaseTime:new Date('2026-01-01T00:00:00Z')});
     expect(db.audits).toHaveLength(0);
   });
   it('fails safely and audits rate, concurrency, and pending quota exhaustion',async()=>{
     const at=new Date('2026-01-01T00:00:00Z');
     const rateDb=new FakeSql(); rateDb.rate=1;
-    expect(await new PostgresOperationalGuard(rateDb,{...limits,claimsPerMinute:1},key).authorizeTask('u',at)).toEqual({allowed:false,reason:'claim_rate_limit',databaseTime:at});
+    expect(await new PostgresOperationalGuard(rateDb,{...limits,claimsPerMinute:1},key).authorizeTaskClaim({userId:'u',taskId:'task-rate',requestId:'claim-rate'})).toEqual({allowed:false,reason:'claim_rate_limit',databaseTime:at});
     const concurrentDb=new FakeSql(); concurrentDb.active=1;
-    expect(await new PostgresOperationalGuard(concurrentDb,limits,key).authorizeTask('u',at)).toEqual({allowed:false,reason:'concurrency',databaseTime:at});
+    expect(await new PostgresOperationalGuard(concurrentDb,limits,key).authorizeTaskClaim({userId:'u',taskId:'task-concurrent',requestId:'claim-concurrent'})).toEqual({allowed:false,reason:'concurrency',databaseTime:at});
     const quotaDb=new FakeSql(); quotaDb.pending=2;
     expect(await new PostgresOperationalGuard(quotaDb,limits,key).authorizeTaskCreation({userId:'u',accountId:'a',providerMessageId:'m'})).toEqual({allowed:false,reason:'pending_quota',databaseTime:at});
     expect([rateDb,concurrentDb,quotaDb].every(db=>db.audits.length===1)).toBe(true);

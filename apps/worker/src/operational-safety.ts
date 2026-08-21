@@ -53,18 +53,6 @@ export class PostgresOperationalGuard implements TaskCreationAdmission {
     return { allowed: true, replay: false, databaseTime: clock };
   }
 
-  /** Compatibility admission used by AgentTaskStore until every caller supplies a claim request id. */
-  async authorizeTask(userId: string, at: Date): Promise<Readonly<{ allowed: boolean; reason?: string }>> {
-    void at; // Admission always uses the database clock.
-    const subject = this.subject(userId);
-    const clock = await this.lockAndClock(subject);
-    const usage = await this.sql.query<{ active: number }>(`SELECT count(*)::int AS active FROM app.agent_tasks WHERE user_id=$1 AND state='leased'`, [userId]);
-    if ((usage.rows[0]?.active ?? this.limits.concurrentTasks) >= this.limits.concurrentTasks) return this.deny(subject, clock, 'concurrency');
-    const count = await this.incrementRate('agent_task_claim_minute', subject, clock);
-    if (count > this.limits.claimsPerMinute) return this.deny(subject, clock, 'claim_rate_limit');
-    return { allowed: true };
-  }
-
   /** Claim-path guard for AgentTaskStore: call after locking the task and before creating a lease. */
   async authorizeTaskClaim(input: { userId: string; taskId: string; requestId: string }): Promise<OperationalAdmission> {
     const subject = this.subject(input.userId);

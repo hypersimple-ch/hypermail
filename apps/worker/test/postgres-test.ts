@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import postgres, { type Sql } from 'postgres';
 
-const migrations = ['0000_solid_lady_deathstrike.sql', '0001_lifecycle_retention.sql', '0002_user_account_ownership.sql', '0003_agent_connections_managers.sql', '0004_tenant_mailbox_identity.sql', '0005_agent_capability_grants.sql', '0006_agent_oauth.sql', '0007_agent_work_history.sql', '0008_agent_work_integration.sql', '0009_public_mcp_execution.sql', '0010_owner_send_approval.sql', '0011_durable_agent_tasks.sql'];
+const migrations = ['0000_solid_lady_deathstrike.sql', '0001_lifecycle_retention.sql', '0002_user_account_ownership.sql', '0003_agent_connections_managers.sql', '0004_tenant_mailbox_identity.sql', '0005_agent_capability_grants.sql', '0006_agent_oauth.sql', '0007_agent_work_history.sql', '0008_agent_work_integration.sql', '0009_public_mcp_execution.sql', '0010_owner_send_approval.sql', '0011_durable_agent_tasks.sql', '0012_agent_task_integrity.sql'];
 
 /**
  * Runs against a deliberately reset local database. The session advisory lock makes

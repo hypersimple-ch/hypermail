@@ -9,8 +9,7 @@ import { Memory } from '@mastra/memory';
 import { MastraSourceHistory, PostgresDecisionPersistence, TriageService, createMastraPostgresStorage, mastraDecisionModel } from '@hypermail/agent';
 import { workerEnvSchema } from '@hypermail/contracts';
 import { AgentTaskStore, createPostgresClient, type ManagedSqlClient } from '@hypermail/db';
-import type { HypermailReadClient} from '@hypermail/hypermail';
-import { createTenantHypermailSessionProvider, parseTenantHypermailRoutes, SingleOwnerTenantClient, TenantHypermailClientCache, type HypermailMcpHttpClient } from '@hypermail/hypermail';
+import { HypermailReadClient, createTenantHypermailSessionProvider, parseTenantHypermailRoutes, SingleOwnerTenantClient, TenantHypermailClientCache, type HypermailMcpHttpClient } from '@hypermail/hypermail';
 import { DeliverPolicyConsumer, DurablePolicyRecovery, HypermailPrivateMutationTransport, PgBossPolicyDispatcher, PostgresPolicyActionInputStore, PostgresPolicyPlanner, createPolicyExecutor } from './policy.js';
 import { NotificationWorker, PostgresNotificationPersistence, PushSubscriptionAesCodec, WebPushVapidTransport, type NotificationInput, type VapidPushTransport } from '@hypermail/notifications';
 import { DispatchRecovery, IngestionWorker, LeaseScheduler, type Clock } from './ingestion.js';
@@ -274,8 +273,16 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const tenantSessions = environment.HYPERMAIL_TENANT_ROUTES ? createTenantHypermailSessionProvider({
     routes: parseTenantHypermailRoutes(environment.HYPERMAIL_TENANT_ROUTES), configVersion: 'environment', protocolVersion: environment.HYPERMAIL_PROTOCOL_VERSION,
   }) : undefined;
-  if (!tenantSessions && !factories.createHypermail && !factories.createHypermailForUser) throw new Error('HYPERMAIL_TENANT_ROUTES_REQUIRED');
-  const client = tenantSessions || !factories.createHypermail ? undefined : factories.createHypermail(environment);
+  const client = tenantSessions ? undefined : factories.createHypermail
+    ? factories.createHypermail(environment)
+    : environment.NODE_ENV === 'development'
+      ? new HypermailReadClient({ endpoint: environment.HYPERMAIL_URL, protocolVersion: environment.HYPERMAIL_PROTOCOL_VERSION, headers: { authorization: `Bearer ${environment.HYPERMAIL_KEY}` } })
+      : undefined;
+  if (!tenantSessions && !client && !factories.createHypermailForUser) throw new Error('HYPERMAIL_TENANT_ROUTES_REQUIRED');
+  let tenantReadiness: Promise<void> | undefined;
+  const ensureTenantReadiness = (): Promise<void> => tenantSessions
+    ? (tenantReadiness ??= tenantSessions.checkReadiness())
+    : Promise.reject(new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED'));
   let hypermailInitialization: ReturnType<HypermailReadClient['initialize']> | undefined;
   const ensureHypermail = async (): Promise<unknown> => {
     if (!client) throw new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED');
@@ -293,13 +300,17 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
     ? new TenantHypermailClientCache((userId) => createHypermailForUser(environment, userId))
     : new SingleOwnerTenantClient(initializedHypermail as NonNullable<typeof initializedHypermail>);
   const tenantHypermail = new TenantHypermailClientCache((userId) => {
-    if (tenantSessions) return {
-      initialize: async () => { await tenantSessions.sessionForUser(userId); },
-      readMessage: async (...input: Parameters<HypermailReadClient['readMessage']>) => (await tenantSessions.sessionForUser(userId)).read.readMessage(...input),
-      establishBaseline: async (...input: Parameters<HypermailReadClient['establishBaseline']>) => (await tenantSessions.sessionForUser(userId)).read.establishBaseline(...input),
-      pollNewInbox: async (...input: Parameters<HypermailReadClient['pollNewInbox']>) => (await tenantSessions.sessionForUser(userId)).read.pollNewInbox(...input),
-      inbox: async (...input: Parameters<HypermailReadClient['inbox']>) => (await tenantSessions.sessionForUser(userId)).read.inbox(...input),
-    };
+    if (tenantSessions) {
+      const usingRead = <Result>(operation: (read: HypermailReadClient) => Promise<Result>): Promise<Result> =>
+        tenantSessions.withSessionForUser(userId, bundle => operation(bundle.read));
+      return {
+        initialize: async () => { await usingRead(() => Promise.resolve(undefined)); },
+        readMessage: (...input: Parameters<HypermailReadClient['readMessage']>) => usingRead(read => read.readMessage(...input)),
+        establishBaseline: (...input: Parameters<HypermailReadClient['establishBaseline']>) => usingRead(read => read.establishBaseline(...input)),
+        pollNewInbox: (...input: Parameters<HypermailReadClient['pollNewInbox']>) => usingRead(read => read.pollNewInbox(...input)),
+        inbox: (...input: Parameters<HypermailReadClient['inbox']>) => usingRead(read => read.inbox(...input)),
+      };
+    }
     if (!rawTenantHypermail) throw new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED');
     const scoped = rawTenantHypermail.clientForUser(userId);
     let initialization: Promise<unknown> | undefined;
@@ -314,7 +325,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const boss = new PgBossRuntime(rawBoss);
   const sql = workerSql(database);
   const operationalGuard=new PostgresOperationalGuard(sql,{tasksPerMinute:environment.USER_TASK_RATE_PER_MINUTE,claimsPerMinute:environment.USER_TASK_RATE_PER_MINUTE,concurrentTasks:environment.USER_TASK_CONCURRENCY,pendingTasks:environment.USER_PENDING_TASK_QUOTA},environment.PUSH_SUBSCRIPTION_ENCRYPTION_KEY);
-  const ingestionStore = new PostgresIngestionStore(sql,operationalGuard);
+  const ingestionStore = new PostgresIngestionStore(sql);
   const dispatchRecovery = new DispatchRecovery(ingestionStore, new PgBossDeliveryQueue(rawBoss));
   const holderId = (factories.holderId ?? defaultHolderId)();
   const ingestion = new LeaseScheduler(new IngestionWorker(ingestionStore, new HypermailInboxProvider(tenantHypermail), dispatchRecovery, clock), ingestionStore, clock, holderId, environment.POLL_INTERVAL_SECONDS * 1000);
@@ -368,12 +379,12 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
     closeDatabase: async () => { await closeAgentResources(); await tenantSessions?.close(); await database.close(); },
     probes: {
       database: async () => { await database.query('select 1'); return true; },
-      hypermail: async () => { if (tenantSessions) return parseTenantHypermailRoutes(environment.HYPERMAIL_TENANT_ROUTES ?? '').size > 0; await ensureHypermail(); return true; },
-      // Provider construction is the readiness boundary; probes never send email content or requests.
+      hypermail: async () => { if (tenantSessions) { await ensureTenantReadiness(); return true; } await ensureHypermail(); return true; },
+      // Readiness initializes every configured tenant and validates the restricted policy tool contract without mutation I/O.
       model: () => Promise.resolve(true),
       notifications: () => Promise.resolve(true),
       // Validate the pinned runtime's advertised restricted mutation schemas without provider mutation I/O.
-      policy: async () => { if (tenantSessions) return parseTenantHypermailRoutes(environment.HYPERMAIL_TENANT_ROUTES ?? '').size > 0; const legacyClient=client; if(!legacyClient)throw new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED'); await ensureHypermail(); await legacyClient.verifyPolicyContract(); return true; },
+      policy: async () => { if (tenantSessions) { await ensureTenantReadiness(); return true; } const legacyClient=client; if(!legacyClient)throw new Error('HYPERMAIL_TENANT_ROUTE_REQUIRED'); await ensureHypermail(); await legacyClient.verifyPolicyContract(); return true; },
     },
   };
   return new WorkerRuntime(environment, dependencies);

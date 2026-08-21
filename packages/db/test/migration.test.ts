@@ -10,6 +10,7 @@ const managerMigrationUrl = new URL('../drizzle/0003_agent_connections_managers.
 const grantMigrationUrl = new URL('../drizzle/0005_agent_capability_grants.sql', import.meta.url);
 const workIntegrationMigrationUrl = new URL('../drizzle/0008_agent_work_integration.sql', import.meta.url);
 const ownerSendMigrationUrl = new URL('../drizzle/0010_owner_send_approval.sql', import.meta.url);
+const taskIntegrityMigrationUrl = new URL('../drizzle/0012_agent_task_integrity.sql', import.meta.url);
 const journalUrl = new URL('../drizzle/meta/_journal.json', import.meta.url);
 const workerMigrationRunnerUrl = new URL('../../../apps/worker/test/postgres-test.ts', import.meta.url);
 const sql = readFileSync(fileURLToPath(migrationUrl), 'utf8');
@@ -20,6 +21,7 @@ const managerSql = readFileSync(fileURLToPath(managerMigrationUrl), 'utf8');
 const grantSql = readFileSync(fileURLToPath(grantMigrationUrl), 'utf8');
 const workIntegrationSql = readFileSync(fileURLToPath(workIntegrationMigrationUrl), 'utf8');
 const ownerSendSql = readFileSync(fileURLToPath(ownerSendMigrationUrl), 'utf8');
+const taskIntegritySql = readFileSync(fileURLToPath(taskIntegrityMigrationUrl), 'utf8');
 const journal = readFileSync(fileURLToPath(journalUrl), 'utf8');
 const workerMigrationRunner = readFileSync(fileURLToPath(workerMigrationRunnerUrl), 'utf8');
 
@@ -195,4 +197,5 @@ describe('durable automatic Task migration',()=>{
  it('backfills pre-dual-write Activities before adding Task foreign keys',()=>{expect(taskSql.indexOf('INSERT INTO app.agent_activities')).toBeGreaterThanOrEqual(0);expect(taskSql.indexOf('INSERT INTO app.agent_activities')).toBeLessThan(taskSql.indexOf('CREATE TABLE "app"."agent_tasks"'));expect(taskSql).toContain("ON CONFLICT(id) DO NOTHING");});
  it('persists fenced leases, immutable Attempts/reports/receipts, outbox, and mutation journals',()=>{for(const name of ['agent_tasks','agent_task_delivery_attempts','agent_task_reports','agent_task_receipts','agent_task_outbox','agent_mutation_idempotency'])expect(taskSql).toContain(`"app"."${name}"`);expect(taskSql).toContain('agent_task_attempts_append_only');expect(taskSql).toContain('agent_tasks_lease_shape');expect(taskSql).toContain('agent_task_outbox_pending_idx');});
  it('registers the upgrade in every migration runner',()=>{expect(journal).toContain('0011_durable_agent_tasks');expect(workerMigrationRunner).toContain('0011_durable_agent_tasks.sql');});
+ it('adds tenant-bound authority and one-way report privacy redaction',()=>{expect(journal).toContain('0012_agent_task_integrity');expect(workerMigrationRunner).toContain('0012_agent_task_integrity.sql');expect(taskIntegritySql).toContain('enforce_agent_task_authority_identity');expect(taskIntegritySql).toContain('r.user_id=NEW.user_id');expect(taskIntegritySql).toContain("jsonb_build_object('kind','redacted')");expect(taskIntegritySql).toContain('guard_agent_task_report_redaction');});
 });

@@ -29,6 +29,12 @@ export const agentTaskResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('action_requests_emitted'), actionIds: z.array(idSchema).min(1).max(20)
     .refine((ids) => new Set(ids).size === ids.length, 'Action IDs must be unique.') }),
 ]);
+/** Retention-safe terminal marker. It is never accepted from an executor report. */
+const agentTaskStoredResultSchema = z.discriminatedUnion('kind', [
+  ...agentTaskResultSchema.options,
+  z.strictObject({ kind: z.literal('redacted') }),
+]);
+
 export const agentTaskLeaseSchema = z.strictObject({
   generation: revisionSchema,
   tokenDigest: digestSchema,
@@ -56,7 +62,7 @@ export const agentTaskSchema = z.strictObject({
   leaseGeneration: z.number().int().nonnegative(),
   lease: agentTaskLeaseSchema.nullable(),
   currentRunId: idSchema.nullable(),
-  result: agentTaskResultSchema.nullable(),
+  result: agentTaskStoredResultSchema.nullable(),
   lastErrorCode: agentTaskErrorCodeSchema.nullable(),
   availableAt: isoDateTimeSchema,
   deadlineAt: isoDateTimeSchema,
@@ -80,7 +86,8 @@ export const agentTaskSchema = z.strictObject({
   if (resultState !== (task.result !== null)) ctx.addIssue({ code: 'custom', path: ['result'], message: 'Result is required only for result states.' });
   if (task.state === 'waiting_for_answer' && task.result?.kind !== 'question') ctx.addIssue({ code: 'custom', path: ['result'], message: 'Waiting requires a question.' });
   if (task.state === 'awaiting_action_verification' && task.result?.kind !== 'action_requests_emitted') ctx.addIssue({ code: 'custom', path: ['result'], message: 'Verification wait requires Action IDs.' });
-  if (task.state === 'completed' && !['no_action','action_requests_emitted'].includes(task.result?.kind ?? '')) ctx.addIssue({ code: 'custom', path: ['result'], message: 'Completion requires no-action or verified actions.' });
+  if (task.state === 'completed' && !['no_action','action_requests_emitted','redacted'].includes(task.result?.kind ?? '')) ctx.addIssue({ code: 'custom', path: ['result'], message: 'Completion requires no-action, verified actions, or a retention marker.' });
+  if (task.result?.kind === 'redacted' && task.state !== 'completed') ctx.addIssue({ code: 'custom', path: ['result'], message: 'Only completed Tasks can have a retention marker.' });
   const completed = ['completed', 'cancelled', 'dead_letter'].includes(task.state);
   if (completed !== (task.completedAt !== null)) ctx.addIssue({ code: 'custom', path: ['completedAt'], message: 'Terminal completion timestamp mismatch.' });
   if ((task.state === 'obsolete') !== (task.obsoleteAt !== null)) ctx.addIssue({ code: 'custom', path: ['obsoleteAt'], message: 'Only obsolete Tasks have obsoleteAt.' });

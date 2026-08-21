@@ -143,6 +143,17 @@ export class TenantHypermailSessionProvider<Bundle extends TenantHypermailClient
     return { bundle, release: async () => { if (released) return; released = true; await this.#release(normalized, entry); } };
   }
 
+  /** Runs one complete provider operation under a lease and always releases capacity. */
+  async withSessionForUser<Result>(userId: string, operation: (bundle: Bundle) => Promise<Result>): Promise<Result> {
+    const lease = await this.leaseForUser(userId);
+    try { return await operation(lease.bundle); } finally { await lease.release(); }
+  }
+
+  /** Initializes and verifies every configured tenant without retaining compatibility leases. */
+  async checkReadiness(): Promise<void> {
+    for (const userId of this.#resolver.routes.keys()) await this.withSessionForUser(userId, () => Promise.resolve(undefined));
+  }
+
   /** Compatibility API. It pins one session per User until provider close; new code must use leases. */
   async sessionForUser(userId: string): Promise<Bundle> {
     const normalized = tenantId(userId); const existing = this.#compatibilityLeases.get(normalized); if (existing) return existing.bundle;
@@ -194,8 +205,12 @@ export function createTenantHypermailSessionProvider(options: DefaultTenantHyper
   return new TenantHypermailSessionProvider({ ...options, createSession: async (route, signal) => {
     const protocolVersion = route.protocolVersion ?? options.protocolVersion; if (!protocolVersion) throw new Error("HYPERMAIL_TENANT_PROTOCOL_VERSION_REQUIRED");
     const read = new HypermailReadClient({ endpoint: route.endpoint, protocolVersion, headers: { authorization: `Bearer ${route.key}` }, ...(options.fetch ? { fetch: options.fetch } : {}), ...(options.maxRetries === undefined ? {} : { maxRetries: options.maxRetries }) });
-    if (signal?.aborted) throw new Error("HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED"); await read.initialize(); if (signal?.aborted) { await read.transport.close(); throw new Error("HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED"); }
-    const policy = new HypermailPolicyClient(read.transport); await read.verifyPolicyContract(); return { read, policy, close: () => read.transport.close() };
+    try {
+      if (signal?.aborted) throw new Error("HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED");
+      await read.initialize();
+      if (signal?.aborted) throw new Error("HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED");
+      const policy = new HypermailPolicyClient(read.transport); await read.verifyPolicyContract(); return { read, policy, close: () => read.transport.close() };
+    } catch (error) { await read.transport.close().catch(() => undefined); throw error; }
   } });
 }
 

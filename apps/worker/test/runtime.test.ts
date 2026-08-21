@@ -14,7 +14,7 @@ class FakeBoss implements BossRuntime {
 }
 const dependencies = (boss: FakeBoss, calls: string[]): WorkerRuntimeDependencies => ({
   boss, ingestion: { start: () => Promise.resolve(), stop() { calls.push('ingestion-stop'); } }, lifecycle: { start: () => Promise.resolve(), stop() { calls.push('lifecycle-stop'); } },
-  dispatchRecovery: { recover() { calls.push('dispatch-recovery'); return Promise.resolve(); } }, notificationRecovery: { recover() { calls.push('notification-recovery'); return Promise.resolve(); } }, policyRecovery: { recover() { calls.push('policy-recovery'); return Promise.resolve(); } },
+  agentTaskRecovery: { recover() { calls.push('task-recovery'); return Promise.resolve(); } }, dispatchRecovery: { recover() { calls.push('dispatch-recovery'); return Promise.resolve(); } }, notificationRecovery: { recover() { calls.push('notification-recovery'); return Promise.resolve(); } }, policyRecovery: { recover() { calls.push('policy-recovery'); return Promise.resolve(); } },
   agentConsumer: { consume(payload) { calls.push(`agent:${String(payload.jobId)}`); return Promise.resolve(); } }, notificationConsumer: { consume: () => Promise.resolve() }, policyConsumer: { consume: () => Promise.resolve() },
   closeDatabase() { calls.push('database-close'); return Promise.resolve(); }, probes: { database: () => Promise.resolve(true), hypermail: () => Promise.resolve(true) },
 });
@@ -59,6 +59,10 @@ describe('worker runtime', () => {
     expect(boss.stopped).toBe(true); expect(calls.slice(-3)).toEqual(['ingestion-stop', 'lifecycle-stop', 'database-close']);
   });
 
+  it('recovers database Tasks even when pg-boss startup fails',async()=>{
+    const calls:string[]=[];const boss=new FakeBoss();boss.start=()=>Promise.reject(new Error('queue unavailable'));const runtime=new WorkerRuntime({...env(),HEALTH_PORT:31_004},dependencies(boss,calls));await runtime.start();expect(runtime.dependencyState.queue).toBe(false);expect(calls).toContain('task-recovery');await runtime.shutdown();
+  });
+
   it('repeats all durable recoveries on the lifecycle interval', async () => {
     vi.useFakeTimers();
     try {
@@ -66,7 +70,7 @@ describe('worker runtime', () => {
       const runtime = new WorkerRuntime({ ...env(), HEALTH_PORT: 31_003, LIFECYCLE_INTERVAL_SECONDS: 1 }, dependencies(boss, calls));
       await runtime.start();
       await vi.advanceTimersByTimeAsync(1_000);
-      for (const recovery of ['dispatch-recovery', 'notification-recovery', 'policy-recovery']) expect(calls.filter(call => call === recovery)).toHaveLength(2);
+      for (const recovery of ['dispatch-recovery', 'notification-recovery', 'policy-recovery', 'task-recovery']) expect(calls.filter(call => call === recovery)).toHaveLength(2);
       await runtime.shutdown();
     } finally {
       vi.useRealTimers();

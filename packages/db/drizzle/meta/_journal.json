@@ -85,6 +85,13 @@
       "when": 1787138400000,
       "tag": "0011_durable_agent_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787224800000,
+      "tag": "0012_agent_task_integrity",
+      "breakpoints": true
     }
   ]
 }

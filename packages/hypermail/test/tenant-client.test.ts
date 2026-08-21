@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SingleOwnerTenantClient, TenantHypermailRouteResolver, TenantHypermailSessionProvider,
-  parseTenantHypermailRoutes, type TenantHypermailClientBundle, type TenantHypermailRoute,
+  createTenantHypermailSessionProvider, parseTenantHypermailRoutes, type TenantHypermailClientBundle, type TenantHypermailRoute,
 } from "../src/index.js";
 import type { HypermailPolicyClient, HypermailReadClient } from "../src/index.js";
 
@@ -62,6 +62,18 @@ describe("TenantHypermailSessionProvider", () => {
     await provider.close(); expect(made[2]?.closed).toBe(1); await provider.close(); expect(made[2]?.closed).toBe(1);
     await expect(provider.leaseForUser(first)).rejects.toThrow("HYPERMAIL_TENANT_SESSION_PROVIDER_CLOSED");
   });
+  it("releases operation-scoped sessions on success and failure", async () => {
+    const made: FakeBundle[]=[];const provider=new TenantHypermailSessionProvider<FakeBundle>({routes:parseTenantHypermailRoutes(json()),configVersion:"one",maxSessions:1,createSession:async route=>{const value=fake(route);made.push(value);return value;}});
+    await expect(provider.withSessionForUser(first,async bundle=>bundle.endpoint)).resolves.toBe("https://one.internal/mcp");
+    await expect(provider.withSessionForUser(second,async()=>{throw new Error("operation failed");})).rejects.toThrow("operation failed");
+    await expect(provider.withSessionForUser(first,async bundle=>bundle.endpoint)).resolves.toBe("https://one.internal/mcp");
+    expect(made[0]?.closed).toBe(1);expect(made[1]?.closed).toBe(1);await provider.close();
+  });
+  it("checks every configured tenant without pinning readiness sessions", async () => {
+    const initialized:string[]=[];const provider=new TenantHypermailSessionProvider<FakeBundle>({routes:parseTenantHypermailRoutes(json()),configVersion:"one",maxSessions:1,createSession:async route=>{initialized.push(route.endpoint);return fake(route);}});
+    await provider.checkReadiness();expect(initialized).toEqual(["https://one.internal/mcp","https://two.internal/mcp"]);
+    await expect(provider.withSessionForUser(first,async bundle=>bundle.endpoint)).resolves.toBe("https://one.internal/mcp");await provider.close();
+  });
   it("never evicts a held lease and admits it after release", async () => {
     const made: FakeBundle[]=[];const provider=new TenantHypermailSessionProvider<FakeBundle>({routes:parseTenantHypermailRoutes(json()),configVersion:"one",maxSessions:1,createSession:async route=>{const value=fake(route);made.push(value);return value;}});
     const held=await provider.leaseForUser(first);await expect(provider.leaseForUser(second)).rejects.toThrow("HYPERMAIL_TENANT_SESSION_CAPACITY_EXHAUSTED");expect(held.bundle.closed).toBe(0);
@@ -78,6 +90,11 @@ describe("TenantHypermailSessionProvider", () => {
   it("closes a bundle that arrives after initialization timeout", async () => {
     let resolve!: (bundle:FakeBundle)=>void;const late=fake({endpoint:"https://one.internal/mcp",key:"key"});const provider=new TenantHypermailSessionProvider<FakeBundle>({routes:parseTenantHypermailRoutes(json()),configVersion:"one",initializeTimeoutMs:10,closeTimeoutMs:10,createSession:()=>new Promise<FakeBundle>(done=>{resolve=done})});
     await expect(provider.leaseForUser(first)).rejects.toThrow("HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED");resolve(late);await new Promise(done=>setTimeout(done,0));expect(late.closed).toBe(1);await provider.close();expect(late.closed).toBe(1);
+  });
+  it("closes transport when policy contract verification fails after initialization", async () => {
+    let deletes=0;const request:typeof fetch=async(_url,init)=>{if(init?.method==='DELETE'){deletes++;return new Response(null,{status:200});}const raw=init?.body;if(typeof raw!=="string")throw new Error("body");const body=JSON.parse(raw) as {id?:number;method:string};if(body.method==='notifications/initialized')return new Response(null,{status:202,headers:{'mcp-session-id':'session-1'}});const result=body.method==='initialize'?{protocolVersion:'v1',capabilities:{}}:{tools:[]};return new Response(JSON.stringify({jsonrpc:'2.0',id:body.id,result}),{headers:{'content-type':'application/json','mcp-session-id':'session-1'}});};
+    const provider=createTenantHypermailSessionProvider({routes:parseTenantHypermailRoutes(json()),configVersion:'one',protocolVersion:'v1',fetch:request});
+    await expect(provider.leaseForUser(first)).rejects.toThrow('HYPERMAIL_TENANT_SESSION_INITIALIZATION_FAILED');expect(deletes).toBe(1);await provider.close();
   });
   it("does not poison the cache after failed initialization", async () => {
     let attempts = 0; const provider = new TenantHypermailSessionProvider<FakeBundle>({ routes: parseTenantHypermailRoutes(json()), configVersion: "one", createSession: async (route) => { attempts++; if (attempts === 1) throw new Error("secret remote failure"); return fake(route); } });
