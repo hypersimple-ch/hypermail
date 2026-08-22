@@ -43,6 +43,8 @@ pnpm dev
 
 Open <http://localhost:8080>. Local Compose applies migrations automatically and seeds a separate `codex-home` volume from the host's Codex login; it does not use a model API key. Press Ctrl-C to stop the containers. Never commit `.env` or use its fixed development secrets in deployment.
 
+`pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
+
 Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
 
 Gmail and Outlook flows require deployment OAuth/device-code configuration and isolated provider accounts before they can be accepted as live integrations. The pinned local service and fixture proof do not establish that acceptance. Production secrets belong in deployment secret storage.

@@ -1,6 +1,7 @@
 # Deployment assets
 
-- `Dockerfile.web` and `Dockerfile.worker` build the pnpm workspace independently and run as UID 10001.
+- `Dockerfile.web` and `Dockerfile.worker` build the production pnpm workspace independently and run as UID 10001.
+- `Dockerfile.dev`, `compose.dev.yaml`, and `dev.mjs` provide dependency-aware Compose Watch for local source changes without production image rebuilds.
 - `compose.local.yaml` is loopback-only for the local proxy; database and Hypermail remain private.
 - `compose.vps.yaml` is the generic-VPS topology: only Caddy publishes `80` and `443`.
 - `dokploy/compose.yaml` relies on Dokploy's Traefik network; it publishes no host ports.

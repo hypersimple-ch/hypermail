@@ -13,6 +13,11 @@ const dokploy = read('infra/dokploy/compose.yaml');
 const webDockerfile = read('infra/Dockerfile.web');
 const workerDockerfile = read('infra/Dockerfile.worker');
 const hypermailDockerfile = read('infra/Dockerfile.hypermail');
+const devCompose = read('infra/compose.dev.yaml');
+const devDockerfile = read('infra/Dockerfile.dev');
+const devLauncher = read('infra/dev.mjs');
+const devRunner = read('infra/dev-runner.mjs');
+const rootPackage = read('package.json');
 const hypermailPackage = read('apps/hypermail/package.json');
 
 for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
@@ -75,6 +80,22 @@ for (const [name, dockerfile] of [['web', webDockerfile], ['worker', workerDocke
   if ((!/USER hypermail/.test(dockerfile) && name !== 'worker') || !/HEALTHCHECK/.test(dockerfile)) {
     fail(`${name} image must run non-root and define a health check`);
   }
+}
+
+if (!/"dev": "node infra\/dev\.mjs"/.test(rootPackage) || !/"dev:rebuild": "node infra\/dev\.mjs --rebuild"/.test(rootPackage)) {
+  fail('local development must use the dependency-aware Compose Watch launcher');
+}
+if (!/compose\.dev\.yaml/.test(devLauncher) || !/up', '--watch'/.test(devLauncher) || !/org\.hypermail\.dev-input-hash/.test(devLauncher) || !/DEV_INPUT_HASH/.test(devLauncher)) {
+  fail('development launcher must rebuild only stale dependency images and then use Compose Watch');
+}
+if (!/target: web/.test(devCompose) || !/target: worker/.test(devCompose) || !/target: migrate/.test(devCompose) || !/action: sync/.test(devCompose) || !/action: sync\+restart/.test(devCompose) || !/action: rebuild/.test(devCompose)) {
+  fail('development Compose override must watch sources and retain web, worker, and migration targets');
+}
+if (!/npm_config_inject_workspace_packages=false/.test(devDockerfile) || !/FROM workspace AS web/.test(devDockerfile) || !/FROM workspace AS worker/.test(devDockerfile) || !/FROM workspace AS migrate/.test(devDockerfile) || !/USER hypermail/.test(devDockerfile)) {
+  fail('development image must use live workspace links, non-root processes, and separate service targets');
+}
+if (!/tsc', '-b'/.test(devRunner) || !/--watch/.test(devRunner) || !/esbuild/.test(devRunner) || !/tailwindcss/.test(devRunner) || !/apps\/worker\/dist\/main\.js/.test(devRunner)) {
+  fail('development runner must watch TypeScript, browser assets, web, and worker entrypoints');
 }
 
 console.log('deployment static verification passed');

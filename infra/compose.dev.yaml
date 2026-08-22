@@ -1,0 +1,112 @@
+services:
+  web:
+    image: hypermail-local-dev-web
+    build:
+      dockerfile: infra/Dockerfile.dev
+      target: web
+      args:
+        DEV_INPUT_HASH: ${DEV_INPUT_HASH:-unknown}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      start_period: 2s
+      retries: 30
+    develop:
+      watch:
+        - action: sync
+          path: ../apps/web/src
+          target: /workspace/apps/web/src
+        - action: sync+restart
+          path: ../apps/web/static
+          target: /workspace/apps/web/static
+        - action: sync
+          path: ../packages
+          target: /workspace/packages
+          ignore:
+            - "**/dist/"
+            - "**/node_modules/"
+            - "**/package.json"
+            - "**/*.tsbuildinfo"
+        - action: sync+restart
+          path: ./dev-runner.mjs
+          target: /workspace/infra/dev-runner.mjs
+        - action: rebuild
+          path: ../package.json
+        - action: rebuild
+          path: ../tsconfig.json
+        - action: rebuild
+          path: ../tsconfig.base.json
+        - action: rebuild
+          path: ../pnpm-lock.yaml
+        - action: rebuild
+          path: ../pnpm-workspace.yaml
+        - action: rebuild
+          path: ../apps/web/package.json
+        - action: rebuild
+          path: ./Dockerfile.dev
+
+  migrate:
+    image: hypermail-local-dev-migrate
+    build:
+      dockerfile: infra/Dockerfile.dev
+      target: migrate
+      args:
+        DEV_INPUT_HASH: ${DEV_INPUT_HASH:-unknown}
+
+  worker:
+    image: hypermail-local-dev-worker
+    build:
+      dockerfile: infra/Dockerfile.dev
+      target: worker
+      args:
+        DEV_INPUT_HASH: ${DEV_INPUT_HASH:-unknown}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      start_period: 2s
+      retries: 30
+    develop:
+      watch:
+        - action: sync
+          path: ../apps/worker/src
+          target: /workspace/apps/worker/src
+        - action: sync
+          path: ../packages
+          target: /workspace/packages
+          ignore:
+            - "**/dist/"
+            - "**/node_modules/"
+            - "**/package.json"
+            - "**/*.tsbuildinfo"
+        - action: sync+restart
+          path: ./dev-runner.mjs
+          target: /workspace/infra/dev-runner.mjs
+        - action: rebuild
+          path: ../package.json
+        - action: rebuild
+          path: ../tsconfig.json
+        - action: rebuild
+          path: ../tsconfig.base.json
+        - action: rebuild
+          path: ../pnpm-lock.yaml
+        - action: rebuild
+          path: ../pnpm-workspace.yaml
+        - action: rebuild
+          path: ../apps/worker/package.json
+        - action: rebuild
+          path: ./Dockerfile.dev
+
+  postgres:
+    healthcheck:
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  hypermail:
+    healthcheck:
+      interval: 2s
+      timeout: 2s
+      start_period: 2s
+      retries: 30

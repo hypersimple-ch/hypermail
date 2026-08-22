@@ -8,7 +8,8 @@
     "pnpm": "11.11.0"
   },
   "scripts": {
-    "dev": "docker compose --env-file .env -f infra/compose.local.yaml up --build",
+    "dev": "node infra/dev.mjs",
+    "dev:rebuild": "node infra/dev.mjs --rebuild",
     "build": "pnpm -r build",
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",
