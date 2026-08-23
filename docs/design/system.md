@@ -65,7 +65,7 @@ Place an agent card immediately after the message content it concerns. It contai
 
 ### Compose and auth
 
-Compose and authentication are compact, modern, and stable within the viewport: no layout jumps, document overflow, or obscured essential controls. Compose has labeled To and Subject fields, a plain message editor, clear saved/pending/error state, and an explicit approval-to-send action. Preserve drafts online; report connection failure plainly rather than suggesting offline sending. Authentication clearly shows loading, failure, and retry/next steps.
+Compose and authentication are compact, modern, and stable within the viewport: no layout jumps, document overflow, or obscured essential controls. Compose has labeled To and Subject fields, a rich message editor with a compact formatting toolbar, clear saved/pending/error state, and an explicit approval-to-send action. Preserve drafts online; report connection failure plainly rather than suggesting offline sending. Authentication clearly shows loading, failure, and retry/next steps.
 
 ## Responsive and accessibility requirements
 

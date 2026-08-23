@@ -1,11 +1,11 @@
-import type * as React from 'react';
+import * as React from 'react';
 import type { DraftRecord, DraftRevision } from './contracts.js';
 import { Badge } from '@/components/heroui/badge.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { Field, FieldDescription, FieldLabel } from '@/components/heroui/field.js';
 import { Input } from '@/components/heroui/input.js';
-import { Textarea } from '@/components/heroui/textarea.js';
+import { RichTextEditor } from '@/components/app/rich-text-editor.js';
 
 export type DraftComposeProps = Readonly<{
   draft: DraftRecord;
@@ -19,6 +19,8 @@ const isSendDisabled = (state: DraftRecord['state']): boolean => state === 'send
 /** SSR-safe composition contract; hosts own input state/network calls and must show conflict responses. */
 export function DraftCompose({ draft, revisions, onAutosave, onRequestSend }: DraftComposeProps): React.JSX.Element {
   const sendDisabled = isSendDisabled(draft.state);
+  const [body, setBody] = React.useState(draft.body);
+  React.useEffect(() => { setBody(draft.body); }, [draft.body, draft.id, draft.version]);
   const recipientText = draft.recipients.filter((recipient) => recipient.kind === 'to').map((recipient) => recipient.address).join(', ');
   const versionText = `Version ${String(draft.version)} · ${draft.createdBy === 'agent' ? 'Agent-created draft' : 'User-created draft'}`;
 
@@ -41,14 +43,14 @@ export function DraftCompose({ draft, revisions, onAutosave, onRequestSend }: Dr
       </Field>
       <Field>
         <FieldLabel htmlFor="draft-message">Message</FieldLabel>
-        <Textarea id="draft-message" defaultValue={draft.body} rows={12} />
+        <RichTextEditor id="draft-message" name="body" defaultValue={draft.body} disabled={sendDisabled} onChange={setBody} />
       </Field>
       <FieldDescription>{String(revisions.length)} saved version{revisions.length === 1 ? '' : 's'}</FieldDescription>
     </CardContent>
     <CardFooter className="flex-wrap justify-between gap-3">
-      <Button type="button" variant="outline" onClick={() => onAutosave?.(draft)}>Save draft</Button>
+      <Button type="button" variant="outline" onClick={() => onAutosave?.({ ...draft, body })}>Save draft</Button>
       <div className="grid justify-items-end gap-1">
-        <Button type="button" disabled={sendDisabled} onClick={() => onRequestSend?.(draft)}>Review and send</Button>
+        <Button type="button" disabled={sendDisabled} onClick={() => onRequestSend?.({ ...draft, body })}>Review and send</Button>
         <FieldDescription>Sending requires your explicit approval.</FieldDescription>
       </div>
     </CardFooter>

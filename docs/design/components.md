@@ -35,6 +35,7 @@ Located in `apps/web/src/components/app/patterns.tsx`:
 - `FilterGroup`: accessible `aria-pressed` filter controls.
 - `PageHeader`: screen title, description, and supported actions.
 - `StatePanel`: loading, empty, and recoverable state presentation.
+- `RichTextEditor`: Tiptap-backed draft body editing with font family/size, emphasis, lists, quotes, alignment, and history controls. Its toolbar uses the owned HeroUI controls and stays horizontally contained on narrow screens.
 
 The root-mounted HeroUI `ToastProvider` owns transient feedback. Use the repository `toast` helper for completed or failed user operations. Keep field validation, recoverable page-load errors, and persistent domain alerts inline. Toasts pause while hovered or focused, expose a 44px close control, and remove countdown motion under `prefers-reduced-motion: reduce`.
 

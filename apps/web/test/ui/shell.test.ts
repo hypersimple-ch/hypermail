@@ -58,7 +58,8 @@ describe('responsive shell rendering contracts', () => {
     const markup = render(React.createElement(Compose, { accounts: mockShellData.accounts }));
     expect(markup).toContain('data-slot="select-trigger"');
     expect(markup).toContain('data-slot="input"');
-    expect(markup).toContain('data-slot="textarea"');
+    expect(markup).toContain('data-slot="rich-text-editor"');
+    expect(markup).toContain('aria-label="Message formatting"');
     expect(markup).toContain('data-variant="default"');
     expect(markup).toContain('Save draft');
   });

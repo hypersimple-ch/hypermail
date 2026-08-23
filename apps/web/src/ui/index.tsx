@@ -16,8 +16,8 @@ import { Card, CardContent } from '@/components/heroui/card.js';
 import { Field, FieldLabel } from '@/components/heroui/field.js';
 import { Input } from '@/components/heroui/input.js';
 import { Select } from '@/components/heroui/select.js';
-import { Textarea } from '@/components/heroui/textarea.js';
 import { toast } from '@/components/heroui/toast.js';
+import { RichTextEditor } from '@/components/app/rich-text-editor.js';
 import { AppPage, NavigationItem, PageContainer, PageHeader, StatePanel } from '@/components/app/patterns.js';
 import { cn } from '@/lib/utils.js';
 
@@ -71,7 +71,7 @@ export function Compose({ accounts, draft, onClose, onSave }: { accounts: readon
     <Field><Select id="compose-account" name="accountId" label="From account" required defaultValue={draft?.accountId} placeholder="Select an account" options={accounts.map((account) => ({ value: account.id, label: account.label }))} /></Field>
     <Field><FieldLabel htmlFor="compose-to">To</FieldLabel><Input id="compose-to" name="to" type="email" placeholder="name@example.com" required defaultValue={draft?.recipients.find((recipient) => recipient.kind === 'to')?.address ?? ''} /></Field>
     <Field><FieldLabel htmlFor="compose-subject">Subject</FieldLabel><Input id="compose-subject" name="subject" type="text" defaultValue={draft?.subject ?? ''} /></Field>
-    <Field><FieldLabel htmlFor="compose-body">Message</FieldLabel><Textarea id="compose-body" name="body" defaultValue={draft?.body ?? ''} /></Field>
+    <Field><FieldLabel htmlFor="compose-body">Message</FieldLabel><RichTextEditor id="compose-body" name="body" defaultValue={draft?.body ?? ''} disabled={pending} /></Field>
     <div className="flex justify-end border-t border-border pt-4"><Button type="submit" disabled={pending}>{pending ? 'Saving…' : 'Save draft'}</Button></div>
   </form></PageContainer></AppPage>;
 }

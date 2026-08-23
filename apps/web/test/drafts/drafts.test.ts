@@ -127,13 +127,14 @@ describe('draft composition and isolated send boundary', () => {
     const view = render(React.createElement(DraftCompose, { draft, revisions: [], onAutosave: autosave, onRequestSend: requestSend }));
 
     expect(screen.getByLabelText('To').getAttribute('data-slot')).toBe('input');
-    expect(screen.getByLabelText('Message').getAttribute('data-slot')).toBe('textarea');
+    expect(screen.getByLabelText('Message').getAttribute('role')).toBe('textbox');
+    expect(screen.getByLabelText('Message').closest('[data-slot="rich-text-editor"]')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('Version 3 · Agent-created draft');
     expect(screen.getByText('editing').getAttribute('data-slot')).toBe('chip');
     expect(screen.getByText('Sending requires your explicit approval.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     fireEvent.click(screen.getByRole('button', { name: 'Review and send' }));
-    expect(autosave).toHaveBeenCalledWith(draft); expect(requestSend).toHaveBeenCalledWith(draft);
+    expect(autosave).toHaveBeenCalledWith({ ...draft, body: '<p>Body</p>' }); expect(requestSend).toHaveBeenCalledWith({ ...draft, body: '<p>Body</p>' });
 
     view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sending' }, revisions: [] }));
     expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);

@@ -63,7 +63,7 @@ setTimeout(() => {
       page: getComputedStyle(document.body).backgroundColor,
       outlineButton: surfaceColor('[data-variant="outline"]'),
       input: surfaceColor('[data-slot="input"]'),
-      textarea: surfaceColor('[data-slot="textarea"]'),
+      richEditor: surfaceColor('[data-slot="rich-text-editor"]'),
       select: surfaceColor('[data-slot="select-trigger"]'),
     },
     mobile: { navTop: rounded(rect(navigation)?.top), composeBottom: rounded(rect(compose)?.bottom), navItems: navigation?.querySelectorAll('button').length ?? 0 },
