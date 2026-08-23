@@ -195,12 +195,12 @@ export class HypermailPolicyClient {
   async createDraft(input: DraftCreateInput): Promise<DraftMutationResult> {
     return draftMutationResult(await this.transport.call("draft_email", {
       account: text(input.account, "draft.account"), to: draftAddresses(input.to) ?? [], ...(input.cc ? { cc: draftAddresses(input.cc) ?? [] } : {}), ...(input.bcc ? { bcc: draftAddresses(input.bcc) ?? [] } : {}),
-      subject: input.subject, body: input.body, format: "markdown", include_signature: false, inReplyTo: input.inReplyTo ?? false,
+      subject: input.subject, body: input.body, format: input.bodyFormat, include_signature: false, inReplyTo: input.inReplyTo ?? false,
     }), "draft");
   }
   async editDraft(input: DraftEditInput): Promise<DraftMutationResult> {
     if ((input.oldText === undefined) !== (input.newText === undefined) || input.oldText === "") throw new RangeError("Draft body edits require one non-empty oldText and its newText replacement");
-    const bodyEdit: Record<string, Json> = input.oldText !== undefined && input.newText !== undefined ? { old_text: input.oldText, new_text: input.newText, format: "markdown", include_signature: false } : {};
+    const bodyEdit: Record<string, Json> = input.oldText !== undefined && input.newText !== undefined ? { old_text: input.oldText, new_text: input.newText, format: input.bodyFormat, include_signature: false } : {};
     return draftMutationResult(await this.transport.call("edit_draft", {
       account: text(input.account, "draft.account"), id: text(input.id, "draft.id"), ...(input.to ? { to: draftAddresses(input.to) ?? [] } : {}), ...(input.cc ? { cc: draftAddresses(input.cc) ?? [] } : {}), ...(input.bcc ? { bcc: draftAddresses(input.bcc) ?? [] } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}), ...bodyEdit,

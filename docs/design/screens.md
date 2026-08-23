@@ -41,7 +41,7 @@
 **Purpose:** compose or authenticate with low ceremony and stable layout.
 
 - Compose header has close/discard path, “New message,” and explicit Send approval.
-- Fields are labeled To, Subject, and message editor. Show only supported attachment or agent affordances.
+- Fields are labeled To, Subject, and message editor. The message editor provides font family and size, bold, italic, underline, strikethrough, lists, quotes, alignment, and undo/redo. Its toolbar scrolls within the editor on narrow screens instead of widening the document. Show only supported attachment or agent affordances.
 - Footer shows saved, pending, error, or conflict state clearly. Do not imply background/offline delivery; report online failure plainly.
 - Unsaved close asks for confirmation; saved drafts remain reachable from Drafts.
 - Authentication is compact and viewport-stable, with clear loading, error, and retry/next-step feedback.

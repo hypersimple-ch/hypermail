@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
 export type DraftActor = 'user' | 'agent';
+export type DraftBodyFormat = 'markdown' | 'html';
 export type DraftState = 'editing' | 'ready' | 'sending' | 'sent' | 'failed' | 'discarded';
 export type DraftScope = Readonly<{ subjectId: string; accountIds: readonly string[]; freshAuthAt?: string }>;
 export const recipientSchema = z.strictObject({ kind: z.enum(['to', 'cc', 'bcc']), address: z.email() });
-export const draftFieldsSchema = z.strictObject({ recipients: z.array(recipientSchema).max(100), subject: z.string().max(998), body: z.string().max(2_000_000) });
+export const draftFieldsSchema = z.strictObject({ recipients: z.array(recipientSchema).max(100), subject: z.string().max(998), body: z.string().max(2_000_000), bodyFormat: z.enum(['markdown', 'html']) });
 export const createDraftSchema = draftFieldsSchema.extend({ accountId: z.uuid() }).strict();
 export const replyDraftSchema = createDraftSchema.extend({ sourceMessageId: z.uuid() }).strict();
 export const editDraftSchema = draftFieldsSchema.extend({ expectedVersion: z.number().int().positive() }).strict();

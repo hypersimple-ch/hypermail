@@ -11,6 +11,7 @@ export type ApprovedSend = Readonly<{
   recipients: readonly Readonly<{ kind: 'to' | 'cc' | 'bcc'; address: string }>[];
   subject: string;
   body: string;
+  bodyFormat: 'markdown' | 'html';
 }>;
 
 /** A POST response is connector-reported only; it is never authoritative proof of delivery. */
@@ -39,7 +40,7 @@ type TrustedSendPayload = Readonly<{
   draftId: string;
   draftVersion: number;
   idempotencyKey: string;
-  message: Readonly<{ to: readonly string[]; cc: readonly string[]; bcc: readonly string[]; subject: string; body: string }>;
+  message: Readonly<{ to: readonly string[]; cc: readonly string[]; bcc: readonly string[]; subject: string; body: string; bodyFormat: 'markdown' | 'html' }>;
 }>;
 
 const mapPayload = (approved: ApprovedSend): TrustedSendPayload => ({
@@ -54,6 +55,7 @@ const mapPayload = (approved: ApprovedSend): TrustedSendPayload => ({
     bcc: approved.recipients.filter((recipient) => recipient.kind === 'bcc').map((recipient) => recipient.address),
     subject: approved.subject,
     body: approved.body,
+    bodyFormat: approved.bodyFormat,
   },
 });
 
@@ -84,7 +86,7 @@ export class PrivateApprovedSendHttpProvider implements MailSendProvider {
 
   async send(approved: ApprovedSend): Promise<ProviderSendResult> {
     const payload = mapPayload(approved);
-    if (!payload.approvalId || !payload.accountId || !payload.draftId || !payload.idempotencyKey || !Number.isSafeInteger(payload.draftVersion) || payload.draftVersion < 1 || payload.message.to.length === 0) throw new PrivateApprovedSendError('Malformed approved send payload.');
+    if (!payload.approvalId || !payload.accountId || !payload.draftId || !payload.idempotencyKey || !Number.isSafeInteger(payload.draftVersion) || payload.draftVersion < 1 || payload.message.to.length === 0 || !(['markdown', 'html'] as readonly unknown[]).includes(payload.message.bodyFormat)) throw new PrivateApprovedSendError('Malformed approved send payload.');
     let response: Response;
     try {
       response = await this.request(this.options.endpoint, { method: 'POST', headers: { authorization: this.options.authorization, 'content-type': 'application/json', accept: 'application/json', 'idempotency-key': payload.idempotencyKey }, body: JSON.stringify(payload) });

@@ -27,18 +27,16 @@ Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed B
 
 HeroUI-backed controls expose HeroUI `data-slot` markers. The Button and Badge adapters translate Hypermail variants to HeroUI variants; caller utilities are merged through `cn()` while preserving focus, disabled, invalid, and 44px target behavior. Outlined buttons, form fields, select triggers, and cards use the white surface token so they remain distinct from the light-gray page background.
 
-### Application patterns
+### Application components
 
-Located in `apps/web/src/components/app/patterns.tsx`:
+Located in `apps/web/src/components/app/`:
 
-- `NavigationItem`: desktop rail and mobile navigation state.
-- `FilterGroup`: accessible `aria-pressed` filter controls.
-- `PageHeader`: screen title, description, and supported actions.
-- `StatePanel`: loading, empty, and recoverable state presentation.
+- `patterns.tsx` provides `NavigationItem`, `FilterGroup`, `PageHeader`, and `StatePanel`.
+- `rich-text-editor.tsx` provides the lazily loaded `RichTextEditor` boundary. Its Tiptap engine supports font family/size, emphasis, lists, quotes, alignment, and history controls. The owned HeroUI toolbar keeps core emphasis actions initially visible and scrolls locally on narrow screens.
 
 The root-mounted HeroUI `ToastProvider` owns transient feedback. Use the repository `toast` helper for completed or failed user operations. Keep field validation, recoverable page-load errors, and persistent domain alerts inline. Toasts pause while hovered or focused, expose a 44px close control, and remove countdown motion under `prefers-reduced-motion: reduce`.
 
-Use a pattern when its semantic contract is repeated. Keep one-off mailbox row and domain content layouts in their owning feature component.
+Use a shared application component when its semantic contract is repeated. Keep one-off mailbox row and domain content layouts in their owning feature component.
 
 ## Adding or changing a component
 

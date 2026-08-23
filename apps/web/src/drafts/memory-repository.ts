@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await -- synchronous reference repository satisfies asynchronous port. */
 import type { ApprovalClaim, ApprovalMutation, ClaimMutation, DraftActor, DraftFields, DraftMutation, DraftRecord, DraftRepository, DraftRevision, DraftScope, SendApproval } from './contracts.js';
 
-const cloneFields = (draft: DraftFields): DraftFields => ({ recipients: draft.recipients.map((recipient) => ({ ...recipient })), subject: draft.subject, body: draft.body });
+const cloneFields = (draft: DraftFields): DraftFields => ({ recipients: draft.recipients.map((recipient) => ({ ...recipient })), subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat });
 const cloneDraft = (draft: DraftRecord): DraftRecord => ({ ...draft, ...cloneFields(draft) });
 const visible = (scope: DraftScope, draft: DraftRecord | undefined): draft is DraftRecord => Boolean(draft && scope.accountIds.includes(draft.accountId));
 

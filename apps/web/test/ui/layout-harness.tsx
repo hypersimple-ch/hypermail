@@ -39,6 +39,8 @@ setTimeout(() => {
   const filter = visible('[data-slot="filter-group"]');
   const navigation = visible('nav[aria-label="Mobile primary"]');
   const compose = visible('button[aria-label="Compose"]');
+  const formattingToolbar = visible('[aria-label="Message formatting"]');
+  const boldControl = formattingToolbar ? visible('button[aria-label="Bold"]', formattingToolbar) : undefined;
   const activityRows = Array.from(document.querySelectorAll<HTMLElement>('[aria-label="Activity"] [data-slot="card-content"]')).filter((row) => row.querySelector('[data-slot="chip"]') && row.querySelector('button'));
   const surfaceColor = (selector: string) => { const element = visible(selector); return element ? getComputedStyle(element).backgroundColor : null; };
   const result = {
@@ -51,6 +53,12 @@ setTimeout(() => {
       buttons: moreButtons.map((button) => { const value = button.getBoundingClientRect(); return { x: rounded(value.x), y: rounded(value.y), width: rounded(value.width) }; }),
     },
     inbox: { width: rounded(rect(desktopInbox)?.width), readerWidth: rounded(rect(desktopReader)?.width), mobileReaderWidth: rounded(rect(mobileReader)?.width) },
+    composeEditor: {
+      toolbarClientWidth: formattingToolbar?.clientWidth ?? null,
+      toolbarScrollWidth: formattingToolbar?.scrollWidth ?? null,
+      toolbar: { x: rounded(rect(formattingToolbar)?.x), right: rounded(rect(formattingToolbar)?.right) },
+      bold: { x: rounded(rect(boldControl)?.x), right: rounded(rect(boldControl)?.right) },
+    },
     activity: {
       filterClientWidth: filter?.clientWidth ?? null,
       filterScrollWidth: filter?.scrollWidth ?? null,
@@ -63,7 +71,7 @@ setTimeout(() => {
       page: getComputedStyle(document.body).backgroundColor,
       outlineButton: surfaceColor('[data-variant="outline"]'),
       input: surfaceColor('[data-slot="input"]'),
-      textarea: surfaceColor('[data-slot="textarea"]'),
+      richEditor: surfaceColor('[data-slot="rich-text-editor"]'),
       select: surfaceColor('[data-slot="select-trigger"]'),
     },
     mobile: { navTop: rounded(rect(navigation)?.top), composeBottom: rounded(rect(compose)?.bottom), navItems: navigation?.querySelectorAll('button').length ?? 0 },

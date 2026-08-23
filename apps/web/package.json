@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && tsc -b tsconfig.json --force && cp -R static/. dist/ && esbuild src/browser.tsx --bundle --format=esm --platform=browser --define:process.env.NODE_ENV='\"production\"' --minify --outfile=dist/app.js && esbuild src/pwa/service-worker.ts --bundle --format=esm --platform=browser --minify --outfile=dist/pwa/service-worker.js && tailwindcss -i src/styles/globals.css -o dist/app.css --minify && test -f dist/index.js && node -e \"import('./dist/index.js')\" && test -f dist/app.js && test -f dist/app.css",
+    "build": "rm -rf dist && tsc -b tsconfig.json --force && cp -R static/. dist/ && esbuild src/browser.tsx --bundle --format=esm --platform=browser --define:process.env.NODE_ENV='\"production\"' --minify --splitting --outdir=dist --entry-names=app --chunk-names=chunks/[name]-[hash] && esbuild src/pwa/service-worker.ts --bundle --format=esm --platform=browser --minify --outfile=dist/pwa/service-worker.js && tailwindcss -i src/styles/globals.css -o dist/app.css --minify && test -f dist/index.js && node -e \"import('./dist/index.js')\" && test -f dist/app.js && test -f dist/app.css",
     "test": "cd ../.. && vitest run"
   },
   "dependencies": {
@@ -19,11 +19,18 @@
     "@hypermail/observability": "workspace:*",
     "@hypermail/send": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@tiptap/extension-text-align": "3.30.2",
+    "@tiptap/extension-text-style": "3.30.2",
+    "@tiptap/pm": "3.30.2",
+    "@tiptap/react": "3.30.2",
+    "@tiptap/starter-kit": "3.30.2",
     "clsx": "2.1.1",
     "lucide-react": "0.468.0",
+    "marked": "18.0.7",
     "postgres": "3.4.9",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "sanitize-html": "2.17.7",
     "tailwind-merge": "3.5.0",
     "zod": "4.4.3"
   },
@@ -33,6 +40,7 @@
     "@testing-library/user-event": "14.6.1",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
+    "@types/sanitize-html": "2.16.1",
     "esbuild": "0.25.10",
     "jsdom": "26.1.0",
     "tailwindcss": "4.1.18"

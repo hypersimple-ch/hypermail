@@ -77,8 +77,8 @@ describe('worker policy boundary', () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = []; const retained: string[] = [];
     let providerDraftId: string | null = null;
     const db = database(async (sql, values) => {
-      if (sql.includes('from app.drafts')) return { rows: [{ email: 'account@example.test', providerDraftId, sourceProviderMessageId: 'source-provider', recipients: [{ kind: 'to', address: 'to@example.test' }], subject: 'Draft subject', body: 'Draft body', version: 2 }] };
-      if (sql.includes('app.draft_revisions')) return { rows: [{ body: 'Old body' }] };
+      if (sql.includes('from app.drafts')) return { rows: [{ email: 'account@example.test', providerDraftId, sourceProviderMessageId: 'source-provider', recipients: [{ kind: 'to', address: 'to@example.test' }], subject: 'Draft subject', body: '<p>Draft body</p>', bodyFormat: 'html', version: 2 }] };
+      if (sql.includes('app.draft_revisions')) return { rows: [{ body: 'Old body', bodyFormat: 'markdown' }] };
       if (sql.includes('update app.drafts')) { providerDraftId = String(values?.[0]); retained.push(providerDraftId); return { rows: [{ id: ids.folder }] }; }
       return { rows: [] };
     });
@@ -92,17 +92,30 @@ describe('worker policy boundary', () => {
     await expect(transport.draftCreate({ target: { accountId: ids.account, draftId: ids.folder }, idempotencyKey: 'x'.repeat(16) })).resolves.toMatchObject({ providerDraftId: 'provider-draft-1' });
     await expect(transport.draftEdit({ target: { accountId: ids.account, draftId: ids.folder }, idempotencyKey: 'y'.repeat(16) })).resolves.toMatchObject({ providerDraftId: 'provider-draft-2' });
     expect(retained).toEqual(['provider-draft-1', 'provider-draft-2']);
-    expect(calls[0]).toMatchObject({ name: 'draft_email', args: { account: 'account@example.test', inReplyTo: 'source-provider' } });
-    expect(calls.at(-1)).toMatchObject({ name: 'edit_draft', args: { id: 'provider-draft-1', old_text: '<p>Old body</p>', new_text: 'Draft body' } });
+    expect(calls[0]).toMatchObject({ name: 'draft_email', args: { account: 'account@example.test', inReplyTo: 'source-provider', format: 'html' } });
+    expect(calls.at(-1)).toMatchObject({ name: 'edit_draft', args: { id: 'provider-draft-1', old_text: '<p>Old body</p>', new_text: '<p>Draft body</p>', format: 'html' } });
     await expect(transport.read({ accountId: ids.account, draftId: ids.folder })).resolves.toEqual({ draftId: ids.folder });
   });
 
+
+  it('compares prior HTML revisions unchanged during exact edit verification', async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const db = database(async sql => {
+      if (sql.includes('from app.drafts')) return { rows: [{ email: 'account@example.test', providerDraftId: 'provider-draft', sourceProviderMessageId: null, recipients: [{ kind: 'to', address: 'to@example.test' }], subject: 'Draft subject', body: '<p>New rich body</p>', bodyFormat: 'html', version: 2 }] };
+      if (sql.includes('app.draft_revisions')) return { rows: [{ body: '<p>Old rich body</p>', bodyFormat: 'html' }] };
+      if (sql.includes('update app.drafts')) return { rows: [{ id: ids.folder }] };
+      return { rows: [] };
+    });
+    const transport = new HypermailPrivateMutationTransport(db, { call: async (name, args) => { calls.push({ name, args }); return name === 'read_email' ? { id: 'provider-draft', body: '<p>Old rich body</p><blockquote>Quote</blockquote>', bodyFormat: 'html' } : { edited: true, id: 'provider-draft' }; } }, () => Promise.resolve());
+    await transport.draftEdit({ target: { accountId: ids.account, draftId: ids.folder }, idempotencyKey: 'html'.repeat(4) });
+    expect(calls.at(-1)).toMatchObject({ name: 'edit_draft', args: { old_text: '<p>Old rich body</p>', new_text: '<p>New rich body</p>', format: 'html' } });
+  });
 
   it('fails closed after a draft may have been created but its provider ID was not retained', async () => {
     let priorAttempt = false; let providerCalls = 0;
     const db = database(async sql => {
       if (sql.includes('from app.actions')) return { rows: priorAttempt ? [{ id: ids.activity }] : [] };
-      if (sql.includes('from app.drafts')) return { rows: [{ email: 'account@example.test', providerDraftId: null, sourceProviderMessageId: null, recipients: [{ kind: 'to', address: 'to@example.test' }], subject: 'Draft subject', body: 'Draft body', version: 2 }] };
+      if (sql.includes('from app.drafts')) return { rows: [{ email: 'account@example.test', providerDraftId: null, sourceProviderMessageId: null, recipients: [{ kind: 'to', address: 'to@example.test' }], subject: 'Draft subject', body: 'Draft body', bodyFormat: 'markdown', version: 2 }] };
       if (sql.includes('update app.drafts')) { priorAttempt = true; throw new Error('database unavailable after provider mutation'); }
       return { rows: [] };
     });

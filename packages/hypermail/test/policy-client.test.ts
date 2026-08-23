@@ -12,12 +12,12 @@ describe("Hypermail restricted policy contract", () => {
       return { edited: true, id: "provider-draft-2", draftHtml: "<p>new</p>" };
     } };
     const client = new HypermailPolicyClient(transport);
-    await expect(client.createDraft({ account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "Subject", body: "body" })).resolves.toEqual({ id: "provider-draft-1", draftHtml: "<p>body</p>" });
+    await expect(client.createDraft({ account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "Subject", body: "body", bodyFormat: "html" })).resolves.toEqual({ id: "provider-draft-1", draftHtml: "<p>body</p>" });
     const current = await client.readDraft("owner@example.test", "provider-draft-1");
-    await expect(client.editDraft({ account: "owner@example.test", id: current.id, to: [{ address: "to@example.test" }], subject: "Subject", oldText: current.body ?? "", newText: "new" })).resolves.toEqual({ id: "provider-draft-2", draftHtml: "<p>new</p>" });
-    expect(calls[0]).toEqual({ name: "draft_email", args: { account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "Subject", body: "body", format: "markdown", include_signature: false, inReplyTo: false } });
-    expect(calls[2]).toMatchObject({ name: "edit_draft", args: { id: "provider-draft-1", old_text: "<p>old</p>", new_text: "new", format: "markdown", include_signature: false } });
-    await expect(new HypermailPolicyClient({ call: async () => ({ id: "missing-flag" }) }).createDraft({ account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "s", body: "b" })).rejects.toBeInstanceOf(McpTransportError);
+    await expect(client.editDraft({ account: "owner@example.test", id: current.id, to: [{ address: "to@example.test" }], subject: "Subject", oldText: current.body ?? "", newText: "new", bodyFormat: "html" })).resolves.toEqual({ id: "provider-draft-2", draftHtml: "<p>new</p>" });
+    expect(calls[0]).toEqual({ name: "draft_email", args: { account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "Subject", body: "body", format: "html", include_signature: false, inReplyTo: false } });
+    expect(calls[2]).toMatchObject({ name: "edit_draft", args: { id: "provider-draft-1", old_text: "<p>old</p>", new_text: "new", format: "html", include_signature: false } });
+    await expect(new HypermailPolicyClient({ call: async () => ({ id: "missing-flag" }) }).createDraft({ account: "owner@example.test", to: [{ address: "to@example.test" }], subject: "s", body: "b", bodyFormat: "markdown" })).rejects.toBeInstanceOf(McpTransportError);
   });
 
   it("validates mutation receipts and verifies a returned post-move ID by destination listing", async () => {

@@ -58,13 +58,14 @@ describe('responsive shell rendering contracts', () => {
     const markup = render(React.createElement(Compose, { accounts: mockShellData.accounts }));
     expect(markup).toContain('data-slot="select-trigger"');
     expect(markup).toContain('data-slot="input"');
-    expect(markup).toContain('data-slot="textarea"');
+    expect(markup).toContain('data-slot="rich-text-editor"');
+    expect(markup).toContain('aria-label="Message formatting"');
     expect(markup).toContain('data-variant="default"');
     expect(markup).toContain('Save draft');
   });
 
   it('keeps editable drafts distinct from read-only sent records', () => {
-    const drafts = [{ id: 'd1', accountId: 'a1', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '', version: 4 }, { id: 's1', accountId: 'a1', recipients: [{ kind: 'to', address: 'sent@example.test' }], subject: 'Delivered', body: '', state: 'sent', updatedAt: '' }];
+    const drafts = [{ id: 'd1', accountId: 'a1', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', bodyFormat: 'markdown' as const, state: 'editing', updatedAt: '', version: 4 }, { id: 's1', accountId: 'a1', recipients: [{ kind: 'to', address: 'sent@example.test' }], subject: 'Delivered', body: '', bodyFormat: 'markdown' as const, state: 'sent', updatedAt: '' }];
     expect(render(React.createElement(Drafts, { drafts }))).toContain('Follow up');
     expect(render(React.createElement(Drafts, { drafts }))).not.toContain('Delivered');
     const sent = render(React.createElement(Sent, { drafts }));
