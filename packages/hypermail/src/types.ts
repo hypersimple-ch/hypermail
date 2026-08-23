@@ -10,13 +10,14 @@ export interface Message {
   id: string; account: string; subject?: string; from?: EmailAddress; to?: EmailAddress[]; cc?: EmailAddress[];
   receivedAt?: string; isRead?: boolean; folder?: string; body?: string; bodyFormat?: "markdown" | "html" | "text"; attachments?: AttachmentMetadata[];
 }
+export type DraftBodyFormat = "markdown" | "html";
 export interface DraftMutationResult { id: string; draftHtml?: string }
 export interface PolicyMutationResult { id: string }
 export interface DraftCreateInput {
-  account: string; to: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject: string; body: string; inReplyTo?: string;
+  account: string; to: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject: string; body: string; bodyFormat: DraftBodyFormat; inReplyTo?: string;
 }
 export interface DraftEditInput {
-  account: string; id: string; to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject?: string; oldText?: string; newText?: string;
+  account: string; id: string; to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[]; subject?: string; oldText?: string; newText?: string; bodyFormat: DraftBodyFormat;
 }
 export interface MessagePage { messages: Message[]; cursor?: string; hasMore: boolean }
 export interface InboxPage extends MessagePage { account?: string }

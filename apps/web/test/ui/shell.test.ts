@@ -65,7 +65,7 @@ describe('responsive shell rendering contracts', () => {
   });
 
   it('keeps editable drafts distinct from read-only sent records', () => {
-    const drafts = [{ id: 'd1', accountId: 'a1', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '', version: 4 }, { id: 's1', accountId: 'a1', recipients: [{ kind: 'to', address: 'sent@example.test' }], subject: 'Delivered', body: '', state: 'sent', updatedAt: '' }];
+    const drafts = [{ id: 'd1', accountId: 'a1', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', bodyFormat: 'markdown' as const, state: 'editing', updatedAt: '', version: 4 }, { id: 's1', accountId: 'a1', recipients: [{ kind: 'to', address: 'sent@example.test' }], subject: 'Delivered', body: '', bodyFormat: 'markdown' as const, state: 'sent', updatedAt: '' }];
     expect(render(React.createElement(Drafts, { drafts }))).toContain('Follow up');
     expect(render(React.createElement(Drafts, { drafts }))).not.toContain('Delivered');
     const sent = render(React.createElement(Sent, { drafts }));

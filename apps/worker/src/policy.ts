@@ -9,7 +9,8 @@ import type { PgBossLike } from './pg-boss-queue.js';
 type JsonObject = Readonly<Record<string, unknown>>;
 type CanonicalRunRow = Record<string, unknown> & { grant_capabilities: unknown; safety_capabilities: unknown };
 type ActionRow = { actionId: string; runId: string; userId: string; accountId: string; activityId: string; decisionId: string; idempotencyKey: string; kind: string; target: unknown; precondition: unknown };
-type DraftRow = { email: string; providerDraftId: string | null; sourceProviderMessageId: string | null; recipients: unknown; subject: string; body: string; version: number };
+type DraftBodyFormat = 'markdown' | 'html';
+type DraftRow = { email: string; providerDraftId: string | null; sourceProviderMessageId: string | null; recipients: unknown; subject: string; body: string; bodyFormat: DraftBodyFormat; version: number };
 const object = (value: unknown): JsonObject | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : null;
 const json = (value: unknown): JsonObject => {
   if (typeof value === 'string') {
@@ -117,7 +118,7 @@ export class HypermailPrivateMutationTransport implements PrivateMutationTranspo
   private readonly policyClient: HypermailPolicyClient | undefined;
   constructor(private readonly database: ManagedSqlClient, private readonly client: Pick<HypermailMcpHttpClient, 'call'> | undefined, private readonly initialize: () => Promise<unknown>) { this.policyClient = client ? new HypermailPolicyClient(client) : undefined; }
   private async draft(target: { accountId: string; draftId: string }): Promise<DraftRow> {
-    const result = await this.database.query<DraftRow>(`select a.email, d.provider_draft_id as "providerDraftId", m.provider_message_id as "sourceProviderMessageId", d.recipients, d.subject, d.body, d.version
+    const result = await this.database.query<DraftRow>(`select a.email, d.provider_draft_id as "providerDraftId", m.provider_message_id as "sourceProviderMessageId", d.recipients, d.subject, d.body, d.body_format as "bodyFormat", d.version
       from app.drafts d join app.accounts a on a.id = d.account_id left join app.messages m on m.id = d.source_message_id
       where d.id = $1::uuid and d.account_id = $2::uuid`, [target.draftId, target.accountId]);
     const row = result.rows[0]; if (!row) throw new Error('POLICY_DRAFT_NOT_FOUND'); return row;
@@ -127,8 +128,8 @@ export class HypermailPrivateMutationTransport implements PrivateMutationTranspo
     if (!result.rows[0]) throw new Error('POLICY_DRAFT_PROVIDER_ID_NOT_RETAINED');
   }
   private async previousDraftBodies(draftId: string, beforeVersion: number): Promise<string[]> {
-    const result = await this.database.query<{ body: string }>(`select snapshot->>'body' as body from app.draft_revisions where draft_id = $1::uuid and version < $2 and snapshot ? 'body' order by version desc limit 20`, [draftId, beforeVersion]);
-    return result.rows.map((row) => renderDraftMarkdown(row.body).trim()).filter((body) => body.length > 0);
+    const result = await this.database.query<{ body: string; bodyFormat: string | null }>(`select snapshot->>'body' as body, snapshot->>'bodyFormat' as "bodyFormat" from app.draft_revisions where draft_id = $1::uuid and version < $2 and snapshot ? 'body' order by version desc limit 20`, [draftId, beforeVersion]);
+    return result.rows.map((row) => (row.bodyFormat === 'html' ? row.body : renderDraftMarkdown(row.body)).trim()).filter((body) => body.length > 0);
   }
   private policy(): HypermailPolicyClient { if (!this.policyClient) throw new Error('POLICY_TRANSPORT_UNAVAILABLE'); return this.policyClient; }
   private async retainProviderMessageId(target: { accountId: string; messageId: string }, providerMessageId: string): Promise<void> {
@@ -158,7 +159,7 @@ export class HypermailPrivateMutationTransport implements PrivateMutationTranspo
     const prior = await this.database.query<{ id: string }>(`select id from app.actions where kind = 'draft_create' and target->>'accountId' = $1 and target->>'draftId' = $2 and idempotency_key <> $3 and state in ('executing', 'succeeded', 'unverifiable') limit 1`, [target.accountId, target.draftId, idempotencyKey]);
     if (prior.rows[0]) throw new Error('POLICY_DRAFT_CREATE_ALREADY_ATTEMPTED');
     const draft = await this.draft(target); const addresses = recipients(draft.recipients);
-    const result = await this.policyClient.createDraft({ account: draft.email, ...addresses, subject: draft.subject, body: draft.body, ...(draft.sourceProviderMessageId ? { inReplyTo: draft.sourceProviderMessageId } : {}) });
+    const result = await this.policyClient.createDraft({ account: draft.email, ...addresses, subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat, ...(draft.sourceProviderMessageId ? { inReplyTo: draft.sourceProviderMessageId } : {}) });
     await this.retainProviderDraftId(target, result.id); return { providerDraftId: result.id, ...(result.draftHtml !== undefined ? { draftHtml: result.draftHtml } : {}) };
   }
   async draftEdit({ target }: Parameters<PrivateMutationTransport['draftEdit']>[0]): Promise<JsonObject> {
@@ -168,8 +169,9 @@ export class HypermailPrivateMutationTransport implements PrivateMutationTranspo
     const candidates = await this.previousDraftBodies(target.draftId, draft.version); const providerBody = current.body.trimStart();
     const exact = candidates.find((body) => providerBody.startsWith(body) && providerBody.indexOf(body) === providerBody.lastIndexOf(body));
     if (!exact) throw new Error('POLICY_DRAFT_BODY_SELECTION_UNVERIFIED');
-    const bodyEdit = exact === draft.body ? {} : { oldText: exact, newText: draft.body };
-    const result = await this.policyClient.editDraft({ account: draft.email, id: draft.providerDraftId, ...addresses, subject: draft.subject, ...bodyEdit });
+    const renderedBody = (draft.bodyFormat === 'html' ? draft.body : renderDraftMarkdown(draft.body)).trim();
+    const bodyEdit = exact === renderedBody ? {} : { oldText: exact, newText: draft.body };
+    const result = await this.policyClient.editDraft({ account: draft.email, id: draft.providerDraftId, ...addresses, subject: draft.subject, bodyFormat: draft.bodyFormat, ...bodyEdit });
     await this.retainProviderDraftId(target, result.id); return { providerDraftId: result.id, ...(result.draftHtml !== undefined ? { draftHtml: result.draftHtml } : {}) };
   }
   async read(target: PolicyActionInput['target'], kind?: PolicyActionInput['kind']): Promise<JsonObject | null> {

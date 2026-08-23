@@ -18,7 +18,7 @@ const recipients = (value: unknown): DraftRecord['recipients'] => {
 export class PostgresDraftList {
   constructor(private readonly sql: SqlClient) {}
   async list(scope: DraftScope): Promise<readonly DraftRecord[]> {
-    const result = await this.sql.query(`SELECT id, account_id, source_message_id, created_by, state, recipients, subject, body, version, created_at, updated_at FROM app.drafts WHERE account_id = ANY($1::uuid[]) ORDER BY updated_at DESC, id DESC`, [scope.accountIds]);
-    return result.rows.map((row) => ({ id: text(row['id']), accountId: text(row['account_id']), sourceMessageId: row['source_message_id'] == null ? null : text(row['source_message_id']), createdBy: text(row['created_by']) as DraftRecord['createdBy'], state: text(row['state']) as DraftRecord['state'], recipients: recipients(row['recipients']), subject: text(row['subject']), body: text(row['body']), version: Number(row['version']), createdAt: stamp(row['created_at']), updatedAt: stamp(row['updated_at']) }));
+    const result = await this.sql.query(`SELECT id, account_id, source_message_id, created_by, state, recipients, subject, body, body_format, version, created_at, updated_at FROM app.drafts WHERE account_id = ANY($1::uuid[]) ORDER BY updated_at DESC, id DESC`, [scope.accountIds]);
+    return result.rows.map((row) => ({ id: text(row['id']), accountId: text(row['account_id']), sourceMessageId: row['source_message_id'] == null ? null : text(row['source_message_id']), createdBy: text(row['created_by']) as DraftRecord['createdBy'], state: text(row['state']) as DraftRecord['state'], recipients: recipients(row['recipients']), subject: text(row['subject']), body: text(row['body']), bodyFormat: row['body_format'] === 'html' ? 'html' : 'markdown', version: Number(row['version']), createdAt: stamp(row['created_at']), updatedAt: stamp(row['updated_at']) }));
   }
 }

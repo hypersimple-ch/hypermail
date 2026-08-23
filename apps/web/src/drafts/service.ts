@@ -2,10 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PrivateApprovedSendError, type MailSendProvider } from '@hypermail/send';
 export interface TenantMailSendProvider { providerForUser(userId: string): MailSendProvider; }
 import {
-  type AgentDraftWriter, type ApprovalClaim, type DraftFields, type DraftRecord, type DraftRepository, type DraftScope, type DraftSourceReader,
+  type AgentDraftWriter, type ApprovalClaim, type DraftFields, type DraftRecord, type DraftRepository, type DraftScope, type DraftSource, type DraftSourceReader,
   DraftBlockedError, DraftConflictError, DraftInputError, DraftNotFoundError, FreshAuthRequiredError, SendRejectedError,
   recipientProblem,
 } from './contracts.js';
+import { sanitizeDraftHtml } from './html.js';
 
 const FRESH_AUTH_MS = 5 * 60_000;
 const APPROVAL_MS = 10 * 60_000;
@@ -21,24 +22,25 @@ export class DraftService {
   readonly agentDraftWriter: AgentDraftWriter = { createAgent: (scope, input) => this.createAgent(scope, input), editAgent: (scope, draftId, expectedVersion, fields) => this.editAgent(scope, draftId, expectedVersion, fields) };
   private async createAgent(scope: DraftScope, input: { accountId: string } & DraftFields): Promise<DraftRecord> { return this.create(scope, input, 'agent'); }
   private async create(scope: DraftScope, input: { accountId: string } & DraftFields, createdBy: 'user' | 'agent'): Promise<DraftRecord> {
-    this.scope(scope); this.fields(input);
+    this.scope(scope); const fields = this.fields(input);
     if (!scope.accountIds.includes(input.accountId)) throw new DraftNotFoundError();
-    return this.repository.create(scope, { accountId: input.accountId, sourceMessageId: null, createdBy, state: 'editing', recipients: input.recipients, subject: input.subject, body: input.body });
+    return this.repository.create(scope, { accountId: input.accountId, sourceMessageId: null, createdBy, state: 'editing', ...fields });
   }
   async replyUser(scope: DraftScope, input: { accountId: string; sourceMessageId: string } & DraftFields): Promise<DraftRecord> {
-    this.scope(scope); this.fields(input);
+    this.scope(scope); const fields = this.fields(input);
     if (!scope.accountIds.includes(input.accountId)) throw new DraftNotFoundError();
     const source = await this.sourceReader.read(scope, input.accountId, input.sourceMessageId);
     if (!source || source.accountId !== input.accountId) throw new DraftNotFoundError();
     const subject = source.subject.toLowerCase().startsWith('re:') ? source.subject : `Re: ${source.subject}`;
     const quote = `On ${source.sentAt}, ${source.from} wrote:\n${source.body.split('\n').map((line) => `> ${line}`).join('\n')}`;
-    return this.repository.create(scope, { accountId: input.accountId, sourceMessageId: source.id, createdBy: 'user', state: 'editing', recipients: input.recipients, subject, body: input.body ? `${input.body}\n\n${quote}` : quote });
+    const body = fields.bodyFormat === 'html' ? this.htmlReply(fields.body, source) : fields.body ? `${fields.body}\n\n${quote}` : quote;
+    return this.repository.create(scope, { accountId: input.accountId, sourceMessageId: source.id, createdBy: 'user', state: 'editing', ...fields, subject, body });
   }
   async editUser(scope: DraftScope, draftId: string, expectedVersion: number, fields: DraftFields): Promise<DraftRecord> { return this.edit(scope, draftId, expectedVersion, fields, 'user'); }
   private async editAgent(scope: DraftScope, draftId: string, expectedVersion: number, fields: DraftFields): Promise<DraftRecord> { return this.edit(scope, draftId, expectedVersion, fields, 'agent'); }
   private async edit(scope: DraftScope, draftId: string, expectedVersion: number, fields: DraftFields, editor: 'user' | 'agent'): Promise<DraftRecord> {
-    this.scope(scope); this.version(expectedVersion); this.fields(fields);
-    return this.unwrap(await this.repository.edit(scope, draftId, expectedVersion, fields, editor));
+    this.scope(scope); this.version(expectedVersion); const normalized = this.fields(fields);
+    return this.unwrap(await this.repository.edit(scope, draftId, expectedVersion, normalized, editor));
   }
   async detail(scope: DraftScope, draftId: string): Promise<DraftRecord> { this.scope(scope); const draft = await this.repository.get(scope, draftId); if (!draft) throw new DraftNotFoundError(); return draft; }
   async history(scope: DraftScope, draftId: string) { this.scope(scope); const history = await this.repository.history(scope, draftId); if (!history) throw new DraftNotFoundError(); return history; }
@@ -61,7 +63,7 @@ export class DraftService {
   private async deliver(scope: DraftScope, claim: ApprovalClaim): Promise<DraftRecord> {
     const provider = 'providerForUser' in this.provider ? this.provider.providerForUser(scope.subjectId) : this.provider;
     let report: Awaited<ReturnType<MailSendProvider['send']>>;
-    try { report = await provider.send({ approvalId: claim.approval.id, accountId: claim.draft.accountId, draftId: claim.draft.id, draftVersion: claim.draft.version, idempotencyKey: claim.approval.idempotencyKey, recipients: claim.draft.recipients, subject: claim.draft.subject, body: claim.draft.body }); }
+    try { report = await provider.send({ approvalId: claim.approval.id, accountId: claim.draft.accountId, draftId: claim.draft.id, draftVersion: claim.draft.version, idempotencyKey: claim.approval.idempotencyKey, recipients: claim.draft.recipients, subject: claim.draft.subject, body: claim.draft.body, bodyFormat: claim.draft.bodyFormat }); }
     catch (error) { if (error instanceof PrivateApprovedSendError && error.definiteRejection) return this.repository.completeSend(scope, claim, 'failed'); return this.detail(scope, claim.draft.id); }
     if (!provider.status) return this.detail(scope, claim.draft.id);
     let status: Awaited<ReturnType<NonNullable<MailSendProvider['status']>>>; try { status = await provider.status(claim.approval.idempotencyKey); } catch { return this.detail(scope, claim.draft.id); }
@@ -70,7 +72,12 @@ export class DraftService {
     if (status.state === 'rejected') return this.repository.completeSend(scope, claim, 'failed');
     return this.detail(scope, claim.draft.id);
   }
-  private fields(fields: DraftFields): void { const problem = recipientProblem(fields.recipients); if (problem) throw new DraftInputError(problem); }
+  private htmlReply(body: string, source: Pick<DraftSource, 'sentAt' | 'from' | 'body'>): string {
+    const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    const quote = `<blockquote><p>On ${escape(source.sentAt)}, ${escape(source.from)} wrote:</p><p>${escape(source.body).replaceAll('\n', '<br>')}</p></blockquote>`;
+    return body ? `${body}${quote}` : quote;
+  }
+  private fields(fields: DraftFields): DraftFields { const problem = recipientProblem(fields.recipients); if (problem) throw new DraftInputError(problem); return fields.bodyFormat === 'html' ? { ...fields, body: sanitizeDraftHtml(fields.body) } : fields; }
   private scope(scope: DraftScope): void { if (!scope.subjectId || scope.accountIds.length === 0) throw new DraftInputError('An authenticated account scope is required.'); }
   private version(version: number): void { if (!Number.isInteger(version) || version < 1) throw new DraftInputError('A positive expected version is required.'); }
   private fresh(scope: DraftScope): void { const at = scope.freshAuthAt ? Date.parse(scope.freshAuthAt) : Number.NaN; if (!Number.isFinite(at) || this.now().getTime() - at > FRESH_AUTH_MS || at > this.now().getTime() + 60_000) throw new FreshAuthRequiredError(); }

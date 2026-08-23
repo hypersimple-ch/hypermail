@@ -7,4 +7,4 @@ export type OwnerSendScope = DraftScope;
 export class SendRequestNotFoundError extends Error { constructor(){super('Send request not found.');this.name='SendRequestNotFoundError';} }
 export class SendRequestConflictError extends Error { constructor(message='Send request is no longer actionable.'){super(message);this.name='SendRequestConflictError';} }
 export class SendRequestFreshAuthError extends Error { constructor(){super('Recent authentication is required.');this.name='SendRequestFreshAuthError';} }
-export type SendClaim = Readonly<{ request:OwnerSendRequest; approvalId:string; idempotencyKey:string; message:{accountId:string;draftId:string;draftVersion:number;recipients:readonly {kind:'to'|'cc'|'bcc';address:string}[];subject:string;body:string} }>;
+export type SendClaim = Readonly<{ request:OwnerSendRequest; approvalId:string; idempotencyKey:string; message:{accountId:string;draftId:string;draftVersion:number;recipients:readonly {kind:'to'|'cc'|'bcc';address:string}[];subject:string;body:string;bodyFormat:'markdown'|'html'} }>;

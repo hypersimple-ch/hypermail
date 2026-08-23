@@ -637,6 +637,7 @@ export const drafts = app.table('drafts', {
   recipients: jsonb('recipients').$type<Array<{ kind: 'to' | 'cc' | 'bcc'; address: string }>>().notNull(),
   subject: text('subject').notNull().default(''),
   body: text('body').notNull().default(''),
+  bodyFormat: text('body_format').notNull().default('markdown'),
   version: integer('version').notNull().default(1),
   createdAt,
   updatedAt,
@@ -644,6 +645,7 @@ export const drafts = app.table('drafts', {
   uniqueIndex('drafts_provider_identity_unique').on(table.accountId, table.providerDraftId).where(sql`${table.providerDraftId} is not null`),
   check('drafts_version_positive', sql`${table.version} > 0`),
   check('drafts_creator_allowed', sql`${table.createdBy} in ('user', 'agent')`),
+  check('drafts_body_format_allowed', sql`${table.bodyFormat} in ('markdown', 'html')`),
 ]);
 
 export const draftRevisions = app.table('draft_revisions', {

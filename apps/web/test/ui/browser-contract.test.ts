@@ -90,9 +90,10 @@ describe('browser runtime contracts', () => {
     expect(browser).toContain('activities?filter=${encodeURIComponent(activityFilter)}');
     expect(browser).toContain("method: 'POST'");
     expect(browser).toContain('expectedVersion: draft.expectedVersion');
+    expect(browser).toContain('bodyFormat: draft.bodyFormat');
     expect(browser).not.toContain("method: draft.id ? 'PUT'");
     expect(browser).not.toContain('safe: true');
-    const records = [{ id: 'd1', accountId: 'personal', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', state: 'editing', updatedAt: '' }, { id: 's1', accountId: 'personal', recipients: [], subject: 'Sent only', body: '', state: 'sent', updatedAt: '' }];
+    const records = [{ id: 'd1', accountId: 'personal', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', bodyFormat: 'markdown' as const, state: 'editing', updatedAt: '' }, { id: 's1', accountId: 'personal', recipients: [], subject: 'Sent only', body: '', bodyFormat: 'markdown' as const, state: 'sent', updatedAt: '' }];
     expect(render(React.createElement(Drafts, { drafts: records }))).toContain('aria-label="Edit draft Follow up"');
     expect(render(React.createElement(Sent, { drafts: records }))).toContain('Sent only');
   });

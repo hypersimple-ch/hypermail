@@ -125,6 +125,8 @@ const noOverflow = (result, label) => { if (result.document.scrollWidth !== resu
 
   for (const mobileScreen of ['inbox', 'compose', 'drafts', 'sent', 'pending-sends', 'settings', 'account']) noOverflow(await run(mobileScreen, 360), `${mobileScreen}360`);
   const compose360 = await run('compose', 360);
+  if (!(compose360.composeEditor.toolbarScrollWidth > compose360.composeEditor.toolbarClientWidth)) fail('Compose formatting toolbar must scroll locally at 360px');
+  if (compose360.composeEditor.bold.x < compose360.composeEditor.toolbar.x - 1 || compose360.composeEditor.bold.right > compose360.composeEditor.toolbar.right + 1) fail('Core Compose formatting controls must be initially visible at 360px');
   for (const [name, color] of Object.entries({ input: compose360.surfaces.input, richEditor: compose360.surfaces.richEditor, select: compose360.surfaces.select })) if (!color || color === compose360.surfaces.page) fail(`Compose ${name} must use a contrasting surface background`);
 
   const settings1440 = await run('settings', 1440); const account1440 = await run('account', 1440);

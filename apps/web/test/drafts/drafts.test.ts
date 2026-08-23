@@ -11,7 +11,7 @@ const account = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
 const sourceId = '00000000-0000-4000-8000-000000000020';
 const scope = { subjectId: '00000000-0000-4000-8000-000000000010', accountIds: [account], freshAuthAt: '2025-01-01T00:00:00.000Z' } as const;
-const fields = { recipients: [{ kind: 'to' as const, address: 'person@example.com' }], subject: 'Hello', body: 'Body' };
+const fields = { recipients: [{ kind: 'to' as const, address: 'person@example.com' }], subject: 'Hello', body: 'Body', bodyFormat: 'markdown' as const };
 const clock = () => new Date('2025-01-01T00:01:00.000Z');
 const source: DraftSource = { id: sourceId, accountId: account, from: 'sender@example.com', sentAt: '2024-12-31T00:00:00.000Z', subject: 'Question', body: 'Original\ntext' };
 class SourceReader implements DraftSourceReader {
@@ -33,6 +33,18 @@ class CompletionFailingRepository extends InMemoryDraftRepository {
 }
 
 describe('draft composition and isolated send boundary', () => {
+  it('requires an explicit browser body format and preserves HTML through revision and send', async () => {
+    const provider = new Provider(); const draftService = service(provider);
+    const routes = createDraftRoutes(draftService, { expectedOrigin: 'https://mail.example.test' });
+    const omitted = await routes.create({ method: 'POST', auth: scope, origin: 'https://mail.example.test', body: { recipients: fields.recipients, subject: fields.subject, body: fields.body, accountId: account } });
+    expect(omitted.status).toBe(400);
+    const draft = await draftService.createUser(scope, { ...fields, accountId: account, body: '<p>Rich body</p>', bodyFormat: 'html' });
+    expect(draft.bodyFormat).toBe('html');
+    expect((await draftService.history(scope, draft.id))[0]?.snapshot.bodyFormat).toBe('html');
+    const approval = await draftService.beginApproval(scope, draft.id, 1, 'h'.repeat(16));
+    await draftService.confirmSend(scope, approval.approvalId, 'h'.repeat(16));
+    expect(provider.calls[0]).toMatchObject({ body: '<p>Rich body</p>', bodyFormat: 'html' });
+  });
   it('uses authoritative, account-scoped context for user replies and exposes agent edits only through its internal port', async () => {
     const draftService = service();
     const draft = await draftService.replyUser(scope, { ...fields, accountId: account, sourceMessageId: sourceId });
@@ -48,6 +60,16 @@ describe('draft composition and isolated send boundary', () => {
     await expect(draftService.createUser(scope, { ...fields, recipients: [{ kind: 'cc', address: 'person@example.com' }], accountId: account })).rejects.toBeInstanceOf(DraftInputError);
     await expect(draftService.createUser(scope, { ...fields, accountId: other })).rejects.toThrow('not found');
   });
+  it('sanitizes rich HTML before durable persistence and provider approval', async () => {
+    const draftService = service();
+    const body = '<p onclick="steal()"><span style="font-size: 18px; color: red; background-image: url(javascript:bad)">Safe</span><script>bad()</script><a href="javascript:bad">link</a></p>';
+    const draft = await draftService.createUser(scope, { ...fields, accountId: account, body, bodyFormat: 'html' });
+    expect(draft.body).toContain('font-size:18px');
+    expect(draft.body).toContain('Safe');
+    expect(draft.body).toContain('link');
+    for (const unsafe of ['onclick', '<script', 'bad()', '<a', 'javascript:', 'color:', 'background-image']) expect(draft.body).not.toContain(unsafe);
+  });
+
   it('forces browser attribution to user and rejects forged actor fields', async () => {
     const routes = createDraftRoutes(service(), { expectedOrigin: 'https://mail.example.test' });
     const body = { ...fields, accountId: account };
@@ -122,19 +144,18 @@ describe('draft composition and isolated send boundary', () => {
   });
 
   it('renders draft controls with versioned review semantics and preserves callbacks', () => {
-    const draft: DraftRecord = { id: 'draft-1', accountId: account, sourceMessageId: null, createdBy: 'agent', state: 'editing', recipients: fields.recipients, subject: fields.subject, body: fields.body, version: 3, createdAt: '2025-01-01T00:00:00.000Z', updatedAt: '2025-01-01T00:00:00.000Z' };
+    const draft: DraftRecord = { id: 'draft-1', accountId: account, sourceMessageId: null, createdBy: 'agent', state: 'editing', recipients: fields.recipients, subject: fields.subject, body: fields.body, bodyFormat: fields.bodyFormat, version: 3, createdAt: '2025-01-01T00:00:00.000Z', updatedAt: '2025-01-01T00:00:00.000Z' };
     const autosave = vi.fn(); const requestSend = vi.fn();
     const view = render(React.createElement(DraftCompose, { draft, revisions: [], onAutosave: autosave, onRequestSend: requestSend }));
 
     expect(screen.getByLabelText('To').getAttribute('data-slot')).toBe('input');
-    expect(screen.getByLabelText('Message').getAttribute('role')).toBe('textbox');
-    expect(screen.getByLabelText('Message').closest('[data-slot="rich-text-editor"]')).toBeTruthy();
+    expect(screen.getByLabelText('Message').getAttribute('data-slot')).toBe('textarea');
     expect(screen.getByRole('status').textContent).toContain('Version 3 · Agent-created draft');
     expect(screen.getByText('editing').getAttribute('data-slot')).toBe('chip');
     expect(screen.getByText('Sending requires your explicit approval.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     fireEvent.click(screen.getByRole('button', { name: 'Review and send' }));
-    expect(autosave).toHaveBeenCalledWith({ ...draft, body: '<p>Body</p>' }); expect(requestSend).toHaveBeenCalledWith({ ...draft, body: '<p>Body</p>' });
+    expect(autosave).toHaveBeenCalledWith(draft); expect(requestSend).toHaveBeenCalledWith(draft);
 
     view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sending' }, revisions: [] }));
     expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);
