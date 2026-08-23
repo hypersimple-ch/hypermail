@@ -27,8 +27,3 @@ minimumReleaseAgeExclude:
   - '@ai-sdk/google@4.0.28'
   - '@ai-sdk/openai@4.0.24'
   - '@ai-sdk/provider-utils@5.0.15'
-# image-size 2.0.3 is named as patched but is not published; keep these narrow ignores until it is available.
-auditConfig:
-  ignoreGhsas:
-    - GHSA-w3rx-r6r6-pgpr
-    - GHSA-5p2g-fcmc-qvqq
