@@ -1,11 +1,11 @@
 import * as React from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/heroui/alert.js';
 import { Badge } from '@/components/heroui/badge.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { Field, FieldError, FieldLabel } from '@/components/heroui/field.js';
 import { Textarea } from '@/components/heroui/textarea.js';
+import { toast } from '@/components/heroui/toast.js';
 import { AppPage, FilterGroup, PageContainer, PageHeader, StatePanel, type FilterOption } from '@/components/app/patterns.js';
 import { acknowledgementBlockReason, activityFilters, matchesActivityFilter, type ActivityFilter, type ActivityPage, type ActivityRecord } from './contracts.js';
 
@@ -54,13 +54,12 @@ export type ActivityDetailProps = Readonly<{
   onOpenMessage?: (messageId: string) => void;
   onAnswerQuestion?: (question: NonNullable<ActivityRecord['question']>, answer: string) => Promise<void> | void;
   onBack?: () => void;
-  error?: string;
   pendingAction?: 'retry' | 'acknowledge';
 }>;
 
-export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage, onAnswerQuestion, onBack, error, pendingAction }: ActivityDetailProps): React.JSX.Element {
+export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage, onAnswerQuestion, onBack, pendingAction }: ActivityDetailProps): React.JSX.Element {
   const acknowledgementReason = acknowledgementBlockReason(activity);
-  return <AppPage><PageContainer measure="reading" className="grid gap-4">{onBack ? <Button type="button" variant="ghost" className="w-fit" onClick={onBack}><ArrowLeft aria-hidden="true" />Activity</Button> : null}{error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}<article aria-label={`Activity detail: ${activity.title}`} className="grid min-w-0 gap-4">
+  return <AppPage><PageContainer measure="reading" className="grid gap-4">{onBack ? <Button type="button" variant="ghost" className="w-fit" onClick={onBack}><ArrowLeft aria-hidden="true" />Activity</Button> : null}<article aria-label={`Activity detail: ${activity.title}`} className="grid min-w-0 gap-4">
     <Card>
       <CardHeader className="min-w-0"><Badge className="w-fit" variant={statusVariant(activity)}>{status(activity)}</Badge><CardTitle className="break-words">{activity.title}</CardTitle><CardDescription className="break-words">{activity.messageLabel} · {activity.accountLabel}</CardDescription></CardHeader>
     </Card>
@@ -75,7 +74,6 @@ export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage
 
 function QuestionCard({ question, onAnswer }: { question: NonNullable<ActivityRecord['question']>; onAnswer?: ActivityDetailProps['onAnswerQuestion'] }): React.JSX.Element {
   const [pending, setPending] = React.useState(false);
-  const [notice, setNotice] = React.useState('');
   const [error, setError] = React.useState('');
   const answerId = `activity-answer-${question.id ?? 'open'}`;
   const errorId = `${answerId}-error`;
@@ -84,17 +82,16 @@ function QuestionCard({ question, onAnswer }: { question: NonNullable<ActivityRe
     const answer = new FormData(event.currentTarget).get('answer');
     if (typeof answer !== 'string' || !answer.trim() || !onAnswer) return;
     setPending(true);
-    setNotice('');
     setError('');
     void Promise.resolve(onAnswer(question, answer.trim())).then(() => {
-      setNotice('Answer recorded. A continuation Run will appear in Agent work history.');
+      toast.success('Answer recorded. A continuation Run will appear in Agent work history.');
     }).catch(() => {
       setError('Could not record the answer. Your text is still here; reconnect and try again.');
     }).finally(() => {
       setPending(false);
     });
   };
-  return <Card aria-label="Open question"><CardHeader><CardTitle>Question needs your input</CardTitle><CardDescription>{question.prompt}</CardDescription></CardHeader><CardContent><form onSubmit={submit} className="grid gap-3"><Field><FieldLabel htmlFor={answerId}>Your answer</FieldLabel><Textarea id={answerId} name="answer" required disabled={pending} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} />{error ? <FieldError id={errorId}>{error}</FieldError> : null}</Field><Button type="submit" variant="outline" disabled={pending || !onAnswer}>{pending ? 'Recording…' : 'Answer and continue'}</Button><p role="status" aria-live="polite" className="text-sm">{notice}</p></form></CardContent></Card>;
+  return <Card aria-label="Open question"><CardHeader><CardTitle>Question needs your input</CardTitle><CardDescription>{question.prompt}</CardDescription></CardHeader><CardContent><form onSubmit={submit} className="grid gap-3"><Field><FieldLabel htmlFor={answerId}>Your answer</FieldLabel><Textarea id={answerId} name="answer" required disabled={pending} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} />{error ? <FieldError id={errorId}>{error}</FieldError> : null}</Field><Button type="submit" variant="outline" disabled={pending || !onAnswer}>{pending ? 'Recording…' : 'Answer and continue'}</Button></form></CardContent></Card>;
 }
 
 /** Deliberately inert placeholder; it conveys available context without introducing agent behavior. */

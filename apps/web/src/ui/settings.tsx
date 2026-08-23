@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Link } from '@heroui/react/link';
 import { ArrowLeft, ExternalLink, Plus } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { toast } from '@/components/heroui/toast.js';
 import { Badge } from '@/components/heroui/badge.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
@@ -140,14 +140,20 @@ export function Settings({ mailboxes, onBack, onStartConnection, onCompleteConne
   const [adding, setAdding] = React.useState(false);
   const [pending, setPending] = React.useState<PendingMailboxConnection | undefined>(pendingConnection);
   const [busy, setBusy] = React.useState(false);
-  const [feedback, setFeedback] = React.useState('');
-  const [error, setError] = React.useState('');
   React.useEffect(() => { setPending(pendingConnection); }, [pendingConnection]);
-  const applyResult = (result: MailboxConnectionResult) => { setFeedback(resultText(result)); setError(result.state === 'error' ? resultText(result) : ''); if (result.state === 'pending') setPending(result.pending); else if (result.state === 'ready' || result.state === 'expired') setPending(undefined); };
-  const start = async (input: StartMailboxConnectionInput) => { if (!onStartConnection) return; setBusy(true); setFeedback(''); setError(''); try { applyResult(await onStartConnection(input)); } catch { setError('Could not connect the mailbox. Try again.'); } finally { setBusy(false); } };
-  const complete = (input: CompleteMailboxConnectionInput) => { if (!onCompleteConnection) return; setBusy(true); setFeedback(''); setError(''); void onCompleteConnection(input).then(applyResult).catch(() => { setError('Could not check the connection. Try again.'); }).finally(() => { setBusy(false); }); };
+  React.useEffect(() => { if (statusNotice) toast(statusNotice); }, [statusNotice]);
+  const applyResult = (result: MailboxConnectionResult) => {
+    const message = resultText(result);
+    if (result.state === 'ready') toast.success(message);
+    else if (result.state === 'expired') toast.warning(message);
+    else if (result.state === 'error') toast.danger(message);
+    else toast(message);
+    if (result.state === 'pending') setPending(result.pending);
+    else if (result.state === 'ready' || result.state === 'expired') setPending(undefined);
+  };
+  const start = async (input: StartMailboxConnectionInput) => { if (!onStartConnection) return; setBusy(true); try { applyResult(await onStartConnection(input)); } catch { toast.danger('Could not connect the mailbox. Try again.'); } finally { setBusy(false); } };
+  const complete = (input: CompleteMailboxConnectionInput) => { if (!onCompleteConnection) return; setBusy(true); void onCompleteConnection(input).then(applyResult).catch(() => { toast.danger('Could not check the connection. Try again.'); }).finally(() => { setBusy(false); }); };
   return <AppPage aria-label="Settings"><PageHeader title="Settings" description="Connected mailboxes" actions={<>{onBack ? <Button type="button" variant="ghost" onClick={onBack}><ArrowLeft aria-hidden="true" />More</Button> : null}<Button type="button" onClick={() => { setAdding((value) => !value); }} disabled={busy}><Plus aria-hidden="true" />Add mailbox</Button></>} /><div className="mt-6 space-y-4">
-    {statusNotice ? <Alert aria-live="polite"><AlertDescription>{statusNotice}</AlertDescription></Alert> : null}{feedback && !error ? <div role="status" aria-live="polite" className="text-sm">{feedback}</div> : null}{error ? <Alert variant="destructive" aria-live="assertive"><AlertDescription>{error}</AlertDescription></Alert> : null}
     <section aria-labelledby="connected-mailboxes"><h2 id="connected-mailboxes" className="text-lg font-semibold">Current mailboxes</h2>{mailboxes.length ? <div className="mt-3 space-y-3">{mailboxes.map((mailbox) => <Card key={mailbox.id} className="gap-0 py-0"><CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4"><div className="min-w-0"><strong className="block truncate">{mailbox.displayName || mailbox.email}</strong><p className="mt-1 truncate text-sm text-muted-foreground">{providerLabel[mailbox.provider]} · {mailbox.email}</p></div><Badge variant={stateVariant[mailbox.state]}>{stateLabel[mailbox.state]}</Badge></CardContent></Card>)}</div> : <StatePanel className="mt-3" title="No mailboxes connected." description="Add Gmail, Outlook, or an IMAP mailbox to get started." />}</section>
     {managerSettings && managerMutations ? <MailboxManagerSettings settings={managerSettings} mutations={managerMutations} online={online} /> : null}
     {pending ? <PendingConnection pending={pending} disabled={busy || !onCompleteConnection} onComplete={complete} /> : null}{adding ? <AddMailboxForm disabled={busy || !onStartConnection} onStart={start} /> : null}

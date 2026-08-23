@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import * as React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render as testingRender, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Settings, type MailboxConnectionResult, type SettingsMailbox, type StartMailboxConnectionInput } from '../../src/ui/settings.js';
+import { ToastProvider, toast } from '../../src/components/heroui/toast.js';
 
 const mailboxes: readonly SettingsMailbox[] = [
   { id: 'gmail', provider: 'gmail', email: 'me@gmail.test', displayName: 'Personal', state: 'ready' },
@@ -14,7 +15,10 @@ const pendingOutlook = { provider: 'microsoft' as const, handle: 'opaque-handle'
 
 function openAddMailbox() { fireEvent.click(screen.getByRole('button', { name: 'Add mailbox' })); }
 
-afterEach(cleanup);
+function render(node: React.ReactElement) { return testingRender(<>{node}<ToastProvider /></>); }
+
+
+afterEach(() => { toast.clear(); cleanup(); });
 
 describe('Settings', () => {
   it('renders an empty mailbox state and a back path', () => {
@@ -79,7 +83,7 @@ describe('Settings', () => {
     await waitFor(() => { expect(screen.queryByLabelText('Password')).toBeNull(); });
     expect(password.isConnected).toBe(false);
     expect(screen.queryByText(credential)).toBeNull();
-    expect(screen.getByRole('status').textContent).toContain('Mailbox connected');
+    expect(screen.getByText('Mailbox connected.').closest('[data-slot="toast"]')).toBeTruthy();
   });
 
   it('disables pending actions and reports completion, errors, and notices in text', async () => {
@@ -90,12 +94,12 @@ describe('Settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
     expect(screen.getByRole('button', { name: /Checking connection/ }).disabled).toBe(true);
     if (finish) finish({ state: 'ready' });
-    await waitFor(() => { expect(screen.getByRole('status').textContent).toContain('Mailbox connected.'); });
+    await waitFor(() => { expect(screen.getByText('Mailbox connected.').closest('[data-slot="toast"]')).toBeTruthy(); });
 
     cleanup();
     render(<Settings mailboxes={[]} pendingConnection={pendingOutlook} onCompleteConnection={vi.fn().mockRejectedValue(new Error('password=private'))} />);
     fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
-    await waitFor(() => { expect(screen.getByRole('alert').textContent).toContain('Could not check the connection. Try again.'); });
+    await waitFor(() => { expect(screen.getByText('Could not check the connection. Try again.').closest('[data-slot="toast"]')).toBeTruthy(); });
     expect(screen.queryByText(/password=private/)).toBeNull();
   });
 });

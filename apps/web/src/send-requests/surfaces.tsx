@@ -1,3 +1,35 @@
-import * as React from 'react';import {AppPage,PageContainer,PageHeader} from '@/components/app/patterns.js';import {Button} from '@/components/heroui/button.js';import {Field,FieldLabel} from '@/components/heroui/field.js';import {Card,CardContent,CardDescription,CardHeader,CardTitle} from '@/components/heroui/card.js';import {Input} from '@/components/heroui/input.js';import type {OwnerSendRequest} from './contracts.js';
-const actionable=(r:OwnerSendRequest)=>r.state==='pending_owner_approval';
-export function PendingSendReview({requests,onRefresh}:{requests:readonly OwnerSendRequest[];onRefresh:()=>Promise<void>}){const [busy,setBusy]=React.useState('');const [notice,setNotice]=React.useState('');const mutate=async(path:string,body:Record<string,unknown>)=>{if(!navigator.onLine){setNotice('You are offline. The send request remains pending; nothing was sent.');return;}setBusy(path);setNotice('');try{const response=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error();setNotice('Send review updated.');await onRefresh();}catch{setNotice('Could not update this send request. It remains pending; nothing was sent.');}finally{setBusy('');}};return <AppPage aria-label="Pending send review"><PageContainer measure="reading" className="grid gap-4"><PageHeader title="Pending send review" description="Review every recipient and draft before approval. Agents can request a send, but cannot bypass owner approval." /><p role="status" aria-live="polite">{notice}</p>{requests.length?requests.map(request=><Card key={request.id}><CardHeader><CardTitle>Draft {request.draftId}</CardTitle><CardDescription>Mailbox {request.accountId} · draft revision {request.draftVersion} · {request.state}</CardDescription></CardHeader><CardContent>{actionable(request)?<form className="grid gap-3" onSubmit={event=>{event.preventDefault();const confirmation=new FormData(event.currentTarget).get('confirmation');if(typeof confirmation!=='string')return;void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/approval`,{expectedDraftVersion:request.draftVersion,confirmation});}}><Field><FieldLabel htmlFor={`send-confirmation-${request.id}`}>Type a confirmation (at least 16 characters)</FieldLabel><Input id={`send-confirmation-${request.id}`} name="confirmation" required minLength={16} autoComplete="off"/></Field><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!!busy}>Begin approval</Button><Button type="button" variant="destructive" disabled={!!busy} onClick={()=>{void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`,{});}}>Reject</Button></div></form>:request.approvalId&&request.state==='approved'?<p>Approved.</p>:request.state==='sending'||request.state==='unverifiable'?<Button disabled={!!busy} onClick={()=>{void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reconcile`,{});}}>Check provider outcome</Button>:<p>This request is no longer actionable.</p>}</CardContent></Card>):<p>No send requests are waiting.</p>}</PageContainer></AppPage>}
+import * as React from 'react';
+import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
+import { Button } from '@/components/heroui/button.js';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
+import { Field, FieldLabel } from '@/components/heroui/field.js';
+import { Input } from '@/components/heroui/input.js';
+import { toast } from '@/components/heroui/toast.js';
+import type { OwnerSendRequest } from './contracts.js';
+
+const actionable = (request: OwnerSendRequest): boolean => request.state === 'pending_owner_approval';
+
+export function PendingSendReview({ requests, onRefresh }: Readonly<{ requests: readonly OwnerSendRequest[]; onRefresh: () => Promise<void> }>): React.JSX.Element {
+  const [busy, setBusy] = React.useState('');
+  const mutate = async (path: string, body: Record<string, unknown>) => {
+    if (!navigator.onLine) { toast.warning('You are offline. The send request remains pending; nothing was sent.'); return; }
+    setBusy(path);
+    try {
+      const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!response.ok) throw new Error();
+      await onRefresh();
+      toast.success('Send review updated.');
+    } catch {
+      toast.danger('Could not update this send request. It remains pending; nothing was sent.');
+    } finally { setBusy(''); }
+  };
+  return <AppPage aria-label="Pending send review"><PageContainer measure="reading" className="grid gap-4">
+    <PageHeader title="Pending send review" description="Review every recipient and draft before approval. Agents can request a send, but cannot bypass owner approval." />
+    {requests.length ? requests.map((request) => <Card key={request.id}><CardHeader><CardTitle>Draft {request.draftId}</CardTitle><CardDescription>Mailbox {request.accountId} · draft revision {request.draftVersion} · {request.state}</CardDescription></CardHeader><CardContent>
+      {actionable(request) ? <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); const confirmation = new FormData(event.currentTarget).get('confirmation'); if (typeof confirmation !== 'string') return; void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/approval`, { expectedDraftVersion: request.draftVersion, confirmation }); }}><Field><FieldLabel htmlFor={`send-confirmation-${request.id}`}>Type a confirmation (at least 16 characters)</FieldLabel><Input id={`send-confirmation-${request.id}`} name="confirmation" required minLength={16} autoComplete="off" /></Field><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!!busy}>Begin approval</Button><Button type="button" variant="destructive" disabled={!!busy} onClick={() => { void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`, {}); }}>Reject</Button></div></form>
+        : request.approvalId && request.state === 'approved' ? <p>Approved.</p>
+          : request.state === 'sending' || request.state === 'unverifiable' ? <Button disabled={!!busy} onClick={() => { void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reconcile`, {}); }}>Check provider outcome</Button>
+            : <p>This request is no longer actionable.</p>}
+    </CardContent></Card>) : <p>No send requests are waiting.</p>}
+  </PageContainer></AppPage>;
+}

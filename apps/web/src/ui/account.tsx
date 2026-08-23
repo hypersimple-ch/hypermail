@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
-import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { toast } from '@/components/heroui/toast.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/heroui/field.js';
@@ -31,13 +31,11 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
   const [passwordPending, setPasswordPending] = React.useState(false);
   const [signOutPending, setSignOutPending] = React.useState(false);
   const [passwordError, setPasswordError] = React.useState('');
-  const [feedback, setFeedback] = React.useState('');
   const pending = passwordPending || signOutPending;
 
   const changePassword = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (pending) return;
-    setFeedback('');
     if (!currentPassword) {
       setPasswordError('Enter your current password.');
       return;
@@ -54,15 +52,15 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
     setPasswordPending(true);
     void onChangePassword({ currentPassword, newPassword }).then((result) => {
       if (!result.ok) {
-        setPasswordError(result.error);
+        toast.danger(result.error);
         return;
       }
       setCurrentPassword('');
       setNewPassword('');
       setConfirmation('');
-      setFeedback('Password changed.');
+      toast.success('Password changed.');
     }).catch(() => {
-      setPasswordError('Could not change your password. Try again.');
+      toast.danger('Could not change your password. Try again.');
     }).finally(() => {
       setPasswordPending(false);
     });
@@ -70,13 +68,12 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
 
   const signOut = () => {
     if (pending) return;
-    setFeedback('');
     setPasswordError('');
     setSignOutPending(true);
     void onSignOut().then(() => {
-      setFeedback('Signed out.');
+      toast.success('Signed out.');
     }).catch(() => {
-      setFeedback('Could not sign out. Try again.');
+      toast.danger('Could not sign out. Try again.');
     }).finally(() => {
       setSignOutPending(false);
     });
@@ -108,6 +105,5 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
         <CardContent className="px-4 pt-4 pb-4"><Button type="button" variant="outline" onClick={signOut} disabled={pending}>{signOutPending ? <><Spinner />Signing out…</> : 'Sign out'}</Button></CardContent>
       </Card>
     </div>
-    {feedback ? <Alert role="status" aria-live="polite" className="mt-4"><AlertDescription>{feedback}</AlertDescription></Alert> : null}
   </PageContainer></AppPage>;
 }
