@@ -9,6 +9,7 @@ const httpsOrigin = z.url().refine(
 const appOrigin = z.url().refine((value) => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash && value === url.origin; } catch { return false; }
 }, 'must be an exact root http(s) origin without credentials, path, query, fragment, or trailing slash');
+const privateServiceOrigin = appOrigin;
 const loopbackHostnames = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function isHttpsOrigin(origin: string): boolean {
@@ -62,6 +63,11 @@ export const workerEnvSchema = z.strictObject({
   HYPERMAIL_KEY: secret,
   HYPERMAIL_PROTOCOL_VERSION: z.string().min(1),
   HYPERMAIL_TENANT_ROUTES: z.string().min(2).optional(),
+  HINDSIGHT_URL: privateServiceOrigin,
+  HINDSIGHT_API_KEY: secret.optional(),
+  HINDSIGHT_EXPECTED_VERSION: z.literal('0.9.1'),
+  HINDSIGHT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  HINDSIGHT_MAX_FILE_BYTES: z.coerce.number().int().min(1).max(25 * 1024 * 1024).default(10 * 1024 * 1024),
   MODEL_PROVIDER: z.enum(['codex-cli', 'openai', 'anthropic', 'google']).optional(),
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: secret.optional(),
@@ -70,6 +76,7 @@ export const workerEnvSchema = z.strictObject({
   VAPID_PRIVATE_KEY: secret,
   PUSH_SUBSCRIPTION_ENCRYPTION_KEY: z.string().min(32),
   AGENT_GLOBAL_CONSTRAINTS: z.string().min(1).max(20_000),
+  ATTACHMENT_TEMP_DIRECTORY: z.string().startsWith('/').refine((value) => value !== '/tmp' && !value.startsWith('/tmp/'), 'must not use shared /tmp'),
   HEALTH_PORT: z.coerce.number().int().min(1024).max(65_535).default(3001),
   POLL_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(60).default(45),
   LIFECYCLE_INTERVAL_SECONDS: positiveInteger.default(3600),

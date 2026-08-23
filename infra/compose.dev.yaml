@@ -110,3 +110,10 @@ services:
       timeout: 2s
       start_period: 2s
       retries: 30
+
+  hindsight:
+    healthcheck:
+      interval: 2s
+      timeout: 2s
+      start_period: 10s
+      retries: 90

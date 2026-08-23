@@ -11,6 +11,7 @@ const grantMigrationUrl = new URL('../drizzle/0005_agent_capability_grants.sql',
 const workIntegrationMigrationUrl = new URL('../drizzle/0008_agent_work_integration.sql', import.meta.url);
 const ownerSendMigrationUrl = new URL('../drizzle/0010_owner_send_approval.sql', import.meta.url);
 const taskIntegrityMigrationUrl = new URL('../drizzle/0012_agent_task_integrity.sql', import.meta.url);
+const mailboxMemoryMigrationUrl = new URL('../drizzle/0014_mailbox_memory_events.sql', import.meta.url);
 const journalUrl = new URL('../drizzle/meta/_journal.json', import.meta.url);
 const workerMigrationRunnerUrl = new URL('../../../apps/worker/test/postgres-test.ts', import.meta.url);
 const sql = readFileSync(fileURLToPath(migrationUrl), 'utf8');
@@ -22,6 +23,7 @@ const grantSql = readFileSync(fileURLToPath(grantMigrationUrl), 'utf8');
 const workIntegrationSql = readFileSync(fileURLToPath(workIntegrationMigrationUrl), 'utf8');
 const ownerSendSql = readFileSync(fileURLToPath(ownerSendMigrationUrl), 'utf8');
 const taskIntegritySql = readFileSync(fileURLToPath(taskIntegrityMigrationUrl), 'utf8');
+const mailboxMemorySql = readFileSync(fileURLToPath(mailboxMemoryMigrationUrl), 'utf8');
 const journal = readFileSync(fileURLToPath(journalUrl), 'utf8');
 const workerMigrationRunner = readFileSync(fileURLToPath(workerMigrationRunnerUrl), 'utf8');
 
@@ -198,4 +200,30 @@ describe('durable automatic Task migration',()=>{
  it('persists fenced leases, immutable Attempts/reports/receipts, outbox, and mutation journals',()=>{for(const name of ['agent_tasks','agent_task_delivery_attempts','agent_task_reports','agent_task_receipts','agent_task_outbox','agent_mutation_idempotency'])expect(taskSql).toContain(`"app"."${name}"`);expect(taskSql).toContain('agent_task_attempts_append_only');expect(taskSql).toContain('agent_tasks_lease_shape');expect(taskSql).toContain('agent_task_outbox_pending_idx');});
  it('registers the upgrade in every migration runner',()=>{expect(journal).toContain('0011_durable_agent_tasks');expect(workerMigrationRunner).toContain('0011_durable_agent_tasks.sql');});
  it('adds tenant-bound authority and one-way report privacy redaction',()=>{expect(journal).toContain('0012_agent_task_integrity');expect(workerMigrationRunner).toContain('0012_agent_task_integrity.sql');expect(taskIntegritySql).toContain('enforce_agent_task_authority_identity');expect(taskIntegritySql).toContain('r.user_id=NEW.user_id');expect(taskIntegritySql).toContain("jsonb_build_object('kind','redacted')");expect(taskIntegritySql).toContain('guard_agent_task_report_redaction');});
+});
+
+
+describe('Mailbox-memory event outbox migration', () => {
+  it('creates a tenant-owned, source-idempotent event table with bounded retry state', () => {
+    expect(mailboxMemorySql).toContain('CREATE TABLE "app"."mailbox_memory_events"');
+    expect(mailboxMemorySql).toContain('"mailbox_memory_events_source_unique" UNIQUE("user_id","account_id","source_type","source_id","source_version","kind")');
+    expect(mailboxMemorySql).toContain('"mailbox_memory_events_owned_mailbox_fk" FOREIGN KEY("user_id","account_id")');
+    expect(mailboxMemorySql).toContain('REFERENCES "app"."user_accounts"("user_id","account_id") ON DELETE restrict');
+    expect(mailboxMemorySql).toContain('max_attempts BETWEEN 1 AND 25');
+    expect(mailboxMemorySql).toContain('claim_generation=attempt_count');
+  });
+
+  it('fences concurrent claims and permits only one-way content minimization', () => {
+    expect(mailboxMemorySql).toContain('mailbox_memory_events_claim_idx');
+    expect(mailboxMemorySql).toContain('mailbox_memory_events_expired_claim_idx');
+    expect(mailboxMemorySql).toContain('guard_mailbox_memory_event_history');
+    expect(mailboxMemorySql).toContain('mailbox memory events are append-only');
+    expect(mailboxMemorySql).toContain("NEW.content_payload IS NULL AND NEW.state='completed'");
+    expect(mailboxMemorySql).toContain('NEW.claim_generation<>OLD.claim_generation+1');
+  });
+
+  it('registers the target-schema migration in repository migration runners', () => {
+    expect(journal).toContain('0014_mailbox_memory_events');
+    expect(workerMigrationRunner).toContain('0014_mailbox_memory_events.sql');
+  });
 });

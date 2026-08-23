@@ -1,3 +1,4 @@
+export * from './mailbox-memory-event-store.js';
 export * from './agent-task-store.js';
 export * from './agent-work-store.js';
 export * from './capability-grant-store.js';

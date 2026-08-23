@@ -42,10 +42,15 @@ services:
     env_file: ["${WORKER_ENV_FILE:?set WORKER_ENV_FILE to a root-readable worker secrets file}"]
     environment:
       HEALTH_PORT: 3001
+      ATTACHMENT_TEMP_DIRECTORY: /var/lib/hypermail-attachments
+    volumes:
+      - attachment-temp:/var/lib/hypermail-attachments
     depends_on:
       postgres:
         condition: service_healthy
       hypermail:
+        condition: service_healthy
+      hindsight:
         condition: service_healthy
     networks: [private]
 
@@ -132,8 +137,35 @@ services:
       retries: 3
     networks: [private]
 
+  hindsight:
+    image: ${HINDSIGHT_IMAGE:?set HINDSIGHT_IMAGE to an immutable Hindsight 0.9.1 digest}
+    restart: unless-stopped
+    env_file: ["${HINDSIGHT_ENV_FILE:?set HINDSIGHT_ENV_FILE to Hindsight-only LLM secrets}"]
+    environment:
+      HINDSIGHT_ENABLE_API: "true"
+      HINDSIGHT_ENABLE_CP: "false"
+      HINDSIGHT_API_HOST: 0.0.0.0
+      HINDSIGHT_API_PORT: 8888
+      HINDSIGHT_API_WORKER_ID: hypermail-hindsight-0
+      HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB: 50
+      HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE: 5
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    stop_grace_period: 45s
+    mem_limit: ${HINDSIGHT_MEMORY_LIMIT:-4g}
+    cpus: ${HINDSIGHT_CPU_LIMIT:-2.0}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8888/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    # No edge network and no published ports. Egress is only for the configured LLM provider.
+    networks: [private, egress]
+
 networks:
   edge: {}
+  egress: {}
   private:
     internal: true
 
@@ -142,6 +174,7 @@ volumes:
   caddy-config: {}
   postgres-data: {}
   hypermail-data: {}
+  hindsight-data: {}
   attachment-temp: {}
 
 secrets:

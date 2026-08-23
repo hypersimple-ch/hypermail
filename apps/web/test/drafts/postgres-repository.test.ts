@@ -1,11 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import postgres, { type Sql } from 'postgres';
+import { deterministicMailboxMemoryEventId } from '@hypermail/db';
+import { withPostgresSchemas } from '../../../worker/test/postgres-test.js';
+import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { DraftService, PostgresDraftRepository, type ApprovalClaim, type DraftScope } from '../../src/drafts/index.js';
 import type { SqlClient, SqlQueryResult, SqlRow } from '../../src/activity/postgres-repository.js';
 
+const canonicalJson = (value: unknown): string => value === null || typeof value !== 'object' ? JSON.stringify(value) : Array.isArray(value)
+  ? `[${value.map(canonicalJson).join(',')}]`
+  : `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
 const accountId = '00000000-0000-4000-8000-000000000001';
 const draftId = '00000000-0000-4000-8000-000000000002';
 const approvalId = '00000000-0000-4000-8000-000000000003';
@@ -29,20 +34,54 @@ class RecordingSql implements SqlClient {
   transaction<T>(work: (client: SqlClient) => Promise<T>): Promise<T> { return work(this); }
 }
 
+describe('PostgresDraftRepository learning transitions', () => {
+  it('records bounded before/after evidence when a user corrects an agent draft', async () => {
+    const before = { ...draftRow('failed'), created_by: 'agent', state: 'editing', version: 1, updated_at: '2025-01-01T00:00:00.000Z', body: 'Agent wording' };
+    const after = { ...before, version: 2, updated_at: '2025-01-01T00:01:00.000Z', body: 'User wording' };
+    const evidence = (value: string) => ({ text: value, digest: createHash('sha256').update(value).digest('hex'), truncated: false });
+    const fields = (body: string) => ({ recipients: [{ kind: 'to', address: 'person@example.com' }], subject: evidence('Hello'), body: evidence(body), bodyFormat: 'html' });
+    const contentPayload = { outcome: 'corrected', creator: 'agent', editor: 'user', before: fields('Agent wording'), after: fields('User wording') };
+    const eventId = deterministicMailboxMemoryEventId({ userId: scope.subjectId, mailboxId: accountId, sourceType: 'draft', sourceId: draftId, sourceVersion: 2, kind: 'draft_corrected' });
+    const event = { id: eventId, user_id: scope.subjectId, account_id: accountId, source_type: 'draft', source_id: draftId, source_version: 2,
+      kind: 'draft_corrected', content_digest: createHash('sha256').update(canonicalJson(contentPayload)).digest('hex'), content_payload: contentPayload,
+      state: 'pending', attempt_count: 0, max_attempts: 8, claim_generation: 0, available_at: after.updated_at, occurred_at: after.updated_at,
+      completed_at: null, dead_lettered_at: null, result_metadata: null, last_error_code: null, last_error_metadata: null, created_at: after.updated_at, updated_at: after.updated_at };
+    const sql = new RecordingSql([{ rows: [before] }, { rows: [after] }, { rows: [] }, { rows: [] }, { rows: [event] }]);
+    await expect(new PostgresDraftRepository(sql).edit(scope, draftId, 1, { recipients: [{ kind: 'to', address: 'person@example.com' }], subject: 'Hello', body: 'User wording' }, 'user'))
+      .resolves.toMatchObject({ kind: 'updated', draft: { version: 2 } });
+    expect(sql.calls[4]?.values?.[6]).toBe('draft_corrected');
+    expect(sql.calls[4]?.values?.[8]).toEqual(contentPayload);
+  });
+});
+
 describe('PostgresDraftRepository send completion', () => {
   it('casts completion state to the migrated draft enum and persists provider failures visibly', async () => {
-    const sql = new RecordingSql([{ rows: [draftRow('failed')] }, { rows: [] }]);
+    const contentPayload = { outcome: 'failed', draftId, draftVersion: 1 };
+    const occurredAt = '2025-01-01T00:01:00.000Z';
+    const eventId = deterministicMailboxMemoryEventId({ userId: scope.subjectId, mailboxId: accountId, sourceType: 'send_approval', sourceId: approvalId, sourceVersion: 1, kind: 'send_failed' });
+    const contentDigest = createHash('sha256').update(`{"draftId":"${draftId}","draftVersion":1,"outcome":"failed"}`).digest('hex');
+    const sql = new RecordingSql([{ rows: [draftRow('failed')] }, { rows: [] }, { rows: [{ id: eventId, user_id: scope.subjectId, account_id: accountId, source_type: 'send_approval', source_id: approvalId, source_version: 1, kind: 'send_failed', content_digest: contentDigest, content_payload: contentPayload, state: 'pending', attempt_count: 0, max_attempts: 8, claim_generation: 0, available_at: occurredAt, occurred_at: occurredAt, completed_at: null, dead_lettered_at: null, result_metadata: null, last_error_code: null, last_error_metadata: null, created_at: occurredAt, updated_at: occurredAt }] }]);
     const result = await new PostgresDraftRepository(sql).completeSend(scope, claim, 'failed');
     expect(result).toMatchObject({ state: 'failed', body: 'Body', bodyFormat: 'html', version: 2 });
     const update = sql.calls[0] ?? { text: '', values: [] };
     expect(update.text).toContain('state = $1::app.draft_state');
     expect(update.values).toEqual(['failed', draftId, [accountId]]);
     expect((sql.calls[1] ?? { values: [] }).values).toContain('send.failed');
+    expect(sql.calls[2]?.values?.[0]).toBe(eventId);
+    expect(sql.calls[2]?.values?.[8]).toEqual(contentPayload);
   });
 
   it('persists HTML format in the draft row and immutable revision snapshot', async () => {
     const editing = { ...draftRow('failed'), state: 'editing', body: '<p>Body</p>', version: 1 };
-    const sql = new RecordingSql([{ rows: [editing] }, { rows: [] }, { rows: [] }]);
+    const evidence = (value: string) => ({ text: value, digest: createHash('sha256').update(value).digest('hex'), truncated: false });
+    const recipients = [{ kind: 'to', address: 'person@example.com' }]; const occurredAt = '2025-01-01T00:00:00.000Z';
+    const payload = { outcome: 'created', actor: 'user', after: { recipients, subject: evidence('Hello'), body: evidence('<p>Body</p>'), bodyFormat: 'html' } };
+    const eventId = deterministicMailboxMemoryEventId({ userId: scope.subjectId, mailboxId: accountId, sourceType: 'draft', sourceId: draftId, sourceVersion: 1, kind: 'draft_created' });
+    const event = { id: eventId, user_id: scope.subjectId, account_id: accountId, source_type: 'draft', source_id: draftId, source_version: 1,
+      kind: 'draft_created', content_digest: createHash('sha256').update(canonicalJson(payload)).digest('hex'), content_payload: payload,
+      state: 'pending', attempt_count: 0, max_attempts: 8, claim_generation: 0, available_at: occurredAt, occurred_at: occurredAt,
+      completed_at: null, dead_lettered_at: null, result_metadata: null, last_error_code: null, last_error_metadata: null, created_at: occurredAt, updated_at: occurredAt };
+    const sql = new RecordingSql([{ rows: [editing] }, { rows: [] }, { rows: [] }, { rows: [event] }]);
     const result = await new PostgresDraftRepository(sql).create(scope, { accountId, sourceMessageId: null, createdBy: 'user', state: 'editing', recipients: [{ kind: 'to', address: 'person@example.com' }], subject: 'Hello', body: '<p>Body</p>', bodyFormat: 'html' });
     expect(result.bodyFormat).toBe('html');
     expect(sql.calls[0]?.text).toContain('body_format');
@@ -59,23 +98,24 @@ describe('PostgresDraftRepository send completion', () => {
   it.skipIf(!process.env.DATABASE_URL)('runs completion and reused confirmation text against migrated PostgreSQL FKs', async () => {
     const databaseUrl = process.env.DATABASE_URL;
     if (!databaseUrl) throw new Error('DATABASE_URL is required');
-    const sql = postgres(databaseUrl);
-    const client = (connection: Sql): SqlClient => ({
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- required by SqlClient.
-      query: async <Row extends SqlRow = SqlRow>(text: string, values?: readonly unknown[]) => ({ rows: await (values === undefined ? connection.unsafe(text) : connection.unsafe(text, values as never[])) as readonly Row[] }),
-      transaction: async <T>(work: (transaction: SqlClient) => Promise<T>) => connection.begin((transaction) => work(client(transaction))),
-    });
-    try {
-      await sql.unsafe('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-      await sql.unsafe('DROP SCHEMA IF EXISTS app CASCADE; DROP SCHEMA IF EXISTS mastra CASCADE; DROP SCHEMA IF EXISTS pgboss CASCADE');
-      const migration = await readFile(resolve(process.cwd(), 'packages/db/drizzle/0000_solid_lady_deathstrike.sql'), 'utf8');
-      for (const statement of migration.split('--> statement-breakpoint')) await sql.unsafe(statement);
+    await withPostgresSchemas(databaseUrl, async (sql) => {
+      const client = (connection: Sql): SqlClient => ({
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- required by SqlClient.
+        query: async <Row extends SqlRow = SqlRow>(text: string, values?: readonly unknown[]) => ({ rows: await (values === undefined ? connection.unsafe(text) : connection.unsafe(text, values as never[])) as readonly Row[] }),
+        transaction: async <T>(work: (transaction: SqlClient) => Promise<T>) => connection.begin((transaction) => work(client(transaction))),
+      });
       const userId = randomUUID(); const seededAccountId = randomUUID();
-      await sql`INSERT INTO app.users (id, email, password_hash) VALUES (${userId}::uuid, ${`draft-${userId}@example.test`}, 'test')`;
-      await sql`INSERT INTO app.accounts (id, provider, provider_account_id, email) VALUES (${seededAccountId}::uuid, 'gmail', ${seededAccountId}, ${`account-${seededAccountId}@example.test`})`;
+      await sql.begin(async (tx) => {
+        await tx`INSERT INTO app.users (id, email, password_hash) VALUES (${userId}::uuid, ${`draft-${userId}@example.test`}, 'test')`;
+        await tx`INSERT INTO app.accounts (id, user_id, provider, provider_account_id, email, state) VALUES (${seededAccountId}::uuid, ${userId}, 'gmail', ${seededAccountId}, ${`account-${seededAccountId}@example.test`}, 'ready')`;
+        await tx`INSERT INTO app.user_accounts(user_id,account_id) VALUES (${userId},${seededAccountId})`;
+      });
       const providerCalls: string[] = [];
       let sequence = 0;
-      const service = new DraftService(new PostgresDraftRepository(client(sql)), { send: (message) => { providerCalls.push(message.approvalId); return Promise.resolve({ providerMessageId: 'provider-message' }); } }, { read: () => Promise.resolve(null) }, () => new Date('2025-01-01T00:01:00.000Z'), () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`);
+      const service = new DraftService(new PostgresDraftRepository(client(sql)), {
+        send: (message) => { providerCalls.push(message.approvalId); return Promise.resolve({ providerMessageId: 'provider-message' }); },
+        status: () => Promise.resolve({ state: 'verified' as const, providerMessageId: 'provider-message', observedAt: '2025-01-01T00:01:01.000Z', evidence: { source: 'readback' } }),
+      }, { read: () => Promise.resolve(null) }, () => new Date('2025-01-01T00:01:00.000Z'), () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0')}`);
       const seededScope: DraftScope = { subjectId: userId, accountIds: [seededAccountId], freshAuthAt: '2025-01-01T00:00:00.000Z' };
       const input = { accountId: seededAccountId, createdBy: 'user' as const, recipients: [{ kind: 'to' as const, address: 'person@example.com' }], subject: 'Hello', body: 'Body', bodyFormat: 'markdown' as const };
       const first = await service.createUser(seededScope, input); const second = await service.createUser(seededScope, input);
@@ -85,9 +125,10 @@ describe('PostgresDraftRepository send completion', () => {
       expect(secondApproval.approvalId).not.toBe(firstApproval.approvalId);
       expect(await service.confirmSend(seededScope, firstApproval.approvalId, confirmation)).toMatchObject({ state: 'sent' });
       expect(providerCalls).toEqual([firstApproval.approvalId]);
-    } finally {
-      await sql.unsafe('DROP SCHEMA IF EXISTS app CASCADE; DROP SCHEMA IF EXISTS mastra CASCADE; DROP SCHEMA IF EXISTS pgboss CASCADE');
-      await sql.end();
-    }
+      expect(await sql<{kind:string}[]>`select kind from app.mailbox_memory_events where source_id=${first.id} order by source_version,kind`)
+        .toEqual([{ kind: 'draft_created' }]);
+      expect(await sql<{kind:string}[]>`select kind from app.mailbox_memory_events where source_id=${firstApproval.approvalId} order by kind`)
+        .toEqual([{ kind: 'send_owner_confirmed' }, { kind: 'send_verified' }]);
+    });
   });
 });

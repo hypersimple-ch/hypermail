@@ -44,7 +44,7 @@ Run only in isolated acceptance accounts and infrastructure. Use the exact propo
 ### 5. Question suspend/resume
 
 1. Force a structured question, kill worker, answer once through authenticated exact-origin HTTP, replay the same answer, then restart worker.
-2. Assert one answer/audit, resumed durable workflow snapshot, account-scoped memory source history, and acknowledgement blocked until resolution.
+2. Assert one answer/audit, resumed durable workflow snapshot, User-scoped Observational Memory source history, exact-Mailbox Hindsight recall, and acknowledgement blocked until resolution.
 
 ### 6. Mutation ambiguity and verification
 

@@ -12,6 +12,13 @@
 - Check provider status, deployment-secret presence/expiry, and private Hypermail connectivity; do not log credentials or provider URLs.
 - Keep failed account arrivals visible and allow durable retries. After recovery, reconcile recent Inbox listings before declaring the incident resolved.
 
+## Hindsight failure or incompatibility
+
+- Keep memory-dependent worker readiness closed when private Hindsight health fails, `/health` does not report exact version `0.9.1`, or required features are incompatible. Continue only work that is explicitly safe without memory.
+- Check the private health status, named-volume presence/free space, stable worker ID, and Hindsight LLM provider status. Never expose ports 8888/9999 or enable the control plane as a workaround.
+- Preserve `hindsight-data` and restart with the 45-second stop grace period. Do not attempt recovery from an online filesystem tar. Development memory may be reset; production recovery remains blocked until a supported quiesced or logical backup is accepted.
+- If one owner-requested bank deletion fails or is ambiguous, keep that Mailbox's memory work paused and verify bank absence before retrying. Do not delete the volume or another bank.
+
 ## Durable job / model failure
 
 - Alert on `job:failure`/`retrying`, queue readiness failure, or sustained queue growth.
@@ -37,7 +44,7 @@
 ## Backup failure
 
 - Treat `backup:failure` as critical. Confirm the encrypted backup job, destination availability, key access, and most recent successful restore verification.
-- Do not disable backup encryption or copy backup keys into shell history. Fix the job, run a new backup, then execute the documented restore verification before closure.
+- Do not disable backup encryption or copy backup keys into shell history. Confirm both `hypermail/` and `hindsight/` state roots were included. Fix the job, run a new backup, then execute the documented restore verification before closure.
 
 ## Closure
 

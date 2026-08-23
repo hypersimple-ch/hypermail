@@ -19,6 +19,23 @@ const devLauncher = read('infra/dev.mjs');
 const devRunner = read('infra/dev-runner.mjs');
 const rootPackage = read('package.json');
 const hypermailPackage = read('apps/hypermail/package.json');
+const envContract = read('packages/contracts/src/env.ts');
+const envExample = read('.env.example');
+const hindsightEnvExample = read('.env.hindsight.example');
+
+const hindsightWorkerFields = [
+  'HINDSIGHT_URL', 'HINDSIGHT_API_KEY', 'HINDSIGHT_EXPECTED_VERSION',
+  'HINDSIGHT_REQUEST_TIMEOUT_MS', 'HINDSIGHT_MAX_FILE_BYTES',
+];
+for (const field of hindsightWorkerFields) {
+  if (!envContract.includes(field)) fail(`worker environment contract must define ${field}`);
+  if (field !== 'HINDSIGHT_API_KEY' && !envExample.includes(`${field}=`)) fail(`local environment example must define ${field}`);
+}
+if (!/HINDSIGHT_EXPECTED_VERSION: z\.literal\('0\.9\.1'\)/.test(envContract)) fail('worker must fail closed on the Hindsight 0.9.1 version contract');
+if (/HINDSIGHT_API_LLM_API_KEY=/.test(envExample)) fail('shared local environment must not contain the Hindsight LLM secret');
+if (!/HINDSIGHT_API_LLM_PROVIDER=/.test(hindsightEnvExample) || !/HINDSIGHT_API_LLM_MODEL=/.test(hindsightEnvExample) || !/HINDSIGHT_API_LLM_API_KEY=/.test(hindsightEnvExample) || !/HINDSIGHT_API_EMBEDDINGS_PROVIDER=local/.test(hindsightEnvExample) || !/HINDSIGHT_API_RERANKER_PROVIDER=local/.test(hindsightEnvExample)) {
+  fail('dedicated Hindsight env template must configure its LLM and local full-image models');
+}
 
 for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   if (!/private:\n    internal: true/.test(compose)) fail(`${name} compose must use an internal private network`);
@@ -27,8 +44,8 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
     if (/^    ports:/m.test(section)) fail(`${name} ${service} must not publish host ports`);
     if (!/networks: \[private\]/.test(section)) fail(`${name} ${service} must be private-only`);
   }
-  if (!/postgres-data:\s*\{\}/.test(compose) || !/hypermail-data:\s*\{\}/.test(compose)) {
-    fail(`${name} compose must declare PostgreSQL and Hypermail persistent volumes`);
+  if (!/postgres-data:\s*\{\}/.test(compose) || !/hypermail-data:\s*\{\}/.test(compose) || !/hindsight-data:\s*\{\}/.test(compose)) {
+    fail(`${name} compose must declare PostgreSQL, Hypermail, and Hindsight persistent volumes`);
   }
   if (!/attachment-temp:\s*\{\}/.test(compose) || !/ATTACHMENT_TEMP_DIRECTORY: \/var\/lib\/hypermail-attachments/.test(compose) || !/TMPDIR: \/var\/lib\/hypermail-attachments/.test(compose) || !/install -d -m 0700 -o 10001 -g 10001/.test(compose)) {
     fail(`${name} compose must provision the private shared attachment directory`);
@@ -38,6 +55,25 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   if (!/profiles: \[backup\]/.test(backup) || !/hypermail-data:\/var\/lib\/hypermail:ro/.test(backup) || !/networks: \[private\]/.test(backup)) {
     fail(`${name} backup must be an opt-in private job with read-only Hypermail state`);
   }
+  const hindsight = compose.match(/^  hindsight:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
+  if (!/image: \$\{HINDSIGHT_IMAGE:\?set HINDSIGHT_IMAGE to an immutable Hindsight 0\.9\.1 digest\}/.test(hindsight)
+    || /^    ports:/m.test(hindsight) || !/networks: \[private, egress\]/.test(hindsight)) {
+    fail(`${name} Hindsight must use an immutable approved 0.9.1 digest with private ingress, provider egress, and no published ports`);
+  }
+  if (!/HINDSIGHT_ENABLE_CP: "false"/.test(hindsight) || !/HINDSIGHT_API_WORKER_ID: hypermail-hindsight-0/.test(hindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(hindsight) || !/127\.0\.0\.1:8888\/health/.test(hindsight)) {
+    fail(`${name} Hindsight must disable its control plane and use stable persistent healthy embedded state`);
+  }
+  if (!/HINDSIGHT_ENV_FILE/.test(hindsight) || !/mem_limit:/.test(hindsight) || !/cpus:/.test(hindsight) || !/HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB: 50/.test(hindsight) || !/HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE: 5/.test(hindsight)) {
+    fail(`${name} Hindsight must receive dedicated LLM config and bounded resources/files`);
+  }
+  const worker = compose.match(/^  worker:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
+  if (!/hindsight:\n        condition: service_healthy/.test(worker)) fail(`${name} worker must wait for healthy Hindsight`);
+  if (!/ATTACHMENT_TEMP_DIRECTORY: \/var\/lib\/hypermail-attachments/.test(worker)
+    || !/attachment-temp:\/var\/lib\/hypermail-attachments/.test(worker)) {
+    fail(`${name} worker must share the private attachment volume for bounded Hindsight file ingestion`);
+  }
+  const web = compose.match(/^  web:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
+  if (/HINDSIGHT_ENV_FILE|HINDSIGHT_API_LLM|hindsight-data/.test(web)) fail(`${name} web must not receive Hindsight secrets or state`);
   if (!/backup_database_key/.test(compose) || !/backup_state_key/.test(compose) || !/backup_alert_webhook/.test(compose)) {
     fail(`${name} compose must mount distinct backup keys and a failure-alert secret`);
   }
@@ -63,6 +99,18 @@ if (!/target: migrate/.test(local) || !/condition: service_completed_successfull
 if (!/127\.0\.0\.1:\$\{LOCAL_HTTP_PORT:-8080\}:80/.test(local)) fail('local proxy must remain loopback-only');
 const localHypermail = local.match(/^  hypermail:\n([\s\S]*?)(?=\nnetworks:)/m)?.[1] ?? '';
 if (!/networks: \[private, egress\]/.test(localHypermail) || /^    ports:/m.test(localHypermail)) fail('local Hypermail must have private ingress and provider egress without host ports');
+const localHindsight = local.match(/^  hindsight:\n([\s\S]*?)(?=\nnetworks:)/m)?.[1] ?? '';
+if (!/image: ghcr\.io\/vectorize-io\/hindsight:0\.9\.1/.test(localHindsight) || !/HINDSIGHT_ENABLE_CP: "false"/.test(localHindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(localHindsight) || /^    ports:/m.test(localHindsight) || !/networks: \[private, egress\]/.test(localHindsight)) {
+  fail('local Hindsight must use pinned full 0.9.1 privately with persistent embedded state and provider egress');
+}
+const localWorker = local.match(/^  worker:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
+if (!/hindsight:\n        condition: service_healthy/.test(localWorker) || !/hindsight-data:\s*\{\}/.test(local)) fail('local worker must wait for persistent healthy Hindsight');
+if (!/ATTACHMENT_TEMP_DIRECTORY: \/var\/lib\/hypermail-attachments/.test(localWorker)
+  || !/attachment-temp:\/var\/lib\/hypermail-attachments/.test(localWorker)) {
+  fail('local worker must share the private attachment volume for bounded Hindsight file ingestion');
+}
+const localWeb = local.match(/^  web:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
+if (/HINDSIGHT_ENV_FILE|HINDSIGHT_API_LLM|hindsight-data/.test(localWeb)) fail('local web must not receive Hindsight LLM secrets or state');
 if (!/"hypermail-mcp": "0\.7\.26"/.test(hypermailPackage) || !/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
   fail('Hypermail must build its pinned workspace runtime as a private HTTP service');
 }

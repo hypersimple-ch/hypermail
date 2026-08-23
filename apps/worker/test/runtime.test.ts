@@ -3,7 +3,7 @@ import { ClaimingAgentConsumer, DurableNotificationRecovery, parseQueuePayload, 
 
 const env = (): WorkerEnvironment => parseWorkerEnvironment({
   DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
-  MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', HEALTH_PORT: 31_001,
+  HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: 31_001,
 });
 class FakeBoss implements BossRuntime {
   readonly handlers = new Map<string, (job: { data: unknown }) => Promise<void>>(); readonly queues: string[] = []; started = false; stopped = false;
@@ -16,7 +16,7 @@ const dependencies = (boss: FakeBoss, calls: string[]): WorkerRuntimeDependencie
   boss, ingestion: { start: () => Promise.resolve(), stop() { calls.push('ingestion-stop'); } }, lifecycle: { start: () => Promise.resolve(), stop() { calls.push('lifecycle-stop'); } },
   agentTaskRecovery: { recover() { calls.push('task-recovery'); return Promise.resolve(); } }, dispatchRecovery: { recover() { calls.push('dispatch-recovery'); return Promise.resolve(); } }, notificationRecovery: { recover() { calls.push('notification-recovery'); return Promise.resolve(); } }, policyRecovery: { recover() { calls.push('policy-recovery'); return Promise.resolve(); } },
   agentConsumer: { consume(payload) { calls.push(`agent:${String(payload.jobId)}`); return Promise.resolve(); } }, notificationConsumer: { consume: () => Promise.resolve() }, policyConsumer: { consume: () => Promise.resolve() },
-  closeDatabase() { calls.push('database-close'); return Promise.resolve(); }, probes: { database: () => Promise.resolve(true), hypermail: () => Promise.resolve(true) },
+  closeDatabase() { calls.push('database-close'); return Promise.resolve(); }, probes: { database: () => Promise.resolve(true), hypermail: () => Promise.resolve(true), hindsight: () => Promise.resolve(true) },
 });
 
 describe('worker runtime', () => {
@@ -28,7 +28,7 @@ describe('worker runtime', () => {
     })).toThrow('HYPERMAIL_PROTOCOL_VERSION');
     expect(parseWorkerEnvironment({
       DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
-      MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'test', VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.',
+      HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'test', VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments',
     }).MODEL_API_KEY).toBeUndefined();
     expect(() => parseQueuePayload('agent.evaluate', { jobId: 'not-a-uuid' })).toThrow('QUEUE_PAYLOAD_INVALID');
     expect(() => parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', extra: true })).toThrow('QUEUE_PAYLOAD_INVALID');
@@ -48,6 +48,13 @@ describe('worker runtime', () => {
     expect(dispatched).toEqual(['one', 'two']);
     expect(requireAutonomousCapability('archive')).toBe('archive'); expect(() => requireAutonomousCapability('send')).toThrow('POLICY_CAPABILITY_FORBIDDEN');
   });
+  it('does not register queues or start schedulers before exact Hindsight readiness succeeds', async () => {
+    const boss = new FakeBoss(); const calls: string[] = []; const base = dependencies(boss, calls);
+    const runtime = new WorkerRuntime(env(), { ...base, probes: { ...base.probes, hindsight: () => Promise.resolve(false) } });
+    await expect(runtime.start()).rejects.toThrow('HINDSIGHT_UNAVAILABLE');
+    expect(boss.started).toBe(false);
+  });
+
   it('starts consumers and replay recovery, then closes resources in bounded shutdown order', async () => {
     const boss = new FakeBoss(); const calls: string[] = []; const runtime = new WorkerRuntime(env(), dependencies(boss, calls));
     await runtime.start();

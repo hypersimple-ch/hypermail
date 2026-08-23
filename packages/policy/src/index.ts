@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { enqueueMailboxMemoryEventInTransaction, type SqlClient as MemorySqlClient } from '@hypermail/db';
 import { z } from 'zod';
 
 /** The complete, intentionally small capability surface available to policy code. */
@@ -201,8 +202,14 @@ export class PolicyExecutor {
 
 export type SqlRow = Record<string, unknown>;
 export interface PolicySqlClient { query(text: string, values?: readonly unknown[]): Promise<Readonly<{ rows: readonly SqlRow[] }>>; transaction<T>(work: (sql: PolicySqlClient) => Promise<T>): Promise<T>; }
+const mailboxMemorySql = (sql: PolicySqlClient): Pick<MemorySqlClient, 'query'> => ({
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters -- required by the shared SqlClient contract.
+  query: async <Row extends Record<string, unknown>>(statement: string, values?: readonly unknown[]) =>
+    ({ rows: [...(await sql.query(statement, values)).rows] as Row[] }),
+});
 const bool = (value: unknown) => value === true || value === 'true';
 const asText = (value: unknown) => String(value);
+const iso = (value: unknown): string => value instanceof Date ? value.toISOString() : new Date(asText(value)).toISOString();
 const jsonObject = (value: unknown): Record<string, unknown> => typeof value === 'string' ? record(JSON.parse(value)) : record(value);
 const canonical = (value: unknown): string => value && typeof value === 'object' && !Array.isArray(value) ? `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value);
 
@@ -214,7 +221,7 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
 
   async claim(input: PolicyActionInput, isGloballyPaused: () => boolean): Promise<Claim> {
     return this.sql.transaction(async sql => {
-      const result = await sql.query(`SELECT a.*, ac.autonomy_paused_at
+      const result = await sql.query(`SELECT a.*, ac.autonomy_paused_at,ac.state AS account_state
         FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id
         WHERE a.id=$1::uuid AND a.user_id=$2::uuid AND a.account_id=$3::uuid FOR UPDATE OF a,ac`,
       [input.actionId,input.userId,input.target.accountId]);
@@ -228,16 +235,17 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
         : state==='failed' ? 'failed' : state==='unverifiable' ? 'unverifiable' : undefined;
       if (outcome) return { actionId: input.actionId, accountId: input.target.accountId, outcome, run:false };
       if (state==='cancelled') return { actionId: input.actionId, accountId: input.target.accountId, outcome:'failed', run:false };
+      const active = ['ready','degraded'].includes(asText(row['account_state']));
       return { actionId:input.actionId, accountId:input.target.accountId,
-        run: state==='executing' || state==='verifying' || (state==='authorized' && !isGloballyPaused() && !bool(row['autonomy_paused_at'])),
-        recover: state==='executing' || state==='verifying' };
+        run: active && (state==='executing' || state==='verifying' || (state==='authorized' && !isGloballyPaused() && !bool(row['autonomy_paused_at']))),
+        recover: active && (state==='executing' || state==='verifying') };
     });
   }
 
   async claimImmediatelyBeforeMutation(actionId:string, accountId:string, isGloballyPaused:()=>boolean):Promise<'run'|'paused'|'finished'> {
     return this.sql.transaction(async sql => {
       const result=await sql.query(`SELECT a.state,a.user_id,a.run_id,a.kind,a.mode,a.assignment_id,a.assignment_revision,
-          a.grant_id,a.grant_revision,a.safety_revision,ac.autonomy_paused_at,
+          a.grant_id,a.grant_revision,a.safety_revision,ac.autonomy_paused_at,ac.state AS account_state,
           ma.id AS current_assignment_id,ma.revision AS current_assignment_revision,
           g.id AS current_grant_id,g.revision AS current_grant_revision,g.state AS grant_state,
           g.capabilities AS grant_capabilities,g.invocation_modes AS grant_modes,
@@ -252,7 +260,8 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
       if (!row || asText(row['state'])!=='authorized') return 'finished';
       const capability=this.capability(asText(row['kind']));
       if (isGloballyPaused() || bool(row['autonomy_paused_at'])) return 'paused';
-      const allowed=asText(row['current_assignment_id'])===asText(row['assignment_id'])
+      const allowed=['ready','degraded'].includes(asText(row['account_state']))
+        && asText(row['current_assignment_id'])===asText(row['assignment_id'])
         && Number(row['current_assignment_revision'])===Number(row['assignment_revision'])
         && asText(row['current_grant_id'])===asText(row['grant_id'])
         && Number(row['current_grant_revision'])===Number(row['grant_revision']) && asText(row['grant_state'])==='active'
@@ -311,6 +320,9 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
         row=updated.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
         await sql.query(`UPDATE app.actions SET state='succeeded',provider_receipt=$2::jsonb,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,JSON.stringify(completion.receipt??{})]);
         await this.event(sql,row,'action_verified',{runId:asText(row['run_id']),actionId});
+        await enqueueMailboxMemoryEventInTransaction(mailboxMemorySql(sql), { userId: asText(row['user_id']), mailboxId: accountId,
+          sourceType: 'agent_action', sourceId: actionId, sourceVersion: Number(row['attempt'] ?? 1), kind: 'mailbox_action_verified',
+          occurredAt: iso(row['completed_at']), contentPayload: { outcome: 'verified', actionKind: asText(row['kind']), target: jsonObject(row['target']) } });
         await this.aggregateActivity(sql,row);
         return 'succeeded';
       }
@@ -323,6 +335,10 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
       await sql.query(`UPDATE app.actions SET state=$2::app.action_state,error_code=$3,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,completion.outcome==='incorrect'?'incorrect':state,code]);
       await this.event(sql,row,state==='unverifiable'?'action_unverifiable':'action_failed',state==='unverifiable'
         ? {runId:asText(row['run_id']),actionId,reasonCode:code}:{runId:asText(row['run_id']),actionId,errorCode:code});
+      await enqueueMailboxMemoryEventInTransaction(mailboxMemorySql(sql), { userId: asText(row['user_id']), mailboxId: accountId,
+        sourceType: 'agent_action', sourceId: actionId, sourceVersion: Number(row['attempt'] ?? 1),
+        kind: state === 'unverifiable' ? 'mailbox_action_unverifiable' : 'mailbox_action_failed',
+        occurredAt: iso(row['completed_at']), contentPayload: { outcome: state, actionKind: asText(row['kind']), target: jsonObject(row['target']) } });
       await this.aggregateActivity(sql,row);
       return completion.outcome;
     });

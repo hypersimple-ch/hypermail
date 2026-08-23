@@ -9,7 +9,9 @@ export type WorkerEnvironment = Readonly<WorkerEnv>;
 
 const workerEnvironmentNames = [
   'NODE_ENV', 'DATABASE_URL', 'HYPERMAIL_URL', 'HYPERMAIL_KEY', 'HYPERMAIL_PROTOCOL_VERSION', 'HYPERMAIL_TENANT_ROUTES',
-  'MODEL_PROVIDER', 'MODEL_NAME', 'MODEL_API_KEY', 'VAPID_SUBJECT', 'VAPID_PUBLIC_KEY',
+  'HINDSIGHT_URL', 'HINDSIGHT_API_KEY', 'HINDSIGHT_EXPECTED_VERSION', 'HINDSIGHT_REQUEST_TIMEOUT_MS',
+  'HINDSIGHT_MAX_FILE_BYTES',
+  'ATTACHMENT_TEMP_DIRECTORY', 'MODEL_PROVIDER', 'MODEL_NAME', 'MODEL_API_KEY', 'VAPID_SUBJECT', 'VAPID_PUBLIC_KEY',
   'VAPID_PRIVATE_KEY', 'PUSH_SUBSCRIPTION_ENCRYPTION_KEY', 'AGENT_GLOBAL_CONSTRAINTS', 'HEALTH_PORT', 'POLL_INTERVAL_SECONDS',
   'LIFECYCLE_INTERVAL_SECONDS', 'SHUTDOWN_TIMEOUT_SECONDS', 'BODY_RETENTION_DAYS',
   'OAUTH_RETENTION_HOURS', 'SESSION_RETENTION_DAYS', 'TASK_PAYLOAD_RETENTION_DAYS', 'OPERATIONAL_TEXT_RETENTION_DAYS',
@@ -62,7 +64,7 @@ export function requireAutonomousCapability(value: string): AutonomousCapability
 }
 export interface RuntimeProbe { (): Promise<boolean>; }
 export interface WorkerRuntimeDependencies {
-  readonly boss: BossRuntime; readonly ingestion: Scheduler; readonly lifecycle: Scheduler; readonly dispatchRecovery: Recovery; readonly notificationRecovery: Recovery; readonly policyRecovery: Recovery; readonly agentTaskRecovery?: Recovery;
+  readonly boss: BossRuntime; readonly ingestion: Scheduler; readonly lifecycle: Scheduler; readonly mailboxMemoryEvents?: Scheduler; readonly dispatchRecovery: Recovery; readonly notificationRecovery: Recovery; readonly policyRecovery: Recovery; readonly agentTaskRecovery?: Recovery;
   readonly agentConsumer: JobConsumer; readonly notificationConsumer: JobConsumer; readonly policyConsumer: JobConsumer;
   readonly closeDatabase: () => Promise<void>; readonly probes: Readonly<Partial<Record<WorkerDependency, RuntimeProbe>>>;
   readonly clock?: Clock; readonly holderId?: string;
@@ -85,12 +87,16 @@ export function parseQueuePayload(name: QueueName, raw: unknown): QueuePayload {
   return { [field]: raw[field] } as QueuePayload;
 }
 
-const dependencies = (): DependencyState => ({ database: false, queue: false, hypermail: false, scheduler: false, model: false, notifications: false, policy: false });
+const dependencies = (): DependencyState => ({ database: false, queue: false, hypermail: false, hindsight: false, scheduler: false, model: false, notifications: false, policy: false });
 export class WorkerRuntime {
-  private readonly status: Record<WorkerDependency, boolean> = dependencies(); private server: Server | undefined; private stopping = false; private notificationTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly status: Record<WorkerDependency, boolean> = dependencies(); private server: Server | undefined; private stopping = false;
+  private notificationTimer: ReturnType<typeof setInterval> | undefined; private hindsightProbeTimer: ReturnType<typeof setInterval> | undefined;
   constructor(private readonly environment: WorkerEnvironment, private readonly deps: WorkerRuntimeDependencies) {}
   get dependencyState(): DependencyState { return { ...this.status }; }
   async start(): Promise<void> {
+    // Exact version/feature readiness gates every queue consumer and scheduler.
+    this.status.hindsight = await this.probe('hindsight');
+    if (!this.status.hindsight) throw new Error('HINDSIGHT_UNAVAILABLE');
     const server = createServer((request, response) => {
       const body = request.url === '/live' ? liveness() : request.url === '/ready' ? readiness(this.status) : null;
       response.writeHead(body ? (request.url === '/ready' && body.status === 'not_ready' ? 503 : 200) : 404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(body ? JSON.stringify(body) : '');
@@ -115,13 +121,16 @@ export class WorkerRuntime {
     this.notificationTimer = setInterval(() => { void recover(); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
     void this.deps.ingestion.start().catch(() => { this.status.scheduler = false; });
     void this.deps.lifecycle.start().catch(() => { this.status.scheduler = false; });
+    void this.deps.mailboxMemoryEvents?.start().catch(() => { this.status.scheduler = false; });
     this.status.scheduler = true;
     for (const dependency of ['database', 'hypermail', 'model', 'notifications', 'policy'] as const) this.status[dependency] = await this.probe(dependency);
+    this.hindsightProbeTimer = setInterval(() => { void this.probe('hindsight').then((ready) => { this.status.hindsight = ready; }); }, 30_000);
   }
   private async probe(dependency: WorkerDependency): Promise<boolean> { try { return await (this.deps.probes[dependency]?.() ?? Promise.resolve(dependency === 'scheduler' || dependency === 'queue')); } catch { return false; } }
   async shutdown(): Promise<void> {
     if (this.stopping) return; this.stopping = true; if (this.notificationTimer) clearInterval(this.notificationTimer);
-    this.deps.ingestion.stop(); this.deps.lifecycle.stop(); this.status.scheduler = false;
+    if (this.hindsightProbeTimer) clearInterval(this.hindsightProbeTimer);
+    this.deps.ingestion.stop(); this.deps.lifecycle.stop(); this.deps.mailboxMemoryEvents?.stop(); this.status.scheduler = false;
     await Promise.allSettled([this.closeServer(), this.deps.boss.stop({ graceful: true, timeout: this.environment.SHUTDOWN_TIMEOUT_SECONDS * 1000 })]);
     await this.deps.closeDatabase(); this.status.database = false; this.status.queue = false;
   }

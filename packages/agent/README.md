@@ -1,5 +1,5 @@
-# Agent integration requirements
+# Agent package
 
-`mastraDecisionModel()` supplies Mastra with an account-scoped memory resource and a stable activity thread for every triage generation. Construct the supplied Mastra `Agent` with an owned `Memory` instance configured with `options.observationalMemory: true`; the adapter intentionally does not inspect, correct, or reset that memory.
+`TriageService` requires a `MailboxMemory` adapter. It retains the complete current email and recalls bounded, explicitly untrusted evidence from the exact User/Mailbox Hindsight bank before any model generation. Memory failure aborts generation with `MAILBOX_MEMORY_UNAVAILABLE` so the durable worker can retry.
 
-The account resource is `account:<account UUID>` and the thread is `activity:<activity UUID>`. Do not substitute email addresses or shared global resources.
+`mastraDecisionModel()` keeps Mastra Observational Memory as an automatic User-familiarity layer. Automatic email generation reads it with `memory.options.readOnly: true`; sender-controlled mail is never appended, while explicit User answers are appended idempotently before their continuation. Its stable resource is `user:<User UUID>` across that User's Mailboxes, while each activity uses `user:<User UUID>:activity:<Activity UUID>` as its thread. Construct the supplied Mastra `Agent` with an owned `Memory` configured with `options.observationalMemory: true`; the adapter intentionally does not inspect, correct, or reset derived observations. Never use email addresses as memory identities.

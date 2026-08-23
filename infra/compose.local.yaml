@@ -62,12 +62,14 @@ services:
     environment:
       HEALTH_PORT: 3001
       CODEX_HOME: /var/lib/codex
+      ATTACHMENT_TEMP_DIRECTORY: /var/lib/hypermail-attachments
       # Prevent the shared local env_file from delivering Gmail OAuth config here.
       HYPERMAIL_GMAIL_CLIENT_ID: ""
       HYPERMAIL_GMAIL_CLIENT_SECRET: ""
       HYPERMAIL_GMAIL_REDIRECT_URI: ""
     volumes:
       - codex-home:/var/lib/codex
+      - attachment-temp:/var/lib/hypermail-attachments
       - type: bind
         source: "${CODEX_AUTH_FILE:-${HOME}/.codex/auth.json}"
         target: /run/codex-seed/auth.json
@@ -78,6 +80,8 @@ services:
       postgres:
         condition: service_healthy
       hypermail:
+        condition: service_healthy
+      hindsight:
         condition: service_healthy
     networks: [private, egress]
 
@@ -129,6 +133,32 @@ services:
     # No host exposure; provider OAuth/token and Gmail API calls require outbound access.
     networks: [private, egress]
 
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.9.1
+    restart: unless-stopped
+    env_file: ["${HINDSIGHT_ENV_FILE:-../.env.hindsight}"]
+    environment:
+      HINDSIGHT_ENABLE_API: "true"
+      HINDSIGHT_ENABLE_CP: "false"
+      HINDSIGHT_API_HOST: 0.0.0.0
+      HINDSIGHT_API_PORT: 8888
+      HINDSIGHT_API_WORKER_ID: hypermail-hindsight-0
+      HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB: 50
+      HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE: 5
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    stop_grace_period: 45s
+    mem_limit: ${HINDSIGHT_MEMORY_LIMIT:-4g}
+    cpus: ${HINDSIGHT_CPU_LIMIT:-2.0}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8888/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+    # The API has private ingress only. The egress network is for the configured LLM provider.
+    networks: [private, egress]
+
 networks:
   edge: {}
   egress: {}
@@ -138,5 +168,6 @@ networks:
 volumes:
   postgres-data: {}
   hypermail-data: {}
+  hindsight-data: {}
   attachment-temp: {}
   codex-home: {}

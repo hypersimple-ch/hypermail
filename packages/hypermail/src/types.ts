@@ -7,8 +7,9 @@ export interface Account { email: string; provider: Provider; displayName?: stri
 export interface Folder { id: string; displayName: string; parentFolderId?: string; wellKnownName?: string }
 export interface AttachmentMetadata { id: string; name: string; contentType?: string; size?: number; webUrl?: string; webUrlUnavailableReason?: string }
 export interface Message {
-  id: string; account: string; subject?: string; from?: EmailAddress; to?: EmailAddress[]; cc?: EmailAddress[];
-  receivedAt?: string; isRead?: boolean; folder?: string; body?: string; bodyFormat?: "markdown" | "html" | "text"; attachments?: AttachmentMetadata[];
+  id: string; account: string; subject?: string; from?: EmailAddress; to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[];
+  replyTo?: EmailAddress[]; internetMessageId?: string; receivedAt?: string; isRead?: boolean; folder?: string;
+  body?: string; bodyFormat?: "markdown" | "html" | "text"; attachments?: AttachmentMetadata[];
 }
 export type DraftBodyFormat = "markdown" | "html";
 export interface DraftMutationResult { id: string; draftHtml?: string }

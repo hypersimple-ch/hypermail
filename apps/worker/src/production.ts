@@ -6,9 +6,9 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
-import { MastraSourceHistory, PostgresDecisionPersistence, TriageService, createMastraPostgresStorage, mastraDecisionModel } from '@hypermail/agent';
+import { MailboxMemoryUnavailableError, MastraSourceHistory, PostgresDecisionPersistence, TriageService, createMastraPostgresStorage, mastraDecisionModel, type MailboxMemory } from '@hypermail/agent';
 import { workerEnvSchema } from '@hypermail/contracts';
-import { AgentTaskStore, createPostgresClient, type ManagedSqlClient } from '@hypermail/db';
+import { AgentTaskStore, PostgresMailboxMemoryEventStore, createPostgresClient, type ManagedSqlClient } from '@hypermail/db';
 import { HypermailReadClient, createTenantHypermailSessionProvider, parseTenantHypermailRoutes, SingleOwnerTenantClient, TenantHypermailClientCache, type HypermailMcpHttpClient } from '@hypermail/hypermail';
 import { DeliverPolicyConsumer, DurablePolicyRecovery, HypermailPrivateMutationTransport, PgBossPolicyDispatcher, PostgresPolicyActionInputStore, PostgresPolicyPlanner, createPolicyExecutor } from './policy.js';
 import { NotificationWorker, PostgresNotificationPersistence, PushSubscriptionAesCodec, WebPushVapidTransport, type NotificationInput, type VapidPushTransport } from '@hypermail/notifications';
@@ -21,6 +21,8 @@ import { PostgresIngestionStore, type SqlClient as WorkerSqlClient } from './pos
 import { createCodexCliModel, type CodexCliModel } from './codex-cli-model.js';
 import { AgentTaskRecovery } from './agent-task-delivery.js';
 import { PostgresOperationalGuard } from './operational-safety.js';
+import { createHindsightMailboxMemory, hindsightConfigurationFromWorkerEnvironment, ReadinessGatedMailboxMemory } from './hindsight-memory.js';
+import { MailboxCurrentEmailRetainer, MailboxMemoryEventDeliveryWorker, MailboxMemoryEventScheduler, PostgresMailboxMemoryMessageHydrator, type CurrentEmailMemoryRetainer } from './mailbox-memory-delivery.js';
 import { ClaimingAgentConsumer, DurableNotificationRecovery, type AgentJobHandler, type AgentJobStore, type BossJob, type BossRuntime, type JobConsumer, type NotificationDispatchStore, type NotificationDispatcher, type QueueName, type WorkerEnvironment, type WorkerRuntimeDependencies, WorkerRuntime, defaultHolderId } from './runtime.js';
 
 /** pg-boss v10 invokes a worker with a batch, while WorkerRuntime deliberately consumes one job. */
@@ -55,18 +57,21 @@ const workerSql = (database: Pick<ManagedSqlClient, 'query' | 'transaction'>): W
 /** Durable input projection. Attachment data is metadata from our database, never provider bytes. */
 export type ClaimedAgentJob = Readonly<{
   id: string; activityId: string; userId: string; accountId: string; accountEmail: string; messageId: string;
-  providerMessageId: string; sender: string; subject: string; receivedAt: string | Date;
-  attachments: { filename: string; mediaType: string; sizeBytes: number }[]; attempt: number; runId?: string;
+  providerMessageId: string; sender: string; subject: string; receivedAt: string | Date; currentUserInstruction?: string;
+  attachments: { sourceId: string; providerAttachmentId: string; filename: string; mediaType: string; sizeBytes: number }[]; attempt: number; runId?: string;
 }>;
 
 type AgentJobRow = Omit<ClaimedAgentJob, 'attachments'> & { attachments: unknown };
-const isAttachmentMetadata = (value: unknown): value is { filename: string; mediaType: string; sizeBytes: number } => {
+const isAttachmentMetadata = (value: unknown): value is ClaimedAgentJob['attachments'][number] => {
   if (value === null || typeof value !== 'object') return false;
   const attachment = value as Record<string, unknown>;
+  const sourceId = attachment['sourceId'];
+  const providerAttachmentId = attachment['providerAttachmentId'];
   const filename = attachment['filename'];
   const mediaType = attachment['mediaType'];
   const sizeBytes = attachment['sizeBytes'];
-  return typeof filename === 'string' && typeof mediaType === 'string' && typeof sizeBytes === 'number' && Number.isInteger(sizeBytes) && sizeBytes >= 0;
+  return typeof sourceId === 'string' && typeof providerAttachmentId === 'string'
+    && typeof filename === 'string' && typeof mediaType === 'string' && typeof sizeBytes === 'number' && Number.isInteger(sizeBytes) && sizeBytes >= 0;
 };
 const attachmentMetadata = (value: unknown): ClaimedAgentJob['attachments'] => Array.isArray(value) ? value.filter(isAttachmentMetadata) : [];
 
@@ -91,7 +96,8 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
           ac.user_id as "userId", a.account_id as "accountId", ac.email as "accountEmail",
           m.id as "messageId", m.provider_message_id as "providerMessageId",
           coalesce(m.sender->>'name',m.sender->>'address','') as sender, m.subject,
-          m.received_at as "receivedAt", coalesce(jsonb_agg(jsonb_build_object(
+          m.received_at as "receivedAt", qi.answer as "currentUserInstruction", coalesce(jsonb_agg(jsonb_build_object(
+            'sourceId',att.id,'providerAttachmentId',att.provider_attachment_id,
             'filename',att.filename,'mediaType',att.media_type,'sizeBytes',att.size_bytes))
             filter(where att.id is not null),'[]'::jsonb) as attachments, j.attempt,
           ma.id as "assignmentId", ma.revision as "assignmentRevision", ma.manager_kind as "managerKind",
@@ -101,14 +107,16 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
         from locked_job locked join app.agent_jobs j on j.id=locked.id join app.activities a on a.id=j.activity_id
         join app.accounts ac on ac.id=a.account_id join app.messages m on m.id=a.message_id
         left join app.attachments att on att.message_id=m.id
+        left join lateral (select q.answer from app.questions q where q.activity_id=a.id and q.state='answered'
+          order by q.answered_at desc nulls last limit 1) qi on true
         left join app.mailbox_manager_assignments ma on ma.user_id=ac.user_id and ma.account_id=a.account_id
         left join app.agent_capability_grants g on g.user_id=ac.user_id and g.account_id=a.account_id
           and g.manager_kind=ma.manager_kind and g.agent_connection_id is not distinct from ma.agent_connection_id
         left join app.agent_safety_ceiling s on s.singleton=true
-        where j.id=$1::uuid and ($2::uuid is null or ac.user_id=$2::uuid) and j.available_at<=now()
+        where j.id=$1::uuid and ($2::uuid is null or ac.user_id=$2::uuid) and ac.state in ('ready','degraded') and j.available_at<=now()
           and j.state IN ('pending', 'running')
         group by j.id,j.activity_id,j.state,j.agent_run_id,ac.user_id,a.account_id,ac.email,m.id,
-          m.provider_message_id,m.sender,m.subject,m.received_at,j.attempt,ma.id,ma.revision,
+          m.provider_message_id,m.sender,m.subject,m.received_at,qi.answer,j.attempt,ma.id,ma.revision,
           ma.manager_kind,ma.automatic_processing_enabled,g.id,g.revision,g.state,g.invocation_modes,
           g.capabilities,s.revision,s.invocation_modes,s.capabilities`, [jobId, userId]);
       const row = result.rows[0];
@@ -145,14 +153,21 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
       [runId,row.activityId,row.userId,row.accountId,row.assignmentId,row.assignmentRevision,row.grantId,
         row.grantRevision,row.safetyRevision,row.messageId,inputDigest]);
       await db.query(`update app.agent_jobs set state='running', agent_run_id=$2,
-        unavailable_reason=null, attempt=case when state='pending' then attempt+1 else attempt end, updated_at=now()
+        unavailable_reason=null, last_error_code=null, attempt=case when state='pending' then attempt+1 else attempt end, updated_at=now()
         where id=$1 and (agent_run_id is null or agent_run_id=$2)`, [jobId, runId]);
       return { id: row.id, activityId: row.activityId, userId: row.userId, accountId: row.accountId,
         accountEmail: row.accountEmail, messageId: row.messageId, providerMessageId: row.providerMessageId,
         sender: row.sender, subject: row.subject, receivedAt: row.receivedAt,
-        attachments: attachmentMetadata(row.attachments), attempt: row.jobState === 'pending' ? row.attempt + 1 : row.attempt,
+        ...(row.currentUserInstruction ? { currentUserInstruction: row.currentUserInstruction } : {}), attachments: attachmentMetadata(row.attachments), attempt: row.jobState === 'pending' ? row.attempt + 1 : row.attempt,
         runId };
     });
+  }
+  async deferMemory(job: ClaimedAgentJob): Promise<void> {
+    const deferred = await this.db.query<{ id: string }>(`update app.agent_jobs set state='pending', queue_job_id=null,
+      available_at=now()+make_interval(secs => least(300, 5 * power(2, least(attempt, 6))::integer)),
+      last_error_code='MAILBOX_MEMORY_UNAVAILABLE', unavailable_reason='MAILBOX_MEMORY_UNAVAILABLE', updated_at=now()
+      where id=$1 and state='running' and ($2::uuid is null or agent_run_id=$2::uuid) returning id`, [job.id, job.runId ?? null]);
+    if (deferred.rows.length !== 1) throw new Error('MAILBOX_MEMORY_DEFER_FAILED');
   }
   async failAdapter(job: ClaimedAgentJob, code: string): Promise<void> {
     await this.db.transaction(async (db) => {
@@ -173,13 +188,14 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
 
 /** Reads provider content only after the durable job is claimed, then passes scoped text to triage. */
 export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
-  constructor(private readonly clients: { clientForUser(userId: string): { initialize(): Promise<unknown>; readMessage: HypermailReadClient['readMessage'] } }, private readonly triage: Pick<TriageService, 'triage'>, private readonly store: Pick<PostgresAgentJobStore, 'failAdapter' | 'cacheBody'>, private readonly globalConstraints: string, private readonly planner?: Pick<PostgresPolicyPlanner, 'plan'>) {}
+  constructor(private readonly clients: { clientForUser(userId: string): Readonly<{ initialize(): Promise<unknown>; readMessage: HypermailReadClient['readMessage']; openAttachment?: HypermailReadClient['openAttachment'] }> }, private readonly triage: Pick<TriageService, 'triage'> & Partial<Pick<TriageService, 'rememberUserInstruction'>>, private readonly store: Pick<PostgresAgentJobStore, 'deferMemory' | 'failAdapter' | 'cacheBody'>, private readonly globalConstraints: string, private readonly planner?: Pick<PostgresPolicyPlanner, 'plan'>, private readonly currentEmailRetainer?: CurrentEmailMemoryRetainer) {}
   async evaluate(job: ClaimedAgentJob): Promise<void> {
     let bodyText: string;
+    let message: Awaited<ReturnType<HypermailReadClient['readMessage']>>;
+    const client = this.clients.clientForUser(job.userId);
     try {
-      const client = this.clients.clientForUser(job.userId);
       await client.initialize();
-      const message = await client.readMessage(job.accountEmail, job.providerMessageId, 'text');
+      message = await client.readMessage(job.accountEmail, job.providerMessageId, 'text');
       bodyText = message.body ?? '';
       // Caching is optional; a cache outage must not prevent a durable decision.
       await this.store.cacheBody(job.messageId, bodyText).catch(() => undefined);
@@ -187,9 +203,35 @@ export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
       await this.store.failAdapter(job, 'AGENT_INPUT_UNAVAILABLE');
       throw error;
     }
-    const outcome = await this.triage.triage({ activityId: job.activityId, userId: job.userId, accountId: job.accountId, attempt: job.attempt,
-      email: { messageId: job.messageId, from: job.sender, subject: job.subject, receivedAt: new Date(job.receivedAt).toISOString(), bodyText, attachments: job.attachments },
-      globalConstraints: this.globalConstraints });
+    // Finish the richer provider projection and supported files before mandatory recall.
+    if (this.currentEmailRetainer) {
+      try {
+        if (!client.openAttachment) throw new Error('HYPERMAIL_ATTACHMENT_INTERFACE_UNAVAILABLE');
+        await this.currentEmailRetainer.retainCurrentEmail({ scope: { userId: job.userId, mailboxId: job.accountId },
+          canonicalMessageId: job.messageId, providerMessageId: job.providerMessageId,
+          accountEmail: job.accountEmail, receivedAt: new Date(job.receivedAt).toISOString(), message,
+          attachments: job.attachments, client: { openAttachment: client.openAttachment.bind(client) } });
+      } catch {
+        await this.store.deferMemory(job);
+        return;
+      }
+    }
+    let outcome: Awaited<ReturnType<TriageService['triage']>>;
+    try {
+      if (job.currentUserInstruction) await this.triage.rememberUserInstruction?.({ userId: job.userId,
+        activityId: job.activityId, instruction: job.currentUserInstruction });
+      outcome = await this.triage.triage({ activityId: job.activityId, userId: job.userId, accountId: job.accountId, attempt: job.attempt,
+        email: { messageId: job.messageId, from: job.sender, subject: job.subject, receivedAt: new Date(job.receivedAt).toISOString(), bodyText,
+          attachments: job.attachments.map(({ filename, mediaType, sizeBytes }) => ({ filename, mediaType, sizeBytes })) },
+        ...(job.currentUserInstruction ? { currentUserInstruction: job.currentUserInstruction } : {}),
+        globalConstraints: this.globalConstraints }, { currentEmailRetained: this.currentEmailRetainer !== undefined });
+    } catch (error) {
+      if (!(error instanceof MailboxMemoryUnavailableError)) throw error;
+      // Completing this queue delivery after the durable row is reset avoids spending pg-boss
+      // retries. DispatchRecovery will offer the same logical job after the bounded backoff.
+      await this.store.deferMemory(job);
+      return;
+    }
     if (outcome.decision.state === 'actionable') await this.planner?.plan(job.activityId, job.attempt, outcome.decision);
   }
 }
@@ -261,6 +303,8 @@ export interface ProductionFactories {
   createNotificationTransport?(environment: WorkerEnvironment): VapidPushTransport;
   /** Test seam: avoids creating provider and Mastra/Postgres clients. */
   createTriageService?(environment: WorkerEnvironment): Pick<TriageService, 'triage'>;
+  /** Test seam for the required SDK-neutral memory port. Native production uses Hindsight. */
+  createMailboxMemory?(): MailboxMemory;
   holderId?(): string;
 }
 
@@ -291,6 +335,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const initializedHypermail = client ? {
     initialize: ensureHypermail,
     readMessage: async (...input: Parameters<HypermailReadClient['readMessage']>) => { await ensureHypermail(); return client.readMessage(...input); },
+    openAttachment: async (...input: Parameters<HypermailReadClient['openAttachment']>) => { await ensureHypermail(); return client.openAttachment(...input); },
     establishBaseline: async (...input: Parameters<HypermailReadClient['establishBaseline']>) => { await ensureHypermail(); return client.establishBaseline(...input); },
     pollNewInbox: async (...input: Parameters<HypermailReadClient['pollNewInbox']>) => { await ensureHypermail(); return client.pollNewInbox(...input); },
     inbox: async (...input: Parameters<HypermailReadClient['inbox']>) => { await ensureHypermail(); return client.inbox(...input); },
@@ -306,6 +351,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
       return {
         initialize: async () => { await usingRead(() => Promise.resolve(undefined)); },
         readMessage: (...input: Parameters<HypermailReadClient['readMessage']>) => usingRead(read => read.readMessage(...input)),
+        openAttachment: (...input: Parameters<HypermailReadClient['openAttachment']>) => usingRead(read => read.openAttachment(...input)),
         establishBaseline: (...input: Parameters<HypermailReadClient['establishBaseline']>) => usingRead(read => read.establishBaseline(...input)),
         pollNewInbox: (...input: Parameters<HypermailReadClient['pollNewInbox']>) => usingRead(read => read.pollNewInbox(...input)),
         inbox: (...input: Parameters<HypermailReadClient['inbox']>) => usingRead(read => read.inbox(...input)),
@@ -317,6 +363,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
     const initialize = (): Promise<unknown> => { initialization ??= scoped.initialize(); return initialization; };
     return { initialize,
       readMessage: async (...input: Parameters<HypermailReadClient['readMessage']>) => { await initialize(); return scoped.readMessage(...input); },
+      openAttachment: async (...input: Parameters<HypermailReadClient['openAttachment']>) => { await initialize(); return scoped.openAttachment(...input); },
       establishBaseline: async (...input: Parameters<HypermailReadClient['establishBaseline']>) => { await initialize(); return scoped.establishBaseline(...input); },
       pollNewInbox: async (...input: Parameters<HypermailReadClient['pollNewInbox']>) => { await initialize(); return scoped.pollNewInbox(...input); },
       inbox: async (...input: Parameters<HypermailReadClient['inbox']>) => { await initialize(); return scoped.inbox(...input); },
@@ -339,8 +386,14 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
     lifecycleBatchSize: environment.LIFECYCLE_BATCH_SIZE,
   }), lifecycleStore, clock, holderId, environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
   const notificationRecovery = new DurableNotificationRecovery(new PostgresNotificationDispatchStore(database), new PgBossNotificationDispatcher(rawBoss));
+  // The injected triage seam is test-only. Every native production decision requires the
+  // official Hindsight-backed MailboxMemory before Mastra/model generation.
+  const configuredMailboxMemory = factories.createMailboxMemory?.()
+    ?? (factories.createTriageService ? undefined : createHindsightMailboxMemory(hindsightConfigurationFromWorkerEnvironment(environment)));
+  const mailboxMemory = configuredMailboxMemory ? new ReadinessGatedMailboxMemory(configuredMailboxMemory) : undefined;
   let closeAgentResources: () => Promise<void> = () => Promise.resolve();
   const triage = factories.createTriageService?.(environment) ?? (() => {
+    if (!mailboxMemory) throw new Error('HINDSIGHT_MEMORY_REQUIRED');
     const decisionSql: Sql = postgres(environment.DATABASE_URL);
     const storage = createMastraPostgresStorage(environment.DATABASE_URL);
     const model = createModel(environment);
@@ -354,7 +407,8 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
       });
       await Promise.allSettled(closers);
     };
-    return new TriageService({ model: mastraDecisionModel(agent), persistence: new PostgresDecisionPersistence(decisionSql), sourceHistory: new MastraSourceHistory(memory), modelProvider: environment.MODEL_PROVIDER, modelName: environment.MODEL_NAME });
+    return new TriageService({ model: mastraDecisionModel(agent), persistence: new PostgresDecisionPersistence(decisionSql), mailboxMemory,
+      sourceHistory: new MastraSourceHistory(memory), modelProvider: environment.MODEL_PROVIDER, modelName: environment.MODEL_NAME });
   })();
   const policyDispatcher = new PgBossPolicyDispatcher(rawBoss);
   const legacyPolicyMcp = (client as unknown as { transport?: Pick<HypermailMcpHttpClient, 'call'> } | undefined)?.transport;
@@ -362,7 +416,15 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const policyRecovery = new DurablePolicyRecovery(database, policyDispatcher);
   const policyPlanner = new PostgresPolicyPlanner(database, policyDispatcher);
   const agentStore = new PostgresAgentJobStore(database, environment.BODY_RETENTION_DAYS);
-  const agentConsumer = new ClaimingAgentConsumer(agentStore, new DeliverAgentConsumer(tenantHypermail, triage, agentStore, environment.AGENT_GLOBAL_CONSTRAINTS, policyPlanner));
+  const currentEmailRetainer = mailboxMemory ? new MailboxCurrentEmailRetainer(mailboxMemory, {
+    tempDirectory: environment.ATTACHMENT_TEMP_DIRECTORY, maxBytes: environment.HINDSIGHT_MAX_FILE_BYTES,
+    operationTimeoutMs: environment.HINDSIGHT_REQUEST_TIMEOUT_MS }) : undefined;
+  const agentConsumer = new ClaimingAgentConsumer(agentStore, new DeliverAgentConsumer(tenantHypermail, triage, agentStore,
+    environment.AGENT_GLOBAL_CONSTRAINTS, policyPlanner, currentEmailRetainer));
+  const memoryEventStore = new PostgresMailboxMemoryEventStore(database);
+  const memoryEvents = currentEmailRetainer ? new MailboxMemoryEventScheduler(
+    new MailboxMemoryEventDeliveryWorker(memoryEventStore, new PostgresMailboxMemoryMessageHydrator(database),
+      tenantHypermail, currentEmailRetainer, `${holderId}:mailbox-memory`), memoryEventStore, clock) : undefined;
   const notificationPersistence = new PostgresNotificationPersistence(database, new PushSubscriptionAesCodec(environment.PUSH_SUBSCRIPTION_ENCRYPTION_KEY));
   const notificationTransport = (factories.createNotificationTransport ?? ((env: WorkerEnvironment) => new WebPushVapidTransport({ subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY })))(environment);
   const notificationWorker = new NotificationWorker(notificationPersistence, notificationTransport);
@@ -374,12 +436,14 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   } : legacyPolicyExecutor as NonNullable<typeof legacyPolicyExecutor>);
   const agentTaskRecovery = new AgentTaskRecovery(new AgentTaskStore(database,operationalGuard));
   const dependencies: WorkerRuntimeDependencies = {
-    boss, ingestion, lifecycle, agentTaskRecovery, dispatchRecovery: { recover: () => dispatchRecovery.dispatch() }, notificationRecovery, policyRecovery,
+    boss, ingestion, lifecycle, ...(memoryEvents ? { mailboxMemoryEvents: memoryEvents } : {}), agentTaskRecovery,
+    dispatchRecovery: { recover: () => dispatchRecovery.dispatch() }, notificationRecovery, policyRecovery,
     agentConsumer, notificationConsumer, policyConsumer,
     closeDatabase: async () => { await closeAgentResources(); await tenantSessions?.close(); await database.close(); },
     probes: {
       database: async () => { await database.query('select 1'); return true; },
       hypermail: async () => { if (tenantSessions) { await ensureTenantReadiness(); return true; } await ensureHypermail(); return true; },
+      hindsight: async () => { if (!mailboxMemory) return true; await mailboxMemory.readiness(); return true; },
       // Readiness initializes every configured tenant and validates the restricted policy tool contract without mutation I/O.
       model: () => Promise.resolve(true),
       notifications: () => Promise.resolve(true),

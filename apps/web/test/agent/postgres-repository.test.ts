@@ -1,7 +1,12 @@
+import { createHash } from 'node:crypto';
+import { deterministicMailboxMemoryEventId } from '@hypermail/db';
 import { describe, expect, it } from 'vitest';
 import { PostgresAgentRepository } from '../../src/agent/postgres-repository.js';
 import type { SqlClient, SqlQueryResult, SqlRow } from '../../src/activity/postgres-repository.js';
 
+const canonicalJson = (value: unknown): string => value === null || typeof value !== 'object' ? JSON.stringify(value) : Array.isArray(value)
+  ? `[${value.map(canonicalJson).join(',')}]`
+  : `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
 const scope = { subjectId: 'person-1', accountIds: ['account-a', 'account-b'] } as const;
 class RecordingSql implements SqlClient {
   readonly calls: Array<{ text: string; values: readonly unknown[] | undefined }> = [];
@@ -53,7 +58,7 @@ describe('PostgresAgentRepository', () => {
   it('uses the question lock and deterministic audit correlation to replay duplicate answers without resuming twice', async () => {
     const db = new RecordingSql([
       { rows: [{ id: 'question-1', activity_id: 'activity-1', account_id: 'account-a', version: 2, prompt: 'Proceed?', state: 'answered' }] },
-      { rows: [{ id: 'audit-1', metadata: { answer: 'Yes' } }] },
+      { rows: [{ id: 'audit-1', metadata: { answerDigest: createHash('sha256').update('Yes').digest('hex') } }] },
     ]);
     const result = await new PostgresAgentRepository(db).answerQuestion(scope, 'question-1', 'Yes', 2, 'stable-key');
     expect(result).toMatchObject({ kind: 'duplicate', question: { id: 'question-1', state: 'answered' } });
@@ -64,10 +69,32 @@ describe('PostgresAgentRepository', () => {
     expect(db.calls[1]?.text).toContain('metadata');
   });
 
+  it('enqueues one bounded question-answer event in the canonical answer transaction', async () => {
+    const occurredAt = '2025-01-01T00:01:00.000Z';
+    const canonical = { userId: scope.subjectId, mailboxId: 'account-a', sourceType: 'question', sourceId: 'question-1', sourceVersion: 3,
+      kind: 'question_answered', occurredAt, contentPayload: { outcome: 'answered', question: { text: 'Proceed?', digest: createHash('sha256').update('Proceed?').digest('hex'), truncated: false }, answer: { text: 'Yes', digest: createHash('sha256').update('Yes').digest('hex'), truncated: false } } } as const;
+    const eventId = deterministicMailboxMemoryEventId(canonical);
+    const contentDigest = createHash('sha256').update(canonicalJson(canonical.contentPayload)).digest('hex');
+    const db = new RecordingSql([
+      { rows: [{ id: 'question-1', activity_id: 'activity-1', account_id: 'account-a', version: 2, prompt: 'Proceed?', state: 'open' }] },
+      { rows: [] }, { rows: [{ id: 'question-1' }] }, { rows: [{ version: 3, updated_at: occurredAt }] }, { rows: [] }, { rows: [] },
+      { rows: [{ id: eventId, user_id: scope.subjectId, account_id: 'account-a', source_type: 'question', source_id: 'question-1', source_version: 3,
+        kind: 'question_answered', content_digest: contentDigest, content_payload: canonical.contentPayload, state: 'pending', attempt_count: 0,
+        max_attempts: 8, claim_generation: 0, available_at: occurredAt, occurred_at: occurredAt, completed_at: null, dead_lettered_at: null,
+        result_metadata: null, last_error_code: null, last_error_metadata: null, created_at: occurredAt, updated_at: occurredAt }] },
+    ]);
+    await expect(new PostgresAgentRepository(db).answerQuestion(scope, 'question-1', 'Yes', 2, 'stable-key')).resolves.toMatchObject({ kind: 'answered' });
+    const enqueue = db.calls.find((call) => call.text.includes('mailbox_memory_events'));
+    expect(enqueue?.values?.[0]).toBe(eventId);
+    expect(enqueue?.values?.[8]).toEqual(canonical.contentPayload);
+    const audit = db.calls.find((call) => call.text.includes('INSERT INTO app.audits'));
+    expect(audit?.values?.at(-1)).not.toContain('"answer":"Yes"');
+  });
+
   it('rejects a duplicate idempotency key when its durable answer differs', async () => {
     const db = new RecordingSql([
       { rows: [{ id: 'question-1', activity_id: 'activity-1', account_id: 'account-a', version: 2, prompt: 'Proceed?', state: 'answered' }] },
-      { rows: [{ id: 'audit-1', metadata: { answer: 'Yes' } }] },
+      { rows: [{ id: 'audit-1', metadata: { answerDigest: createHash('sha256').update('Yes').digest('hex') } }] },
     ]);
     await expect(new PostgresAgentRepository(db).answerQuestion(scope, 'question-1', 'No', 2, 'stable-key')).resolves.toEqual({ kind: 'conflict', currentVersion: 2 });
     expect(db.calls).toHaveLength(2);

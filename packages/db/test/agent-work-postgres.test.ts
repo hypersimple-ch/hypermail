@@ -84,6 +84,8 @@ describe('Agent work PostgreSQL integration', () => {
           occurredAt: at(7), detail: { type: 'action_verified', runId: run.id, actionId: action.id } };
         const verified = await store.verifyAction(ids.userId, ids.accountId, action.id, proof, event);
         expect(verified).toMatchObject({ state: 'verified', verification: proof });
+        expect(await sql<{kind:string;content_payload:Record<string,unknown>}[]>`select kind,content_payload from app.mailbox_memory_events where source_id=${action.id}`)
+          .toEqual([{ kind: 'mailbox_action_verified', content_payload: { outcome: 'verified', actionKind: 'mark_read', target: { messageId: ids.messageId } } }]);
         await expect(store.authorizeAction(action)).resolves.toMatchObject({ state: 'verified' });
 
         await expect(sql`update app.agent_authorized_actions set completed_at=${at(8)} where id=${action.id}`).rejects.toThrow();
@@ -105,6 +107,9 @@ describe('Agent work PostgreSQL integration', () => {
 
         const failed = makeAction(ids, activity, run, { authorizedAt: at(10) });
         await store.authorizeAction(failed); await store.failAction(ids.userId, ids.accountId, failed.id, 'unverifiable', at(11));
+        await expect(store.failAction(ids.userId, ids.accountId, failed.id, 'unverifiable', at(11))).rejects.toThrow('Illegal Agent Action transition');
+        expect(await sql<{kind:string;content_payload:Record<string,unknown>}[]>`select kind,content_payload from app.mailbox_memory_events where source_id=${failed.id}`)
+          .toEqual([{ kind: 'mailbox_action_unverifiable', content_payload: { outcome: 'unverifiable', actionKind: 'mark_read', target: { messageId: ids.messageId } } }]);
         const retry = makeAction(ids, activity, run, { attempt: 2, retryOfActionId: failed.id, authorizedAt: at(12) });
         await expect(store.retryAction(failed.id, retry)).resolves.toMatchObject({ attempt: 2, retryOfActionId: failed.id });
         const invalidRetry = makeAction(ids, activity, run, { attempt: 3, retryOfActionId: failed.id, authorizedAt: at(12) });

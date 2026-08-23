@@ -1,4 +1,4 @@
-export type WorkerDependency = 'database' | 'queue' | 'hypermail' | 'scheduler' | 'model' | 'notifications' | 'policy';
+export type WorkerDependency = 'database' | 'queue' | 'hypermail' | 'hindsight' | 'scheduler' | 'model' | 'notifications' | 'policy';
 
 export type DependencyState = Readonly<Record<WorkerDependency, boolean>>;
 

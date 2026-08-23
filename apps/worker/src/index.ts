@@ -10,3 +10,6 @@ export * from './observability/index.js';
 export * from './lifecycle/retention.js';
 export * from './lifecycle/postgres-store.js';
 export * from './operational-safety.js';
+export * from './hindsight-memory.js';
+export * from './mailbox-memory-delivery.js';
+export * from './mailbox-memory-deletion.js';
