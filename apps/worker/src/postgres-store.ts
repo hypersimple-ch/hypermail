@@ -1,3 +1,4 @@
+import { enqueueMailboxMemoryEventInTransaction } from '@hypermail/db';
 import type { Account, Arrival, ArrivalResult, IngestionStore, SanitizedFailure } from './ingestion.js';
 
 export interface SqlResult<Row> { rows: Row[]; }
@@ -5,6 +6,11 @@ export interface SqlClient { query<Row extends Record<string, unknown>>(statemen
 const one = <Row>(result: SqlResult<Row>): Row => { const row = result.rows[0]; if (!row) throw new Error('expected database row'); return row; };
 const text = (value: string | undefined, maximum: number): string => (value ?? '').slice(0, maximum);
 const date = (value: string | undefined, fallback: Date): Date => { const parsed = value ? new Date(value) : fallback; return Number.isNaN(parsed.valueOf()) ? fallback : parsed; };
+const attachmentMetadata = (items: Arrival['message']['attachments']): string => JSON.stringify((items ?? []).slice(0, 100).map((item) => ({
+  provider_attachment_id: text(item.id, 2_000), filename: text(item.name, 1_000),
+  media_type: text(item.contentType ?? 'application/octet-stream', 255),
+  size_bytes: Math.min(2_147_483_647, Math.max(0, Number.isSafeInteger(item.size) ? item.size ?? 0 : 0)),
+})));
 
 /** Parameterized PostgreSQL implementation. SQL values are never interpolated. */
 export class PostgresIngestionStore implements IngestionStore {
@@ -29,66 +35,85 @@ export class PostgresIngestionStore implements IngestionStore {
     const recipients = [...(message.to ?? []).map((item) => ({ kind: 'to', ...item })), ...(message.cc ?? []).map((item) => ({ kind: 'cc', ...item }))];
     const sender = message.from ?? { address: 'unknown@invalid' };
     await this.sql.query(
-      `insert into app.messages (account_id, provider_message_id, sender, recipients, subject, preview, received_at, is_read, has_attachments, is_baseline)
-       values ($1, $2, $3::jsonb, $4::jsonb, $5, '', $6, $7, $8, true)
-       on conflict (account_id, provider_message_id) do update set updated_at = excluded.updated_at`,
-      [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0],
+      `with projected_message as (
+         insert into app.messages (account_id, provider_message_id, sender, recipients, subject, preview, received_at, is_read, has_attachments, is_baseline)
+         values ($1, $2, $3::text::jsonb, $4::text::jsonb, $5, '', $6, $7, $8, true)
+         on conflict (account_id, provider_message_id) do update set updated_at = excluded.updated_at
+         returning id
+       )
+       insert into app.attachments(message_id,provider_attachment_id,filename,media_type,size_bytes)
+       select m.id,x.provider_attachment_id,x.filename,x.media_type,x.size_bytes from projected_message m
+       cross join jsonb_to_recordset($9::text::jsonb) as x(provider_attachment_id text,filename text,media_type text,size_bytes integer)
+       on conflict(message_id,provider_attachment_id) do update set filename=excluded.filename,media_type=excluded.media_type,size_bytes=excluded.size_bytes`,
+      [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0, attachmentMetadata(message.attachments)],
     );
   }
   async recordArrival(arrival: Arrival): Promise<ArrivalResult | null> {
     const message = arrival.message;
     const recipients = [...(message.to ?? []).map((item) => ({ kind: 'to', ...item })), ...(message.cc ?? []).map((item) => ({ kind: 'cc', ...item }))];
     const sender = message.from ?? { address: 'unknown@invalid' };
-    const result = await this.sql.query<{ job_id: string; idempotency_key: string; created: boolean }>(
-      `with inserted_message as (
-         insert into app.messages (account_id, provider_message_id, sender, recipients, subject, preview, received_at, is_read, has_attachments, is_baseline)
-         values ($1, $2, $3::jsonb, $4::jsonb, $5, '', $6, $7, $8, false)
-         on conflict (account_id, provider_message_id) do update set updated_at = excluded.updated_at
-         returning id, is_baseline, received_at, (xmax = 0) as created
-       ), inserted_activity as (
-         insert into app.activities (account_id, message_id, state)
-         select $1, m.id, 'new' from inserted_message m
-         join app.accounts a on a.id = $1
-         where not m.is_baseline and m.received_at >= a.baseline_completed_at
-         on conflict (message_id) do nothing
-         returning id, message_id
-       ), activity as (
-         select id, message_id from inserted_activity union all
-         select a.id, a.message_id from app.activities a join inserted_message m on m.id = a.message_id
-         where not m.is_baseline
-         limit 1
-       ), canonical_activity as (
-         -- Same identity as the legacy arrival projection. ON CONFLICT also repairs
-         -- arrivals committed before canonical dual-write was deployed.
-         insert into app.agent_activities
-           (id, user_id, account_id, kind, source_message_id, correlation_id, state, revision, created_at, updated_at)
-         select a.id, ac.user_id, $1, 'arrival', a.message_id, 'arrival:' || a.id::text,
-                'open', 1, $10, $10
-         from activity a join app.accounts ac on ac.id = $1
-         on conflict (id) do nothing
-         returning id
-       ), inserted_notification as (
-         insert into app.logical_notifications (activity_id, state, sender_label, subject, status_label)
-         select a.id, 'pending', $9, $5, 'New email' from activity a
-         left join canonical_activity ca on ca.id = a.id
-         on conflict (activity_id) do nothing
-       ), inserted_job as (
-         insert into app.agent_jobs (activity_id, idempotency_key, state, available_at)
-         select id, 'agent:evaluate:' || id::text, 'pending', $10 from activity on conflict (activity_id) do nothing
-         returning id, activity_id, idempotency_key
-       ), job as (
-         select id, activity_id, idempotency_key from inserted_job
-         union all
-         select j.id, j.activity_id, j.idempotency_key from app.agent_jobs j join activity a on a.id = j.activity_id
-         where not exists (select 1 from inserted_job)
-         limit 1
-       )
-       select j.id as job_id, j.idempotency_key, m.created from activity a
-       join job j on j.activity_id = a.id cross join inserted_message m`,
-      [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0, text(sender.name ?? sender.address, 200), arrival.observedAt],
-    );
-    const row = result.rows[0];
-    return row ? { jobId: row.job_id, idempotencyKey: row.idempotency_key, created: row.created } : null;
+    return this.sql.transaction(async (sql) => {
+      const result = await sql.query<{ job_id: string; idempotency_key: string; created: boolean; source_id: string; user_id: string; activity_created: boolean }>(
+        `with inserted_message as (
+           insert into app.messages (account_id, provider_message_id, sender, recipients, subject, preview, received_at, is_read, has_attachments, is_baseline)
+           values ($1, $2, $3::text::jsonb, $4::text::jsonb, $5, '', $6, $7, $8, false)
+           on conflict (account_id, provider_message_id) do update set updated_at = excluded.updated_at
+           returning id, is_baseline, received_at, (xmax = 0) as created
+         ), projected_attachments as (
+           insert into app.attachments(message_id,provider_attachment_id,filename,media_type,size_bytes)
+           select m.id,x.provider_attachment_id,x.filename,x.media_type,x.size_bytes from inserted_message m
+           cross join jsonb_to_recordset($11::text::jsonb) as x(provider_attachment_id text,filename text,media_type text,size_bytes integer)
+           on conflict(message_id,provider_attachment_id) do update set filename=excluded.filename,media_type=excluded.media_type,size_bytes=excluded.size_bytes
+           returning id
+         ), inserted_activity as (
+           insert into app.activities (account_id, message_id, state)
+           select $1, m.id, 'new' from inserted_message m
+           join app.accounts a on a.id = $1
+           where not m.is_baseline and m.received_at >= a.baseline_completed_at
+           on conflict (message_id) do nothing
+           returning id, message_id
+         ), activity as (
+           select id, message_id from inserted_activity union all
+           select a.id, a.message_id from app.activities a join inserted_message m on m.id = a.message_id
+           where not m.is_baseline
+           limit 1
+         ), canonical_activity as (
+           insert into app.agent_activities
+             (id, user_id, account_id, kind, source_message_id, correlation_id, state, revision, created_at, updated_at)
+           select a.id, ac.user_id, $1, 'arrival', a.message_id, 'arrival:' || a.id::text,
+                  'open', 1, $10, $10
+           from activity a join app.accounts ac on ac.id = $1
+           on conflict (id) do nothing
+           returning id
+         ), inserted_notification as (
+           insert into app.logical_notifications (activity_id, state, sender_label, subject, status_label)
+           select a.id, 'pending', $9, $5, 'New email' from activity a
+           left join canonical_activity ca on ca.id = a.id
+           on conflict (activity_id) do nothing
+         ), inserted_job as (
+           insert into app.agent_jobs (activity_id, idempotency_key, state, available_at)
+           select id, 'agent:evaluate:' || id::text, 'pending', $10 from activity on conflict (activity_id) do nothing
+           returning id, activity_id, idempotency_key
+         ), job as (
+           select id, activity_id, idempotency_key from inserted_job
+           union all
+           select j.id, j.activity_id, j.idempotency_key from app.agent_jobs j join activity a on a.id = j.activity_id
+           where not exists (select 1 from inserted_job)
+           limit 1
+         )
+         select j.id as job_id,j.idempotency_key,m.created,a.message_id as source_id,ac.user_id,
+                exists(select 1 from inserted_activity) as activity_created
+         from activity a join job j on j.activity_id=a.id cross join inserted_message m join app.accounts ac on ac.id=$1`,
+        [arrival.accountId, message.id, JSON.stringify(sender), JSON.stringify(recipients), text(message.subject, 998), date(message.receivedAt, arrival.observedAt), message.isRead ?? false, (message.attachments?.length ?? 0) > 0, text(sender.name ?? sender.address, 200), arrival.observedAt, attachmentMetadata(message.attachments)],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      if (row.activity_created) await enqueueMailboxMemoryEventInTransaction(sql, {
+        userId: row.user_id, mailboxId: arrival.accountId, sourceType: 'message', sourceId: row.source_id,
+        sourceVersion: 1, kind: 'email_received', occurredAt: arrival.observedAt.toISOString(), contentPayload: {},
+      });
+      return { jobId: row.job_id, idempotencyKey: row.idempotency_key, created: row.created };
+    });
   }
   async markPollSucceeded(accountId: string, at: Date, reconciled: boolean): Promise<void> {
     await this.sql.query(
@@ -111,7 +136,7 @@ export class PostgresIngestionStore implements IngestionStore {
     const result = await this.sql.query<{ id: string; user_id: string; idempotency_key: string }>(
       `select j.id, ac.user_id, j.idempotency_key from app.agent_jobs j
        join app.activities a on a.id = j.activity_id join app.accounts ac on ac.id = a.account_id
-       where j.state = 'pending' and j.queue_job_id is null and j.available_at <= now()
+       where ac.state in ('ready','degraded') and j.state = 'pending' and j.queue_job_id is null and j.available_at <= now()
        order by j.created_at limit $1`, [limit]);
     return result.rows.map((row) => ({ jobId: row.id, userId: row.user_id, idempotencyKey: row.idempotency_key }));
   }

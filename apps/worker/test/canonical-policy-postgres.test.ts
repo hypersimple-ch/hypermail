@@ -52,6 +52,12 @@ describe('canonical policy PostgreSQL execution',()=>{
         expect(await sql`select state,provider_reported_at is null as no_report from app.agent_authorized_actions where id=${interrupted.id}`).toEqual([{state:'verified',no_report:true}]);
         const reportEvents=await sql<{count:number}[]>`select count(*)::integer as count from app.agent_activity_events where detail->>'type'='action_provider_reported' and detail->>'actionId'=${interrupted.id}`;
         expect(reportEvents).toEqual([{count:0}]);
+        const disabled=makeAction(); await store.authorizeAction(disabled); await sql`update app.accounts set state='disabled' where id=${ids.accountId}`;
+        let disabledMutations=0; await expect(execute(disabled,async()=>{disabledMutations++;return {};})).resolves.toMatchObject({outcome:'paused'});
+        expect(disabledMutations).toBe(0); await sql`update app.accounts set state='ready' where id=${ids.accountId}`;
+        expect(await sql<{source_id:string;kind:string}[]>`select source_id,kind from app.mailbox_memory_events
+          where source_id in (${reported.id},${concurrent.id},${interrupted.id}) order by source_id`).toEqual(
+          [reported.id,concurrent.id,interrupted.id].sort().map(source_id=>({source_id,kind:'mailbox_action_verified'})));
       } finally { await client.close(); }
     });
   });

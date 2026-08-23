@@ -195,6 +195,9 @@ importers:
       '@openai/codex':
         specifier: 0.145.0
         version: 0.145.0
+      '@vectorize-io/hindsight-client':
+        specifier: 0.9.1
+        version: 0.9.1
       pg-boss:
         specifier: 10.1.5
         version: 10.1.5
@@ -295,6 +298,9 @@ importers:
 
   packages/policy:
     dependencies:
+      '@hypermail/db':
+        specifier: workspace:*
+        version: file:packages/db(@types/pg@8.15.5)(kysely@0.29.4)(pg@8.22.0)
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -2065,6 +2071,9 @@ packages:
   '@typescript-eslint/visitor-keys@8.65.0':
     resolution: {integrity: sha512-8C71BQkGjiMmXtop7pHVJu1l2NNShFdkCyD6a2ezzs5vU/L3LRtb69EtcteFwz0mYMPzIgOw0n6OV4VBUWZd7A==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@vectorize-io/hindsight-client@0.9.1':
+    resolution: {integrity: sha512-BoYMvdQkFe5699cutsg6qQ3NYZoxKjs/HcgwM5IqQuXZa1K85is3JhvdZ0ALE8E9YD1FKLLy3qpBbSO7PFwwoA==}
 
   '@vitest/expect@3.2.6':
     resolution: {integrity: sha512-1+7q9BtaKzEmO+fmNT3kYvoNn5Y71XWAx2Q5HRim4tTVRQVRv4uJFAQ5FbK0OPUeNP/WmVCpxYxoJdvuHVjzBQ==}
@@ -6084,6 +6093,8 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.65.0
       eslint-visitor-keys: 5.0.1
+
+  '@vectorize-io/hindsight-client@0.9.1': {}
 
   '@vitest/expect@3.2.6':
     dependencies:

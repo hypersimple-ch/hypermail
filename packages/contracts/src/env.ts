@@ -9,6 +9,7 @@ const httpsOrigin = z.url().refine(
 const appOrigin = z.url().refine((value) => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash && value === url.origin; } catch { return false; }
 }, 'must be an exact root http(s) origin without credentials, path, query, fragment, or trailing slash');
+const privateServiceOrigin = appOrigin;
 const loopbackHostnames = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 function isHttpsOrigin(origin: string): boolean {
@@ -62,6 +63,15 @@ export const workerEnvSchema = z.strictObject({
   HYPERMAIL_KEY: secret,
   HYPERMAIL_PROTOCOL_VERSION: z.string().min(1),
   HYPERMAIL_TENANT_ROUTES: z.string().min(2).optional(),
+  HINDSIGHT_URL: privateServiceOrigin,
+  HINDSIGHT_API_KEY: secret.optional(),
+  HINDSIGHT_EXPECTED_VERSION: z.literal('0.9.1'),
+  HINDSIGHT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  HINDSIGHT_MAX_FILE_BYTES: z.coerce.number().int().min(1).max(25 * 1024 * 1024).default(10 * 1024 * 1024),
+  MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: z.coerce.number().int().min(1).max(3_600).default(5),
+  MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS: z.coerce.number().int().min(1).max(86_400).default(15 * 60),
+  MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: z.coerce.number().int().min(2).max(3_600).default(3_600),
+  MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(60).default(5),
   MODEL_PROVIDER: z.enum(['codex-cli', 'openai', 'anthropic', 'google']).optional(),
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: secret.optional(),
@@ -70,6 +80,7 @@ export const workerEnvSchema = z.strictObject({
   VAPID_PRIVATE_KEY: secret,
   PUSH_SUBSCRIPTION_ENCRYPTION_KEY: z.string().min(32),
   AGENT_GLOBAL_CONSTRAINTS: z.string().min(1).max(20_000),
+  ATTACHMENT_TEMP_DIRECTORY: z.string().startsWith('/').refine((value) => value !== '/tmp' && !value.startsWith('/tmp/'), 'must not use shared /tmp'),
   HEALTH_PORT: z.coerce.number().int().min(1024).max(65_535).default(3001),
   POLL_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(60).default(45),
   LIFECYCLE_INTERVAL_SECONDS: positiveInteger.default(3600),
@@ -85,6 +96,15 @@ export const workerEnvSchema = z.strictObject({
   USER_PENDING_TASK_QUOTA: z.coerce.number().int().min(1).max(100_000).default(1_000),
   INCORRECT_MUTATION_THRESHOLD: z.coerce.number().min(0.001).max(0.01).default(0.01),
 }).superRefine((environment, context) => {
+  if (environment.MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS < environment.MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS) {
+    context.addIssue({ code: 'custom', path: ['MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS'], message: 'must be greater than or equal to the retry base delay' });
+  }
+  if (environment.MAILBOX_MEMORY_CLAIM_LEASE_SECONDS * 1_000 <= environment.HINDSIGHT_REQUEST_TIMEOUT_MS) {
+    context.addIssue({ code: 'custom', path: ['MAILBOX_MEMORY_CLAIM_LEASE_SECONDS'], message: 'must exceed the Hindsight request timeout' });
+  }
+  if (environment.MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS >= environment.MAILBOX_MEMORY_CLAIM_LEASE_SECONDS) {
+    context.addIssue({ code: 'custom', path: ['MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS'], message: 'must be shorter than the claim lease' });
+  }
   if (environment.NODE_ENV !== 'development' && environment.MODEL_PROVIDER === undefined) {
     context.addIssue({ code: 'custom', path: ['MODEL_PROVIDER'], message: 'is required outside development' });
   }

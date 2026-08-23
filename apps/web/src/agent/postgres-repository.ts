@@ -1,3 +1,5 @@
+import { enqueueMailboxMemoryEventInTransaction, mailboxMemoryTextEvidence } from '@hypermail/db';
+import { createHash } from 'node:crypto';
 import type { SqlClient, SqlRow } from '../activity/postgres-repository.js';
 import type {
   AgentAction, AgentDashboard, AgentQuestion, AgentRepository, AgentScope, AnswerResult, AutonomyResult, AutonomyScope,
@@ -19,11 +21,12 @@ const accountVersion = (row: SqlRow): number => {
   if (!Number.isFinite(milliseconds)) throw new Error('Account update timestamp is invalid.');
   return Math.max(1, Math.floor(milliseconds));
 };
-const auditAnswer = (row: SqlRow): string | undefined => {
+const answerDigest = (answer: string): string => createHash('sha256').update(answer).digest('hex');
+const auditAnswerDigest = (row: SqlRow): string | undefined => {
   const metadata = row['metadata'];
-  if (metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>)['answer'] === 'string') return (metadata as Record<string, string>)['answer'];
+  if (metadata && typeof metadata === 'object' && typeof (metadata as Record<string, unknown>)['answerDigest'] === 'string') return (metadata as Record<string, string>)['answerDigest'];
   if (typeof metadata !== 'string') return undefined;
-  try { const parsed: unknown = JSON.parse(metadata); return parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>)['answer'] === 'string' ? (parsed as Record<string, string>)['answer'] : undefined; } catch { return undefined; }
+  try { const parsed: unknown = JSON.parse(metadata); return parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>)['answerDigest'] === 'string' ? (parsed as Record<string, string>)['answerDigest'] : undefined; } catch { return undefined; }
 };
 class AutonomyUpdateConflict extends Error { constructor(readonly version: number) { super('Autonomy update conflicted.'); } }
 const question = (row: SqlRow): AgentQuestion => ({
@@ -94,18 +97,20 @@ export class PostgresAgentRepository implements AgentRepository {
       if (!row) return { kind: 'not_found' };
       const replay = await sql.query(`SELECT id, metadata FROM app.audits WHERE activity_id = $1::uuid AND event = 'agent.question_answered' AND correlation_id = $2 FOR UPDATE`, [text(row['activity_id']), this.answerCorrelation(questionId, idempotencyKey)]);
       if (replay.rows[0]) {
-        if (auditAnswer(replay.rows[0]) !== answerText) return { kind: 'conflict', currentVersion: Number(row['version']) };
+        if (auditAnswerDigest(replay.rows[0]) !== answerDigest(answerText)) return { kind: 'conflict', currentVersion: Number(row['version']) };
         return { kind: 'duplicate', question: question(row) };
       }
       if (Number(row['version']) !== expectedVersion) return { kind: 'conflict', currentVersion: Number(row['version']) };
       if (row['state'] !== 'open') return { kind: 'conflict', currentVersion: Number(row['version']) };
       const updated = await sql.query(`UPDATE app.questions SET state = 'answered', answer = $1, answered_at = now(), updated_at = now() WHERE id = $2::uuid AND state = 'open' RETURNING id`, [answerText, questionId]);
       if (!updated.rows[0]) return { kind: 'conflict', currentVersion: Number(row['version']) };
-      const activity = await sql.query(`UPDATE app.activities SET state = 'new', version = version + 1, updated_at = now() WHERE id = $1::uuid AND ${scoped('account_id', 2)} AND version = $3 RETURNING version`, [text(row['activity_id']), scope.accountIds, expectedVersion]);
+      const activity = await sql.query(`UPDATE app.activities SET state = 'new', version = version + 1, updated_at = now() WHERE id = $1::uuid AND ${scoped('account_id', 2)} AND version = $3 RETURNING version, updated_at`, [text(row['activity_id']), scope.accountIds, expectedVersion]);
       if (!activity.rows[0]) return { kind: 'conflict', currentVersion: Number(row['version']) };
       const version = Number(activity.rows[0]['version']);
       await sql.query(`INSERT INTO app.agent_jobs (activity_id, idempotency_key, state, attempt, available_at, created_at, updated_at) VALUES ($1::uuid, $2, 'pending', 0, now(), now(), now()) ON CONFLICT (activity_id) DO UPDATE SET state = 'pending', available_at = now(), updated_at = now()`, [text(row['activity_id']), `question-answer:${questionId}:${String(version)}`]);
-      await this.audit(sql, scope, text(row['activity_id']), text(row['account_id']), 'agent.question_answered', this.answerCorrelation(questionId, idempotencyKey), { questionId, idempotencyKey, answer: answerText });
+      const occurredAt = activity.rows[0]['updated_at'] instanceof Date ? activity.rows[0]['updated_at'].toISOString() : text(activity.rows[0]['updated_at']);
+      await this.audit(sql, scope, text(row['activity_id']), text(row['account_id']), 'agent.question_answered', this.answerCorrelation(questionId, idempotencyKey), { questionId, idempotencyKey, answerDigest: answerDigest(answerText) });
+      await enqueueMailboxMemoryEventInTransaction(sql, { userId: scope.subjectId, mailboxId: text(row['account_id']), sourceType: 'question', sourceId: questionId, sourceVersion: version, kind: 'question_answered', occurredAt, contentPayload: { outcome: 'answered', question: mailboxMemoryTextEvidence(text(row['prompt'])), answer: mailboxMemoryTextEvidence(answerText) } });
       return { kind: 'answered', question: { ...question(row), state: 'answered', version } };
     });
   }

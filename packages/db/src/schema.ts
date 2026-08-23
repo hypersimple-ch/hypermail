@@ -54,6 +54,7 @@ export const agentTaskPendingReason = app.enum('agent_task_pending_reason', ['in
 export const agentTaskErrorCode = app.enum('agent_task_error_code', ['MANAGER_UNAVAILABLE','RATE_LIMITED','DEPENDENCY_UNAVAILABLE','LEASE_EXPIRED','DEADLINE_EXCEEDED','INVALID_REPORT','AUTHORIZATION_REVOKED','OWNER_CANCELLED','INTERNAL']);
 export const agentTaskOutboxEvent = app.enum('agent_task_outbox_event', ['task_available','task_obsolete','question_answered','task_terminal']);
 export const agentTaskReportKind = app.enum('agent_task_report_kind', ['heartbeat','result','failure','answer']);
+export const mailboxMemoryEventState = app.enum('mailbox_memory_event_state', ['pending','processing','completed','cancelled']);
 
 export const users = app.table('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -452,6 +453,46 @@ export const agentTaskDeliveryAttempts = app.table('agent_task_delivery_attempts
 export const agentTaskReports = app.table('agent_task_reports', { id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),attemptId:uuid('attempt_id'),leaseGeneration:integer('lease_generation').notNull(),kind:agentTaskReportKind('kind').notNull(),requestId:text('request_id').notNull(),requestDigest:text('request_digest').notNull(),accepted:boolean('accepted').notNull(),errorCode:agentTaskErrorCode('error_code'),occurredAt:timestamp('occurred_at',{withTimezone:true}).notNull(),responseSnapshot:jsonb('response_snapshot').notNull() },table=>[uniqueIndex('agent_task_reports_request_unique').on(table.taskId,table.requestId)]);
 export const agentTaskReceipts = app.table('agent_task_receipts',{id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),outboxId:uuid('outbox_id'),transport:text('transport').notNull(),receiptId:text('receipt_id').notNull(),receivedAt:timestamp('received_at',{withTimezone:true}).notNull()},table=>[uniqueIndex('agent_task_receipts_transport_unique').on(table.transport,table.receiptId)]);
 export const agentTaskOutbox = app.table('agent_task_outbox',{id:uuid('id').primaryKey(),taskId:uuid('task_id').notNull(),activityId:uuid('activity_id').notNull(),accountId:uuid('account_id').notNull(),event:agentTaskOutboxEvent('event').notNull(),taskVersion:integer('task_version').notNull(),payloadDigest:text('payload_digest').notNull(),correlationId:text('correlation_id').notNull(),occurredAt:timestamp('occurred_at',{withTimezone:true}).notNull(),availableAt:timestamp('available_at',{withTimezone:true}).notNull(),publishedAt:timestamp('published_at',{withTimezone:true}),publishAttempts:integer('publish_attempts').notNull().default(0),lastError:text('last_error')},table=>[uniqueIndex('agent_task_outbox_version_event_unique').on(table.taskId,table.taskVersion,table.event),index('agent_task_outbox_pending_idx').on(table.availableAt,table.occurredAt)]);
+export const mailboxMemoryEvents = app.table('mailbox_memory_events', {
+  id: uuid('id').primaryKey(),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: uuid('source_id').notNull(),
+  sourceVersion: integer('source_version').notNull().default(1),
+  kind: text('kind').notNull(),
+  contentDigest: text('content_digest').notNull(),
+  contentPayload: jsonb('content_payload').$type<Readonly<Record<string, unknown>>>(),
+  state: mailboxMemoryEventState('state').notNull().default('pending'),
+  attemptCount: integer('attempt_count').notNull().default(0),
+  claimGeneration: integer('claim_generation').notNull().default(0),
+  claimToken: uuid('claim_token'),
+  claimWorker: text('claim_worker'),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
+  availableAt: timestamp('available_at', { withTimezone: true }).notNull(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  resultMetadata: jsonb('result_metadata').$type<Readonly<Record<string, unknown>>>(),
+  lastErrorCode: text('last_error_code'),
+  lastErrorMetadata: jsonb('last_error_metadata').$type<Readonly<Record<string, unknown>>>(),
+  createdAt,
+  updatedAt,
+}, (table) => [
+  uniqueIndex('mailbox_memory_events_source_unique').on(table.userId, table.accountId, table.sourceType, table.sourceId, table.sourceVersion, table.kind),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId], name: 'mailbox_memory_events_owned_mailbox_fk' }).onDelete('restrict'),
+  index('mailbox_memory_events_claim_idx').on(table.availableAt, table.occurredAt, table.id).where(sql`${table.state} = 'pending'`),
+  index('mailbox_memory_events_expired_claim_idx').on(table.claimExpiresAt, table.id).where(sql`${table.state} = 'processing'`),
+  check('mailbox_memory_events_source_type_valid', sql`${table.sourceType} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+  check('mailbox_memory_events_kind_valid', sql`${table.kind} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+  check('mailbox_memory_events_digest_valid', sql`${table.contentDigest} ~ '^[0-9a-f]{64}$'`),
+  check('mailbox_memory_events_counts_valid', sql`${table.sourceVersion} > 0 and ${table.attemptCount} >= 0 and ${table.claimGeneration} = ${table.attemptCount}`),
+  check('mailbox_memory_events_payload_valid', sql`${table.contentPayload} is null or jsonb_typeof(${table.contentPayload}) = 'object'`),
+  check('mailbox_memory_events_metadata_valid', sql`(${table.resultMetadata} is null or (jsonb_typeof(${table.resultMetadata}) = 'object' and octet_length(${table.resultMetadata}::text) <= 8192)) and (${table.lastErrorMetadata} is null or (jsonb_typeof(${table.lastErrorMetadata}) = 'object' and octet_length(${table.lastErrorMetadata}::text) <= 8192)) and (${table.lastErrorCode} is null or ${table.lastErrorCode} ~ '^[A-Z][A-Z0-9_]{0,63}$')`),
+  check('mailbox_memory_events_state_shape', sql`(${table.state} = 'pending' and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.cancelledAt} is null) or (${table.state} = 'processing' and ${table.claimToken} is not null and ${table.claimWorker} is not null and ${table.claimedAt} is not null and ${table.claimExpiresAt} is not null and ${table.completedAt} is null and ${table.cancelledAt} is null) or (${table.state} = 'completed' and ${table.claimToken} is not null and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is not null and ${table.cancelledAt} is null and ${table.contentPayload} is null) or (${table.state} = 'cancelled' and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.cancelledAt} is not null and ${table.contentPayload} is null)`),
+]);
+
 export const agentMutationIdempotency = app.table('agent_mutation_idempotency',{accountId:uuid('account_id').notNull(),operation:text('operation').notNull(),idempotencyKey:text('idempotency_key').notNull(),requestDigest:text('request_digest').notNull(),state:text('state').notNull(),result:jsonb('result'),createdAt,updatedAt},table=>[primaryKey({columns:[table.accountId,table.operation,table.idempotencyKey]})]);
 
 export const agentAuthorizedActions = app.table('agent_authorized_actions', {

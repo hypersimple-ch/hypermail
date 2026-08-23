@@ -21,6 +21,7 @@ import {
   type AgentRunOutcome,
   type ProviderVerification,
 } from '@hypermail/contracts';
+import { enqueueMailboxMemoryEventInTransaction } from './mailbox-memory-event-store.js';
 import type { SqlClient } from './postgres-client.js';
 
 type ManagerRow = {
@@ -298,13 +299,26 @@ export class AgentWorkStore {
         where id=$1 and user_id=$2 and account_id=$3 and state='verifying' returning *`, [id, userId, mailboxId, evidence.observedAt]);
       requireRow(updated.rows[0], 'Stale Action state.');
       await this.appendEventAfterParentLock(sql, suppliedEvent);
+      await enqueueMailboxMemoryEventInTransaction(sql, { userId, mailboxId, sourceType: 'agent_action', sourceId: current.id,
+        sourceVersion: current.attempt, kind: current.kind === 'send' ? 'send_verified' : 'mailbox_action_verified', occurredAt: evidence.observedAt,
+        contentPayload: { outcome: 'verified', actionKind: current.kind, target: current.target } });
       return this.getAction(sql, userId, mailboxId, id);
     });
   }
 
   async failAction(userId: string, mailboxId: string, id: string, outcome: 'failed' | 'unverifiable' | 'cancelled', at: string, errorCode: string | null = null): Promise<AgentAction> {
-    return this.updateAction(userId, mailboxId, id, (action) => finishAgentAction(action, outcome, at, errorCode),
-      `state=$4,error_code=$5,completed_at=$6::timestamptz`, ['authorized', 'executing', 'verifying'], [outcome, errorCode, at]);
+    return this.sql.transaction(async (sql) => {
+      const current = await this.getAction(sql, userId, mailboxId, id, true);
+      finishAgentAction(current, outcome, at, errorCode);
+      const updated = await sql.query<ActionRow>(`update app.agent_authorized_actions a set state=$4,error_code=$5,completed_at=$6::timestamptz
+        where id=$1 and user_id=$2 and account_id=$3 and state = any($7::app.agent_action_state[]) returning a.*`,
+      [id, userId, mailboxId, outcome, errorCode, at, ['authorized', 'executing', 'verifying']]);
+      const row = requireRow(updated.rows[0], 'Stale Action state.');
+      if (outcome !== 'cancelled') await enqueueMailboxMemoryEventInTransaction(sql, { userId, mailboxId, sourceType: 'agent_action', sourceId: current.id,
+        sourceVersion: current.attempt, kind: current.kind === 'send' ? `send_${outcome}` : `mailbox_action_${outcome}`, occurredAt: at,
+        contentPayload: { outcome, actionKind: current.kind, target: current.target } });
+      return actionFrom(row);
+    });
   }
 
   private async getAction(sql: SqlClient, userId: string, mailboxId: string, id: string, lock = false): Promise<AgentAction> {

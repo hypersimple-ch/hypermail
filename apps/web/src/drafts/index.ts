@@ -1,5 +1,6 @@
 export * from './contracts.js';
 export * from './memory-repository.js';
+export * from './memory-projection.js';
 export * from './postgres-repository.js';
 export * from './postgres-source-reader.js';
 export * from './routes.js';

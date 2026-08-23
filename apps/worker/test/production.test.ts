@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagedSqlClient } from '@hypermail/db';
 import type { HypermailReadClient } from '@hypermail/hypermail';
-import type { TriageInput } from '@hypermail/agent';
+import { MailboxMemoryUnavailableError, type TriageInput } from '@hypermail/agent';
 import { DeliverAgentConsumer, PostgresAgentJobStore, composeWorkerRuntime, createModel } from '../src/production.js';
 import { parseWorkerEnvironment } from '../src/runtime.js';
 
 const environment = () => parseWorkerEnvironment({
   DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
-  MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', HEALTH_PORT: 31_002,
+  HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: 31_002,
 });
-const job = { userId: '00000000-0000-4000-8000-000000000004', id: 'job', activityId: '00000000-0000-4000-8000-000000000001', accountId: '00000000-0000-4000-8000-000000000002', accountEmail: 'account@example.test', messageId: '00000000-0000-4000-8000-000000000003', providerMessageId: 'provider-id', sender: 'Sender', subject: 'Subject', receivedAt: '2025-01-01T00:00:00.000Z', attachments: [{ filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }], attempt: 1 } as const;
+const job = { userId: '00000000-0000-4000-8000-000000000004', id: 'job', activityId: '00000000-0000-4000-8000-000000000001', accountId: '00000000-0000-4000-8000-000000000002', accountEmail: 'account@example.test', messageId: '00000000-0000-4000-8000-000000000003', providerMessageId: 'provider-id', sender: 'Sender', subject: 'Subject', receivedAt: '2025-01-01T00:00:00.000Z', attachments: [{ sourceId: '00000000-0000-4000-8000-000000000006', providerAttachmentId: 'provider-attachment', filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }], attempt: 1 } as const;
 
 describe('production composition', () => {
   it('starts with injected resources and a model adapter that is ready without a probe request', async () => {
@@ -43,29 +43,85 @@ describe('production composition', () => {
     const consumer = new DeliverAgentConsumer(
       { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body only', attachments: [{ filename: 'ignored.bin', bytes: 'secret' }] }) }) },
       { triage: (input: TriageInput) => { inputs.push(input); return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } }); } } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve() }, 'Never mutate mail.',
+      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
     );
     await consumer.evaluate({ ...job, attachments: [...job.attachments] });
     expect(inputs).toHaveLength(1);
     expect(inputs[0]?.email.bodyText).toBe('body only');
-    expect(inputs[0]?.email.attachments).toEqual([...job.attachments]);
+    expect(inputs[0]?.email.attachments).toEqual([{ filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }]);
     expect(JSON.stringify(inputs)).not.toContain('secret');
+  });
+
+  it('passes the latest answered question as the explicit current User instruction', async () => {
+    const instructions: Array<string | undefined> = []; const remembered: string[] = [];
+    const consumer = new DeliverAgentConsumer(
+      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body' }) }) },
+      { rememberUserInstruction: (value: { instruction: string }) => { remembered.push(value.instruction); return Promise.resolve(); },
+        triage: (value: TriageInput) => { instructions.push(value.currentUserInstruction); return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } }); } } as never,
+      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
+    );
+    await consumer.evaluate({ ...job, currentUserInstruction: 'Use the archive folder.', attachments: [...job.attachments] });
+    expect(instructions).toEqual(['Use the archive folder.']);
+    expect(remembered).toEqual(['Use the archive folder.']);
+  });
+
+  it('finishes current email attachment retention before Triage recall starts', async () => {
+    const order: string[] = [];
+    const consumer = new DeliverAgentConsumer(
+      { clientForUser: () => ({ initialize: () => Promise.resolve(null),
+        readMessage: () => Promise.resolve({ id: 'provider-id', account: 'account@example.test', body: 'body' }),
+        openAttachment: () => Promise.reject(new Error('retainer test seam owns attachment work')) }) },
+      { triage: (_input: TriageInput, options?: { currentEmailRetained?: boolean }) => {
+        order.push(`recall:${String(options?.currentEmailRetained)}`);
+        return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } });
+      } } as never,
+      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() },
+      'Never mutate mail.', undefined,
+      { retainCurrentEmail: () => { order.push('attachments-retained'); return Promise.resolve({ attachmentsRetained: 1, attachmentsSkipped: [] }); } },
+    );
+    await consumer.evaluate({ ...job, attachments: [...job.attachments] });
+    expect(order).toEqual(['attachments-retained', 'recall:true']);
   });
 
   it('does not claim duplicate terminal jobs and marks pre-triage adapter failures failed', async () => {
     const queries: string[] = [];
     const database = { query: (sql: string) => { queries.push(sql); return Promise.resolve({ rows: [] }); }, transaction: async (operation: (client: never) => Promise<void>) => operation(database) } as unknown as ManagedSqlClient;
-    expect(await new PostgresAgentJobStore(database).claim('job', job.userId)).toBeNull();
+    expect(await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim('job', job.userId)).toBeNull();
     expect(queries[0]).toContain("state IN ('pending', 'running')");
+    expect(queries[0]).toContain("ac.state in ('ready','degraded')");
     const failures: string[] = [];
     const consumer = new DeliverAgentConsumer(
       { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.reject(new Error('unavailable')) }) },
       { triage: () => Promise.resolve({}) } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); } }, 'Never mutate mail.',
+      { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); }, deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
     );
     await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).rejects.toThrow('unavailable');
     expect(failures).toEqual(['AGENT_INPUT_UNAVAILABLE']);
   });
+  it('defers memory-unavailable work for bounded durable retry without terminally failing the job', async () => {
+    const failures: string[] = [];
+    const deferred: string[] = [];
+    const consumer = new DeliverAgentConsumer(
+      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'complete body' }) }) },
+      { triage: () => Promise.reject(new MailboxMemoryUnavailableError()) },
+      { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); },
+        deferMemory: (deferredJob) => { deferred.push(deferredJob.id); return Promise.resolve(); } }, 'Never mutate mail.',
+    );
+    await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).resolves.toBeUndefined();
+    expect(deferred).toEqual([job.id]);
+    expect(failures).toEqual([]);
+  });
+
+  it('persists a sanitized bounded memory retry on the same logical job and Run', async () => {
+    const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
+    const database = { query: (sql: string, values?: readonly unknown[]) => { queries.push({ sql, values }); return Promise.resolve({ rows: [{ id: job.id }] }); } } as unknown as ManagedSqlClient;
+    const runId = '00000000-0000-4000-8000-000000000005';
+    await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).deferMemory({ ...job, runId, attachments: [...job.attachments] });
+    expect(queries[0]?.sql).toMatch(/state='pending'.*least\(\$4, \$3/s);
+    expect(queries[0]?.sql).toContain("last_error_code='MAILBOX_MEMORY_UNAVAILABLE'");
+    expect(queries[0]?.values).toEqual([job.id, runId, 5, 900]);
+  });
+
   it.each([
     ['agent_connection', 'EXTERNAL_MANAGER_DELIVERY_REQUIRED'],
     ['none', 'NO_MANAGER_ASSIGNED'],
@@ -79,7 +135,7 @@ describe('production composition', () => {
     const database = { query: (sql: string, values?: readonly unknown[]) => {
       queries.push({ sql, values }); return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] });
     }, transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
-    expect(await new PostgresAgentJobStore(database).claim(job.id, job.userId)).toBeNull();
+    expect(await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim(job.id, job.userId)).toBeNull();
     expect(queries.some(query => query.values?.includes(reason))).toBe(true);
     expect(queries.some(query => query.sql.includes('insert into app.agent_runs'))).toBe(false);
   });
@@ -93,7 +149,7 @@ describe('production composition', () => {
     const database = { query: (sql: string) => { queries.push(sql);
       return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] }); },
       transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
-    const claimed = await new PostgresAgentJobStore(database).claim(job.id, job.userId);
+    const claimed = await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim(job.id, job.userId);
     expect(claimed?.runId).toMatch(/^[0-9a-f-]{36}$/);
     expect(queries.filter(query => query.includes('insert into app.agent_runs'))).toHaveLength(1);
     expect(queries.some(query => query.includes("'running',now(),now()") && query.includes('on conflict(id) do nothing'))).toBe(true);

@@ -8,6 +8,8 @@ const validWorker = {
   HYPERMAIL_URL: 'http://hypermail:3000/mcp',
   HYPERMAIL_KEY: 'not-a-real-secret-value',
   HYPERMAIL_PROTOCOL_VERSION: 'deployment-negotiated',
+  HINDSIGHT_URL: 'http://hindsight:8888',
+  HINDSIGHT_EXPECTED_VERSION: '0.9.1',
   MODEL_PROVIDER: 'openai',
   MODEL_NAME: 'configured-at-deploy',
   MODEL_API_KEY: 'not-a-real-model-secret',
@@ -16,6 +18,7 @@ const validWorker = {
   VAPID_PRIVATE_KEY: 'private-key-value-123',
   PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'push-encryption-key-value-123456789',
   AGENT_GLOBAL_CONSTRAINTS: 'Follow the configured owner policy.',
+  ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments',
   POLL_INTERVAL_SECONDS: '45',
   BODY_RETENTION_DAYS: '90',
   INCORRECT_MUTATION_THRESHOLD: '0.01',
@@ -78,10 +81,49 @@ describe('environment contracts', () => {
     expect(() => parseEnvironment(workerEnvSchema, { ...withoutModel, NODE_ENV: 'production' })).toThrow(/MODEL_PROVIDER|MODEL_NAME/);
   });
 
+  it('requires the pinned private Hindsight contract and bounds its client limits', () => {
+    const env = parseEnvironment(workerEnvSchema, {
+      ...validWorker,
+      HINDSIGHT_API_KEY: 'private-hindsight-key-value',
+      HINDSIGHT_REQUEST_TIMEOUT_MS: '45000',
+      HINDSIGHT_MAX_FILE_BYTES: '1048576',
+    });
+    expect(env).toMatchObject({
+      HINDSIGHT_URL: 'http://hindsight:8888',
+      HINDSIGHT_EXPECTED_VERSION: '0.9.1',
+      HINDSIGHT_REQUEST_TIMEOUT_MS: 45_000,
+      HINDSIGHT_MAX_FILE_BYTES: 1_048_576,
+    });
+    expect(redactEnvironment(env).HINDSIGHT_API_KEY).toBe('[REDACTED]');
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_EXPECTED_VERSION: 'latest' })).toThrow(/HINDSIGHT_EXPECTED_VERSION/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_URL: 'http://hindsight:8888/path' })).toThrow(/HINDSIGHT_URL/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_MAX_FILE_BYTES: String(25 * 1024 * 1024 + 1) })).toThrow(/HINDSIGHT_MAX_FILE_BYTES/);
+  });
+
   it('coerces bounded operational settings', () => {
     const env = parseEnvironment(workerEnvSchema, validWorker);
     expect(env.POLL_INTERVAL_SECONDS).toBe(45);
     expect(env.INCORRECT_MUTATION_THRESHOLD).toBe(0.01);
+    expect(env.HINDSIGHT_REQUEST_TIMEOUT_MS).toBe(30_000);
+    expect(env.HINDSIGHT_MAX_FILE_BYTES).toBe(10 * 1024 * 1024);
+    expect(env).toMatchObject({
+      MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: 5,
+      MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS: 900,
+      MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: 3_600,
+      MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: 5,
+    });
+  });
+
+  it('rejects unsafe mailbox-memory timing combinations before startup', () => {
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: '30', MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS: '29' }))
+      .toThrow(/MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      HINDSIGHT_REQUEST_TIMEOUT_MS: '30000', MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: '30' }))
+      .toThrow(/MAILBOX_MEMORY_CLAIM_LEASE_SECONDS/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: '30', MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: '30' }))
+      .toThrow(/MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS/);
   });
 
   it('rejects unknown variables and unsafe polling intervals without echoing values', () => {

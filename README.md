@@ -38,10 +38,12 @@ Log in to Codex on the host if needed, then copy the fixed local-only configurat
 ```sh
 # Run `codex login` first if you are not already logged in.
 cp .env.example .env
+cp .env.hindsight.example .env.hindsight
+# Set a supported Hindsight LLM provider/model/key in .env.hindsight.
 pnpm dev
 ```
 
-Open <http://localhost:8080>. Local Compose applies migrations automatically and seeds a separate `codex-home` volume from the host's Codex login; it does not use a model API key. Press Ctrl-C to stop the containers. Never commit `.env` or use its fixed development secrets in deployment.
+Open <http://localhost:8080>. Local Compose applies migrations automatically and seeds a separate `codex-home` volume from the host's Codex login. Mastra can use that host login, but Hindsight requires its separately configured supported LLM provider in `.env.hindsight`; those credentials never reach web or worker. Press Ctrl-C to stop the containers. Never commit either env file or use the fixed development secrets in deployment.
 
 `pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
 

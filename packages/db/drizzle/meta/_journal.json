@@ -99,6 +99,13 @@
       "when": 1787311200000,
       "tag": "0013_draft_body_format",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787397600000,
+      "tag": "0014_mailbox_memory_events",
+      "breakpoints": true
     }
   ]
 }
