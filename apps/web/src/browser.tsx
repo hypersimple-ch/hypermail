@@ -3,10 +3,10 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import type { AgentDashboard, AgentUiHandlers, AutonomyScope, AutonomyState } from './agent/index.js';
-import { Alert, AlertDescription } from '@/components/heroui/alert.js';
+import { ToastProvider, toast } from '@/components/heroui/toast.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/heroui/card.js';
-import { Field, FieldDescription, FieldError, FieldLabel, FieldSet } from '@/components/heroui/field.js';
+import { Field, FieldDescription, FieldLabel, FieldSet } from '@/components/heroui/field.js';
 import { Input } from '@/components/heroui/input.js';
 import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
@@ -60,16 +60,17 @@ function AuthCard({ title, description, children }: { title: string; description
 }
 
 function Login({ onComplete, notice }: { onComplete: () => void; notice?: string }): React.JSX.Element {
-  const [error, setError] = React.useState(''); const [pending, setPending] = React.useState(false);
-  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending) return; const form = new FormData(event.currentTarget); setError(''); setPending(true); void fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }).then((response) => { if (response.ok) onComplete(); else setError('Sign-in failed. Check your email and password.'); }).catch(() => { setError('Sign-in is unavailable. Reconnect and try again.'); }).finally(() => { setPending(false); }); };
-  return <AuthCard title="Hypermail"><div className="grid gap-4">{notice ? <Alert role="status"><AlertDescription>{notice}</AlertDescription></Alert> : null}<form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="login-password">Password</FieldLabel><Input id="login-password" name="password" type="password" autoComplete="current-password" required /></Field><Button type="submit">{pending ? <><Spinner />Signing in…</> : 'Sign in'}</Button></FieldSet></form>{error ? <FieldError>{error}</FieldError> : null}</div></AuthCard>;
+  const [pending, setPending] = React.useState(false);
+  React.useEffect(() => { if (notice) toast(notice); }, [notice]);
+  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending) return; const form = new FormData(event.currentTarget); setPending(true); void fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }).then((response) => { if (response.ok) onComplete(); else toast.danger('Sign-in failed. Check your email and password.'); }).catch(() => { toast.danger('Sign-in is unavailable. Reconnect and try again.'); }).finally(() => { setPending(false); }); };
+  return <AuthCard title="Hypermail"><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="login-password">Password</FieldLabel><Input id="login-password" name="password" type="password" autoComplete="current-password" required /></Field><Button type="submit">{pending ? <><Spinner />Signing in…</> : 'Sign in'}</Button></FieldSet></form></AuthCard>;
 }
 
 function Bootstrap({ onComplete, onSetupCompleted }: { onComplete: () => void; onSetupCompleted: () => void }): React.JSX.Element {
-  const [error, setError] = React.useState(''); const [pending, setPending] = React.useState(false);
-  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending) return; const form = event.currentTarget; const password = form.elements.namedItem('password') as HTMLInputElement; const confirmation = form.elements.namedItem('confirmPassword') as HTMLInputElement; confirmation.setCustomValidity(password.value === confirmation.value ? '' : 'Passwords do not match.'); if (!form.reportValidity()) return; setError(''); setPending(true); void fetch('/api/v1/auth/bootstrap', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: new FormData(form).get('email'), password: password.value }) }).then((response) => { if (response.status === 201) onComplete(); else if (response.status === 409) onSetupCompleted(); else setError('Setup is unavailable. Try again.'); }).catch(() => { setError('Setup is unavailable. Try again.'); }).finally(() => { setPending(false); }); };
+  const [pending, setPending] = React.useState(false);
+  const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending) return; const form = event.currentTarget; const password = form.elements.namedItem('password') as HTMLInputElement; const confirmation = form.elements.namedItem('confirmPassword') as HTMLInputElement; confirmation.setCustomValidity(password.value === confirmation.value ? '' : 'Passwords do not match.'); if (!form.reportValidity()) return; setPending(true); void fetch('/api/v1/auth/bootstrap', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: new FormData(form).get('email'), password: password.value }) }).then((response) => { if (response.status === 201) onComplete(); else if (response.status === 409) onSetupCompleted(); else toast.danger('Setup is unavailable. Try again.'); }).catch(() => { toast.danger('Setup is unavailable. Try again.'); }).finally(() => { setPending(false); }); };
   const confirmPassword = (event: React.FormEvent<HTMLInputElement>) => { const input = event.currentTarget; const password = input.form?.elements.namedItem('password') as HTMLInputElement | null; input.setCustomValidity(password?.value === input.value ? '' : 'Passwords do not match.'); };
-  return <AuthCard title="Set up Hypermail" description="Create the private owner account for this Hypermail installation."><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="setup-email">Email</FieldLabel><Input id="setup-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="setup-password">Password</FieldLabel><Input id="setup-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required aria-describedby="setup-password-help" /><FieldDescription id="setup-password-help">Use at least 12 characters.</FieldDescription></Field><Field><FieldLabel htmlFor="setup-confirm-password">Confirm password</FieldLabel><Input id="setup-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required onInput={confirmPassword} aria-describedby={error ? 'setup-password-help setup-error' : 'setup-password-help'} /></Field><Button type="submit">{pending ? <><Spinner />Setting up…</> : 'Set up private owner'}</Button></FieldSet>{error ? <FieldError id="setup-error">{error}</FieldError> : null}</form></AuthCard>;
+  return <AuthCard title="Set up Hypermail" description="Create the private owner account for this Hypermail installation."><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="setup-email">Email</FieldLabel><Input id="setup-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="setup-password">Password</FieldLabel><Input id="setup-password" name="password" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required aria-describedby="setup-password-help" /><FieldDescription id="setup-password-help">Use at least 12 characters.</FieldDescription></Field><Field><FieldLabel htmlFor="setup-confirm-password">Confirm password</FieldLabel><Input id="setup-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" minLength={12} maxLength={1024} required onInput={confirmPassword} aria-describedby="setup-password-help" /></Field><Button type="submit">{pending ? <><Spinner />Setting up…</> : 'Set up private owner'}</Button></FieldSet></form></AuthCard>;
 }
 
 function useOnlineStatus(): boolean {
@@ -95,7 +96,7 @@ function App(): React.JSX.Element {
   const [state, setState] = React.useState<AppState>('loading'); const [loginNotice, setLoginNotice] = React.useState('');
   const [managerSettings, setManagerSettings] = React.useState<ManagerSettingsView>();
   const [ownerEmail, setOwnerEmail] = React.useState(''); const [settingsMailboxes, setSettingsMailboxes] = React.useState<readonly SettingsMailbox[]>([]);
-  const [pendingMailbox, setPendingMailbox] = React.useState<PendingMailboxConnection | undefined>(readPendingMailbox); const [settingsNotice, setSettingsNotice] = React.useState('');
+  const [pendingMailbox, setPendingMailbox] = React.useState<PendingMailboxConnection | undefined>(readPendingMailbox);
   const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : 'inbox'); const callbackHandled = React.useRef(false);
   const load = React.useCallback(async (activityFilter: 'new' | 'questions' | 'failed' | 'history' = 'new') => {
     const session = await fetch('/api/v1/session');
@@ -126,7 +127,7 @@ function App(): React.JSX.Element {
       return { state: 'pending', pending, message: input.provider === 'gmail' ? 'Redirecting to Google…' : 'Continue with Microsoft verification.' };
     }
     if (response.ok && payload?.status === 'ready') {
-      clearPendingMailbox(); setPendingMailbox(undefined); setSettingsNotice('Mailbox connected.'); await load();
+      clearPendingMailbox(); setPendingMailbox(undefined); await load();
       return { state: 'ready', message: 'Mailbox connected.' };
     }
     return { state: 'error', message: `${input.provider === 'microsoft' ? 'Outlook' : input.provider === 'gmail' ? 'Gmail' : 'IMAP'} connection is unavailable. Check the mailbox details and provider configuration, then try again.` };
@@ -135,7 +136,7 @@ function App(): React.JSX.Element {
     const response = await fetch('/api/v1/mailboxes/complete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: mailboxProvider(input.provider), handle: input.handle, ...(input.authorizationResponse ? { authorizationResponse: input.authorizationResponse } : {}), ...(input.code ? { code: input.code } : {}), ...(input.state ? { state: input.state } : {}) }) });
     const payload = await response.json().catch(() => null) as MailboxApiResult | null;
     if (payload?.status === 'ready' && response.ok) {
-      clearPendingMailbox(); setPendingMailbox(undefined); setSettingsNotice('Mailbox connected.'); await load();
+      clearPendingMailbox(); setPendingMailbox(undefined); await load();
       return { state: 'ready', message: 'Mailbox connected.' };
     }
     if (payload?.status === 'pending') {
@@ -178,9 +179,9 @@ function App(): React.JSX.Element {
     const callback = new URL(location.href); const code = callback.searchParams.get('code'); const providerError = callback.searchParams.has('error'); const authorizationResponse = callback.toString();
     window.history.replaceState(window.history.state, '', '/');
     const pending = readPendingMailbox();
-    if (providerError) { clearPendingMailbox(); setPendingMailbox(undefined); setSettingsNotice('Google sign-in was not completed. Start the Gmail connection again.'); return; }
-    if (!pending || pending.provider !== 'gmail' || !code) { setSettingsNotice('Gmail connection details were missing or expired. Start again.'); return; }
-    void completeMailboxConnection({ provider: 'gmail', handle: pending.handle, authorizationResponse }).then((result) => { setSettingsNotice(result.message ?? (result.state === 'ready' ? 'Mailbox connected.' : 'Gmail connection is still pending.')); }).catch(() => { clearPendingMailbox(); setPendingMailbox(undefined); setSettingsNotice('Gmail connection could not be completed. Start again.'); });
+    if (providerError) { clearPendingMailbox(); setPendingMailbox(undefined); toast.warning('Google sign-in was not completed. Start the Gmail connection again.'); return; }
+    if (!pending || pending.provider !== 'gmail' || !code) { toast.danger('Gmail connection details were missing or expired. Start again.'); return; }
+    void completeMailboxConnection({ provider: 'gmail', handle: pending.handle, authorizationResponse }).then((result) => { const message = result.message ?? (result.state === 'ready' ? 'Mailbox connected.' : 'Gmail connection is still pending.'); if (result.state === 'ready') toast.success(message); else if (result.state === 'error') toast.danger(message); else toast(message); }).catch(() => { clearPendingMailbox(); setPendingMailbox(undefined); toast.danger('Gmail connection could not be completed. Start again.'); });
   }, [completeMailboxConnection, state]);
   if (state === 'loading') return <main className="grid min-h-dvh place-items-center bg-background" aria-busy="true"><span className="sr-only" role="status">Checking session…</span><Spinner className="size-6" /></main>;
   if (state === 'bootstrap') return <Bootstrap onComplete={() => { window.location.reload(); }} onSetupCompleted={() => { setLoginNotice('Setup is complete. Sign in to continue.'); setState('unauthenticated'); }} />;
@@ -201,14 +202,14 @@ function App(): React.JSX.Element {
     reapprove: (mailbox: MailboxManagerView) => updateManagerSettings(`/api/v1/mailbox-managers/${encodeURIComponent(mailbox.mailboxId)}/reapprove`, { expectedGrantRevision: mailbox.grant?.revision, idempotencyKey: crypto.randomUUID() }),
   };
   const agentHandlers: AgentUiHandlers = {
-    onAnswer: ({ questionId, answer, expectedVersion, idempotencyKey }) => { void fetch(`/api/v1/agent/questions/${encodeURIComponent(questionId)}/answer`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ answer, expectedVersion, idempotencyKey }) }).then((response) => { if (!response.ok) throw new Error('answer unavailable'); return load(); }).catch(() => { setAgentError('Could not record the agent answer. Try again.'); }); },
-    onRetry: (action) => { void fetch(`/api/v1/agent/actions/${encodeURIComponent(action.id)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ expectedVersion: action.version }) }).then((response) => { if (!response.ok) throw new Error('retry unavailable'); return load(); }).catch(() => { setAgentError('Could not retry the agent action. Try again.'); }); },
-    onAutonomy: (target: AutonomyScope, autonomyState: AutonomyState, expectedVersion: number) => { void fetch('/api/v1/agent/autonomy', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ scope: target.kind, ...(target.kind === 'account' ? { accountId: target.accountId } : {}), state: autonomyState, expectedVersion }) }).then((response) => { if (!response.ok) throw new Error('autonomy unavailable'); return load(); }).catch(() => { setAgentError('Could not update agent autonomy. Try again.'); }); },
+    onAnswer: ({ questionId, answer, expectedVersion, idempotencyKey }) => { void fetch(`/api/v1/agent/questions/${encodeURIComponent(questionId)}/answer`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ answer, expectedVersion, idempotencyKey }) }).then((response) => { if (!response.ok) throw new Error('answer unavailable'); return load(); }).catch(() => { toast.danger('Could not record the agent answer. Try again.'); }); },
+    onRetry: (action) => { void fetch(`/api/v1/agent/actions/${encodeURIComponent(action.id)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ expectedVersion: action.version }) }).then((response) => { if (!response.ok) throw new Error('retry unavailable'); return load(); }).catch(() => { toast.danger('Could not retry the agent action. Try again.'); }); },
+    onAutonomy: (target: AutonomyScope, autonomyState: AutonomyState, expectedVersion: number) => { void fetch('/api/v1/agent/autonomy', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ scope: target.kind, ...(target.kind === 'account' ? { accountId: target.accountId } : {}), state: autonomyState, expectedVersion }) }).then((response) => { if (!response.ok) throw new Error('autonomy unavailable'); return load(); }).catch(() => { toast.danger('Could not update agent autonomy. Try again.'); }); },
   };
-  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} online={online} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} {...(settingsNotice ? { settingsNotice } : {})} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
+  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} online={online} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
 }
 
-function RootApp(): React.JSX.Element { return <><App /><PwaPresentation /></>; }
+function RootApp(): React.JSX.Element { return <><App /><PwaPresentation /><ToastProvider /></>; }
 
 const appElement = document.getElementById('app');
 if (!appElement) throw new Error('Missing app root');

@@ -2,14 +2,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Account, type AccountProps } from '../../src/ui/account.js';
+import { ToastProvider, toast } from '../../src/components/heroui/toast.js';
 
-afterEach(cleanup);
+afterEach(() => { toast.clear(); cleanup(); });
 
 const changePassword = vi.fn<AccountProps['onChangePassword']>();
 const signOut = vi.fn<AccountProps['onSignOut']>();
 
 function renderAccount(overrides: Partial<AccountProps> = {}) {
-  return render(<Account ownerEmail="owner@example.test" onChangePassword={changePassword} onSignOut={signOut} onBack={vi.fn()} {...overrides} />);
+  return render(<><Account ownerEmail="owner@example.test" onChangePassword={changePassword} onSignOut={signOut} onBack={vi.fn()} {...overrides} /><ToastProvider /></>);
 }
 
 function fillPasswords(currentPassword: string, newPassword: string, confirmation = newPassword) {
@@ -74,7 +75,7 @@ describe('Account', () => {
     fillPasswords('current-password', 'a-valid-password');
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
 
-    await waitFor(() => { expect(screen.getByRole('status').textContent).toContain('Password changed.'); });
+    await waitFor(() => { expect(screen.getByText('Password changed.').closest('[data-slot="toast"]')).toBeTruthy(); });
     expect(screen.getByLabelText('Current password').value).toBe('');
     expect(screen.getByLabelText('New password').value).toBe('');
     expect(screen.getByLabelText('Confirm new password').value).toBe('');
@@ -86,7 +87,7 @@ describe('Account', () => {
     fillPasswords('wrong-password', 'a-valid-password');
     fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
 
-    expect(await screen.findByText('Current password is incorrect.')).toBeTruthy();
+    expect((await screen.findByText('Current password is incorrect.')).closest('[data-slot="toast"]')).toBeTruthy();
     expect(changePassword).toHaveBeenCalledTimes(1);
   });
 
@@ -99,6 +100,6 @@ describe('Account', () => {
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'Signing out…' }).disabled).toBe(true);
     if (finish) finish();
-    await waitFor(() => { expect(screen.getByRole('status').textContent).toContain('Signed out.'); });
+    await waitFor(() => { expect(screen.getByText('Signed out.').closest('[data-slot="toast"]')).toBeTruthy(); });
   });
 });

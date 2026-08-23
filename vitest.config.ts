@@ -6,6 +6,7 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./apps/web/src', import.meta.url)) },
   },
   test: {
+    setupFiles: ['./apps/web/test/setup.ts'],
     include: ['packages/*/test/**/*.test.{ts,tsx}', 'apps/*/test/**/*.test.{ts,tsx}'],
     coverage: { reporter: ['text', 'json-summary'] },
   },

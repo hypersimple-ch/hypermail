@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppPage, FilterGroup, NavigationItem, PageContainer, PageHeader, StatePanel } from '../../src/components/app/patterns.js';
 import { Alert } from '../../src/components/heroui/alert.js';
@@ -13,9 +13,10 @@ import { Select } from '../../src/components/heroui/select.js';
 import { Separator } from '../../src/components/heroui/separator.js';
 import { Spinner } from '../../src/components/heroui/spinner.js';
 import { Textarea } from '../../src/components/heroui/textarea.js';
+import { ToastProvider, toast, toastDuration } from '../../src/components/heroui/toast.js';
 import { cn } from '../../src/lib/utils.js';
 
-afterEach(cleanup);
+afterEach(() => { toast.clear(); cleanup(); });
 
 describe('HeroUI component foundation', () => {
   it('keeps readable button variants and a 44px minimum target', () => {
@@ -53,6 +54,17 @@ describe('HeroUI component foundation', () => {
     expect(screen.getByText('New').getAttribute('data-slot')).toBe('chip');
     expect(screen.getByRole('alert').getAttribute('data-slot')).toBe('alert-root');
     expect(screen.getByRole('separator').getAttribute('data-slot')).toBe('separator');
+  });
+
+  it('renders queued HeroUI toasts with a timed progress bar and accessible close control', async () => {
+    render(<ToastProvider />);
+    act(() => { toast.success('Draft saved.'); });
+    const message = await screen.findByText('Draft saved.');
+    const root = message.closest('[data-slot="toast"]');
+    expect(root).toBeTruthy();
+    expect(root?.querySelector('[data-slot="toast-progress"]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Dismiss notification' }).className).toContain('min-h-11');
+    expect(toastDuration).toBe(5_000);
   });
 });
 

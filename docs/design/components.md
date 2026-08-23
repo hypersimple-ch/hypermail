@@ -19,7 +19,8 @@ Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed B
 | `Select` | HeroUI popover and ListBox selection with hidden native form submission |
 | `Card` | Grouped content with header/content/footer sections |
 | `Badge` | Written status paired with semantic color |
-| `Alert` | Error, safety, and status messages |
+| `Alert` | Persistent error, safety, and status messages |
+| `Toast` | Transient operation feedback; auto-dismisses after 5 seconds with a duration bar |
 | `Field` | Label, description, error, legend, and disabled form grouping |
 | `Separator` | Semantic or decorative section boundaries |
 | `Spinner` | Pending state; paired with written status text |
@@ -34,6 +35,8 @@ Located in `apps/web/src/components/app/patterns.tsx`:
 - `FilterGroup`: accessible `aria-pressed` filter controls.
 - `PageHeader`: screen title, description, and supported actions.
 - `StatePanel`: loading, empty, and recoverable state presentation.
+
+The root-mounted HeroUI `ToastProvider` owns transient feedback. Use the repository `toast` helper for completed or failed user operations. Keep field validation, recoverable page-load errors, and persistent domain alerts inline. Toasts pause while hovered or focused, expose a 44px close control, and remove countdown motion under `prefers-reduced-motion: reduce`.
 
 Use a pattern when its semantic contract is repeated. Keep one-off mailbox row and domain content layouts in their owning feature component.
 
