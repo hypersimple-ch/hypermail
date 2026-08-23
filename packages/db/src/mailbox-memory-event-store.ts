@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import type { SqlClient } from './postgres-client.js';
 
-export type MailboxMemoryEventState = 'pending' | 'processing' | 'completed' | 'dead_letter';
+export type MailboxMemoryEventState = 'pending' | 'processing' | 'completed' | 'cancelled';
 export type MailboxMemoryPayload = Readonly<Record<string, unknown>>;
 export type MailboxMemoryMetadata = Readonly<Record<string, unknown>>;
 
@@ -26,12 +26,11 @@ export type MailboxMemoryEvent = Readonly<{
   contentPayload: MailboxMemoryPayload | null;
   state: MailboxMemoryEventState;
   attemptCount: number;
-  maxAttempts: number;
   claimGeneration: number;
   availableAt: string;
   occurredAt: string;
   completedAt: string | null;
-  deadLetteredAt: string | null;
+  cancelledAt: string | null;
   resultMetadata: MailboxMemoryMetadata | null;
   lastErrorCode: string | null;
   lastErrorMetadata: MailboxMemoryMetadata | null;
@@ -55,15 +54,21 @@ export type EnqueueMailboxMemoryEvent = Readonly<{
   kind: string;
   contentPayload: MailboxMemoryPayload;
   occurredAt: string;
-  maxAttempts?: number;
 }>;
 
-export type CanonicalMailboxMemoryEvent = Omit<EnqueueMailboxMemoryEvent, 'id' | 'maxAttempts'>;
+export type CanonicalMailboxMemoryEvent = Omit<EnqueueMailboxMemoryEvent, 'id'>;
 
 export type MailboxMemoryTextEvidence = Readonly<{
   text: string;
   digest: string;
   truncated: boolean;
+}>;
+
+export type MailboxMemoryTimingPolicy = Readonly<{
+  retryBaseDelaySeconds: number;
+  retryMaximumDelaySeconds: number;
+  claimLeaseSeconds: number;
+  schedulerIntervalSeconds: number;
 }>;
 
 export type MailboxMemoryFailure = Readonly<{
@@ -79,22 +84,18 @@ export type MailboxMemoryFailure = Readonly<{
  */
 export interface MailboxMemoryEventStore {
   enqueue(input: EnqueueMailboxMemoryEvent): Promise<MailboxMemoryEvent>;
-  claim(input: Readonly<{ workerId: string; limit?: number; leaseSeconds?: number }>): Promise<readonly ClaimedMailboxMemoryEvent[]>;
-  renew(fence: MailboxMemoryClaimFence, leaseSeconds?: number): Promise<void>;
+  claim(input: Readonly<{ workerId: string; limit?: number }>): Promise<readonly ClaimedMailboxMemoryEvent[]>;
+  renew(fence: MailboxMemoryClaimFence): Promise<void>;
   complete(fence: MailboxMemoryClaimFence, resultMetadata?: MailboxMemoryMetadata): Promise<MailboxMemoryEvent>;
   defer(fence: MailboxMemoryClaimFence, failure: MailboxMemoryFailure): Promise<MailboxMemoryEvent>;
   recoverExpiredClaims(limit?: number): Promise<number>;
 }
 
 type EventRow = Record<string, unknown>;
-const DEFAULT_MAX_ATTEMPTS = 8;
-const MAX_ATTEMPTS = 25;
-const DEFAULT_LEASE_SECONDS = 300;
 const MAX_LEASE_SECONDS = 3_600;
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
-const RETRY_BASE_SECONDS = 5;
-const RETRY_MAX_SECONDS = 15 * 60;
+
 const METADATA_MAX_BYTES = 8 * 1024;
 const CONTENT_PAYLOAD_MAX_BYTES = 64 * 1024;
 const TEXT_EVIDENCE_MAX_BYTES = 12 * 1024;
@@ -182,12 +183,11 @@ const eventFrom = (row: EventRow): MailboxMemoryEvent => ({
   contentPayload: (row['content_payload'] ?? null) as MailboxMemoryPayload | null,
   state: row['state'] as MailboxMemoryEventState,
   attemptCount: row['attempt_count'] as number,
-  maxAttempts: row['max_attempts'] as number,
   claimGeneration: row['claim_generation'] as number,
   availableAt: iso(row['available_at'] as Date | string),
   occurredAt: iso(row['occurred_at'] as Date | string),
   completedAt: row['completed_at'] == null ? null : iso(row['completed_at'] as Date | string),
-  deadLetteredAt: row['dead_lettered_at'] == null ? null : iso(row['dead_lettered_at'] as Date | string),
+  cancelledAt: row['cancelled_at'] == null ? null : iso(row['cancelled_at'] as Date | string),
   resultMetadata: (row['result_metadata'] ?? null) as MailboxMemoryMetadata | null,
   lastErrorCode: (row['last_error_code'] ?? null) as string | null,
   lastErrorMetadata: (row['last_error_metadata'] ?? null) as MailboxMemoryMetadata | null,
@@ -199,21 +199,20 @@ async function insertMailboxMemoryEvent(sql: Pick<SqlClient, 'query'>, input: En
   const sourceType = machineToken(input.sourceType, 'sourceType');
   const kind = machineToken(input.kind, 'kind');
   const sourceVersion = integerInRange(input.sourceVersion ?? 1, 1, 2_147_483_647, 'sourceVersion');
-  const maxAttempts = integerInRange(input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, 1, MAX_ATTEMPTS, 'maxAttempts');
   validatePayload(input.contentPayload);
   const contentDigest = digestPayload(input.contentPayload);
   const inserted = await sql.query<EventRow>(`insert into app.mailbox_memory_events
-    (id,user_id,account_id,source_type,source_id,source_version,kind,content_digest,content_payload,state,attempt_count,max_attempts,claim_generation,available_at,occurred_at)
-    select $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending',0,$10,0,$11::timestamptz,$11::timestamptz
+    (id,user_id,account_id,source_type,source_id,source_version,kind,content_digest,content_payload,state,attempt_count,claim_generation,available_at,occurred_at)
+    select $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending',0,0,$10::timestamptz,$10::timestamptz
     from app.accounts a where a.id=$3::uuid and a.user_id=$2::uuid and a.state in ('ready','degraded')
     on conflict(user_id,account_id,source_type,source_id,source_version,kind) do nothing returning *`,
-  [input.id, input.userId, input.mailboxId, sourceType, input.sourceId, sourceVersion, kind, contentDigest, input.contentPayload, maxAttempts, input.occurredAt]);
+  [input.id, input.userId, input.mailboxId, sourceType, input.sourceId, sourceVersion, kind, contentDigest, input.contentPayload, input.occurredAt]);
   const existing = inserted.rows[0] ?? (await sql.query<EventRow>(`select * from app.mailbox_memory_events
     where user_id=$1 and account_id=$2 and source_type=$3 and source_id=$4 and source_version=$5 and kind=$6 for update`,
   [input.userId, input.mailboxId, sourceType, input.sourceId, sourceVersion, kind])).rows[0];
   if (!existing) throw new Error('Mailbox memory source is unavailable or inactive.');
   const event = eventFrom(existing);
-  if (event.contentDigest !== contentDigest || event.occurredAt !== iso(input.occurredAt) || event.maxAttempts !== maxAttempts) {
+  if (event.contentDigest !== contentDigest || event.occurredAt !== iso(input.occurredAt)) {
     throw new Error('Mailbox memory source identity was replayed with different immutable content.');
   }
   return event;
@@ -233,16 +232,24 @@ export function enqueueMailboxMemoryEventInPostgresTransaction(sql: Pick<Transac
 
 /** PostgreSQL adapter for the Mailbox-memory event seam. It never performs external I/O. */
 export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore {
-  constructor(private readonly sql: SqlClient) {}
+  private readonly timing: MailboxMemoryTimingPolicy;
+  constructor(private readonly sql: SqlClient, timing: MailboxMemoryTimingPolicy) {
+    const retryBaseDelaySeconds = integerInRange(timing.retryBaseDelaySeconds, 1, 3_600, 'retryBaseDelaySeconds');
+    const retryMaximumDelaySeconds = integerInRange(timing.retryMaximumDelaySeconds, retryBaseDelaySeconds, 86_400, 'retryMaximumDelaySeconds');
+    const claimLeaseSeconds = integerInRange(timing.claimLeaseSeconds, 2, MAX_LEASE_SECONDS, 'claimLeaseSeconds');
+    const schedulerIntervalSeconds = integerInRange(timing.schedulerIntervalSeconds, 1, 60, 'schedulerIntervalSeconds');
+    if (schedulerIntervalSeconds >= claimLeaseSeconds) throw new Error('schedulerIntervalSeconds must be shorter than claimLeaseSeconds.');
+    this.timing = { retryBaseDelaySeconds, retryMaximumDelaySeconds, claimLeaseSeconds, schedulerIntervalSeconds };
+  }
 
   async enqueue(input: EnqueueMailboxMemoryEvent): Promise<MailboxMemoryEvent> {
     return this.sql.transaction((db) => insertMailboxMemoryEvent(db, input));
   }
 
-  async claim(input: Readonly<{ workerId: string; limit?: number; leaseSeconds?: number }>): Promise<readonly ClaimedMailboxMemoryEvent[]> {
+  async claim(input: Readonly<{ workerId: string; limit?: number }>): Promise<readonly ClaimedMailboxMemoryEvent[]> {
     if (input.workerId.length < 1 || input.workerId.length > 128) throw new Error('workerId must contain 1 to 128 characters.');
     const limit = integerInRange(input.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT, 'limit');
-    const leaseSeconds = integerInRange(input.leaseSeconds ?? DEFAULT_LEASE_SECONDS, 1, MAX_LEASE_SECONDS, 'leaseSeconds');
+    const leaseSeconds = this.timing.claimLeaseSeconds;
     const token = randomUUID();
     return this.sql.transaction(async (db) => {
       const claimed = await db.query<EventRow>(`with candidates as (
@@ -264,11 +271,12 @@ export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore 
     });
   }
 
-  async renew(fence: MailboxMemoryClaimFence, leaseSeconds = MAX_LEASE_SECONDS): Promise<void> {
-    const boundedLease = integerInRange(leaseSeconds, 1, MAX_LEASE_SECONDS, 'leaseSeconds');
+  async renew(fence: MailboxMemoryClaimFence): Promise<void> {
+    const boundedLease = this.timing.claimLeaseSeconds;
     const renewed = await this.sql.query<{ id: string }>(`update app.mailbox_memory_events set
       claim_expires_at=clock_timestamp()+make_interval(secs=>$6),updated_at=clock_timestamp()
-      where id=$1 and user_id=$2 and account_id=$3 and state='processing' and claim_generation=$4 and claim_token=$5::uuid returning id`,
+      where id=$1 and user_id=$2 and account_id=$3 and state='processing' and claim_generation=$4 and claim_token=$5::uuid
+        and claim_expires_at>clock_timestamp() returning id`,
     [fence.eventId, fence.userId, fence.mailboxId, fence.generation, fence.token, boundedLease]);
     if (renewed.rows.length !== 1) throw new Error('Mailbox memory event claim is stale or tenant scope does not match.');
   }
@@ -277,7 +285,7 @@ export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore 
     metadataJson(resultMetadata);
     const updated = await this.sql.query<EventRow>(`update app.mailbox_memory_events set
       state='completed',content_payload=null,result_metadata=$6::jsonb,last_error_code=null,last_error_metadata=null,
-      completed_at=clock_timestamp(),dead_lettered_at=null,claim_worker=null,claimed_at=null,claim_expires_at=null,updated_at=clock_timestamp()
+      completed_at=clock_timestamp(),cancelled_at=null,claim_worker=null,claimed_at=null,claim_expires_at=null,updated_at=clock_timestamp()
       where id=$1 and user_id=$2 and account_id=$3 and state='processing' and claim_generation=$4 and claim_token=$5::uuid returning *`,
     [fence.eventId, fence.userId, fence.mailboxId, fence.generation, fence.token, resultMetadata]);
     if (updated.rows[0]) return eventFrom(updated.rows[0]);
@@ -293,10 +301,10 @@ export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore 
     const updated = await this.sql.query<EventRow>(`update app.mailbox_memory_events set
       state='pending'::app.mailbox_memory_event_state,
       available_at=clock_timestamp()+make_interval(secs=>least($8,power(2,least(attempt_count-1,16))*$7)),
-      result_metadata=null,last_error_code=$6,last_error_metadata=$9::jsonb,completed_at=null,dead_lettered_at=null,
+      result_metadata=null,last_error_code=$6,last_error_metadata=$9::jsonb,completed_at=null,cancelled_at=null,
       claim_worker=null,claimed_at=null,claim_expires_at=null,updated_at=clock_timestamp()
       where id=$1 and user_id=$2 and account_id=$3 and state='processing' and claim_generation=$4 and claim_token=$5::uuid returning *`,
-    [fence.eventId, fence.userId, fence.mailboxId, fence.generation, fence.token, failure.code, RETRY_BASE_SECONDS, RETRY_MAX_SECONDS, failureMetadata]);
+    [fence.eventId, fence.userId, fence.mailboxId, fence.generation, fence.token, failure.code, this.timing.retryBaseDelaySeconds, this.timing.retryMaximumDelaySeconds, failureMetadata]);
     if (updated.rows[0]) return eventFrom(updated.rows[0]);
     const existing = await this.readScoped(fence);
     if (existing?.state === 'pending' && existing.claimGeneration === fence.generation &&
@@ -313,9 +321,9 @@ export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore 
     update app.mailbox_memory_events e set
       state='pending'::app.mailbox_memory_event_state,
       available_at=clock_timestamp()+make_interval(secs=>least($3,power(2,least(attempt_count-1,16))*$2)),
-      result_metadata=null,last_error_code='CLAIM_EXPIRED',last_error_metadata='{}'::jsonb,completed_at=null,dead_lettered_at=null,
+      result_metadata=null,last_error_code='CLAIM_EXPIRED',last_error_metadata='{}'::jsonb,completed_at=null,cancelled_at=null,
       claim_worker=null,claimed_at=null,claim_expires_at=null,updated_at=clock_timestamp()
-    from candidates c where e.id=c.id returning e.id`, [boundedLimit, RETRY_BASE_SECONDS, RETRY_MAX_SECONDS]));
+    from candidates c where e.id=c.id returning e.id`, [boundedLimit, this.timing.retryBaseDelaySeconds, this.timing.retryMaximumDelaySeconds]));
     return recovered.rows.length;
   }
 

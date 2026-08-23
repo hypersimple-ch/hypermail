@@ -209,7 +209,9 @@ describe('Mailbox-memory event outbox migration', () => {
     expect(mailboxMemorySql).toContain('"mailbox_memory_events_source_unique" UNIQUE("user_id","account_id","source_type","source_id","source_version","kind")');
     expect(mailboxMemorySql).toContain('"mailbox_memory_events_owned_mailbox_fk" FOREIGN KEY("user_id","account_id")');
     expect(mailboxMemorySql).toContain('REFERENCES "app"."user_accounts"("user_id","account_id") ON DELETE restrict');
-    expect(mailboxMemorySql).toContain('max_attempts BETWEEN 1 AND 25');
+    expect(mailboxMemorySql).not.toContain('max_attempts');
+    expect(mailboxMemorySql).not.toContain('dead_letter');
+    expect(mailboxMemorySql).toContain("ENUM('pending','processing','completed','cancelled')");
     expect(mailboxMemorySql).toContain('claim_generation=attempt_count');
   });
 
@@ -218,7 +220,7 @@ describe('Mailbox-memory event outbox migration', () => {
     expect(mailboxMemorySql).toContain('mailbox_memory_events_expired_claim_idx');
     expect(mailboxMemorySql).toContain('guard_mailbox_memory_event_history');
     expect(mailboxMemorySql).toContain('mailbox memory events are append-only');
-    expect(mailboxMemorySql).toContain("NEW.content_payload IS NULL AND NEW.state='completed'");
+    expect(mailboxMemorySql).toContain("NEW.content_payload IS NULL AND NEW.state IN ('completed','cancelled')");
     expect(mailboxMemorySql).toContain('NEW.claim_generation<>OLD.claim_generation+1');
   });
 

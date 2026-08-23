@@ -8,7 +8,7 @@ import { Agent } from '@mastra/core/agent';
 import { Memory } from '@mastra/memory';
 import { MailboxMemoryUnavailableError, MastraSourceHistory, PostgresDecisionPersistence, TriageService, createMastraPostgresStorage, mastraDecisionModel, type MailboxMemory } from '@hypermail/agent';
 import { workerEnvSchema } from '@hypermail/contracts';
-import { AgentTaskStore, PostgresMailboxMemoryEventStore, createPostgresClient, type ManagedSqlClient } from '@hypermail/db';
+import { AgentTaskStore, PostgresMailboxMemoryEventStore, createPostgresClient, type MailboxMemoryTimingPolicy, type ManagedSqlClient } from '@hypermail/db';
 import { HypermailReadClient, createTenantHypermailSessionProvider, parseTenantHypermailRoutes, SingleOwnerTenantClient, TenantHypermailClientCache, type HypermailMcpHttpClient } from '@hypermail/hypermail';
 import { DeliverPolicyConsumer, DurablePolicyRecovery, HypermailPrivateMutationTransport, PgBossPolicyDispatcher, PostgresPolicyActionInputStore, PostgresPolicyPlanner, createPolicyExecutor } from './policy.js';
 import { NotificationWorker, PostgresNotificationPersistence, PushSubscriptionAesCodec, WebPushVapidTransport, type NotificationInput, type VapidPushTransport } from '@hypermail/notifications';
@@ -82,7 +82,7 @@ function deterministicWorkUuid(seed: string): string {
 }
 
 export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
-  constructor(private readonly db: ManagedSqlClient, private readonly bodyRetentionDays = 90) {}
+  constructor(private readonly db: ManagedSqlClient, private readonly bodyRetentionDays: number, private readonly memoryTiming: MailboxMemoryTimingPolicy) {}
   async claim(jobId: string, userId?: string): Promise<ClaimedAgentJob | null> {
     return this.db.transaction(async (db) => {
       const result = await db.query<AgentJobRow & {
@@ -164,9 +164,9 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
   }
   async deferMemory(job: ClaimedAgentJob): Promise<void> {
     const deferred = await this.db.query<{ id: string }>(`update app.agent_jobs set state='pending', queue_job_id=null,
-      available_at=now()+make_interval(secs => least(300, 5 * power(2, least(attempt, 6))::integer)),
+      available_at=now()+make_interval(secs => least($4, $3 * power(2, least(greatest(attempt-1,0), 30))::integer)),
       last_error_code='MAILBOX_MEMORY_UNAVAILABLE', unavailable_reason='MAILBOX_MEMORY_UNAVAILABLE', updated_at=now()
-      where id=$1 and state='running' and ($2::uuid is null or agent_run_id=$2::uuid) returning id`, [job.id, job.runId ?? null]);
+      where id=$1 and state='running' and ($2::uuid is null or agent_run_id=$2::uuid) returning id`, [job.id, job.runId ?? null, this.memoryTiming.retryBaseDelaySeconds, this.memoryTiming.retryMaximumDelaySeconds]);
     if (deferred.rows.length !== 1) throw new Error('MAILBOX_MEMORY_DEFER_FAILED');
   }
   async failAdapter(job: ClaimedAgentJob, code: string): Promise<void> {
@@ -415,16 +415,22 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const legacyPolicyExecutor = client ? createPolicyExecutor(database, new HypermailPrivateMutationTransport(database, legacyPolicyMcp, ensureHypermail), environment.INCORRECT_MUTATION_THRESHOLD) : undefined;
   const policyRecovery = new DurablePolicyRecovery(database, policyDispatcher);
   const policyPlanner = new PostgresPolicyPlanner(database, policyDispatcher);
-  const agentStore = new PostgresAgentJobStore(database, environment.BODY_RETENTION_DAYS);
+  const memoryTiming: MailboxMemoryTimingPolicy = {
+    retryBaseDelaySeconds: environment.MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS,
+    retryMaximumDelaySeconds: environment.MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS,
+    claimLeaseSeconds: environment.MAILBOX_MEMORY_CLAIM_LEASE_SECONDS,
+    schedulerIntervalSeconds: environment.MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS,
+  };
+  const agentStore = new PostgresAgentJobStore(database, environment.BODY_RETENTION_DAYS, memoryTiming);
   const currentEmailRetainer = mailboxMemory ? new MailboxCurrentEmailRetainer(mailboxMemory, {
     tempDirectory: environment.ATTACHMENT_TEMP_DIRECTORY, maxBytes: environment.HINDSIGHT_MAX_FILE_BYTES,
     operationTimeoutMs: environment.HINDSIGHT_REQUEST_TIMEOUT_MS }) : undefined;
   const agentConsumer = new ClaimingAgentConsumer(agentStore, new DeliverAgentConsumer(tenantHypermail, triage, agentStore,
     environment.AGENT_GLOBAL_CONSTRAINTS, policyPlanner, currentEmailRetainer));
-  const memoryEventStore = new PostgresMailboxMemoryEventStore(database);
+  const memoryEventStore = new PostgresMailboxMemoryEventStore(database, memoryTiming);
   const memoryEvents = currentEmailRetainer ? new MailboxMemoryEventScheduler(
     new MailboxMemoryEventDeliveryWorker(memoryEventStore, new PostgresMailboxMemoryMessageHydrator(database),
-      tenantHypermail, currentEmailRetainer, `${holderId}:mailbox-memory`), memoryEventStore, clock) : undefined;
+      tenantHypermail, currentEmailRetainer, `${holderId}:mailbox-memory`, memoryTiming), memoryEventStore, clock, memoryTiming) : undefined;
   const notificationPersistence = new PostgresNotificationPersistence(database, new PushSubscriptionAesCodec(environment.PUSH_SUBSCRIPTION_ENCRYPTION_KEY));
   const notificationTransport = (factories.createNotificationTransport ?? ((env: WorkerEnvironment) => new WebPushVapidTransport({ subject: env.VAPID_SUBJECT, publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY })))(environment);
   const notificationWorker = new NotificationWorker(notificationPersistence, notificationTransport);

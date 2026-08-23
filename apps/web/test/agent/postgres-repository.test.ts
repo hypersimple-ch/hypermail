@@ -79,8 +79,7 @@ describe('PostgresAgentRepository', () => {
       { rows: [{ id: 'question-1', activity_id: 'activity-1', account_id: 'account-a', version: 2, prompt: 'Proceed?', state: 'open' }] },
       { rows: [] }, { rows: [{ id: 'question-1' }] }, { rows: [{ version: 3, updated_at: occurredAt }] }, { rows: [] }, { rows: [] },
       { rows: [{ id: eventId, user_id: scope.subjectId, account_id: 'account-a', source_type: 'question', source_id: 'question-1', source_version: 3,
-        kind: 'question_answered', content_digest: contentDigest, content_payload: canonical.contentPayload, state: 'pending', attempt_count: 0,
-        max_attempts: 8, claim_generation: 0, available_at: occurredAt, occurred_at: occurredAt, completed_at: null, dead_lettered_at: null,
+        kind: 'question_answered', content_digest: contentDigest, content_payload: canonical.contentPayload, state: 'pending', attempt_count: 0, claim_generation: 0, available_at: occurredAt, occurred_at: occurredAt, completed_at: null, cancelled_at: null,
         result_metadata: null, last_error_code: null, last_error_metadata: null, created_at: occurredAt, updated_at: occurredAt }] },
     ]);
     await expect(new PostgresAgentRepository(db).answerQuestion(scope, 'question-1', 'Yes', 2, 'stable-key')).resolves.toMatchObject({ kind: 'answered' });

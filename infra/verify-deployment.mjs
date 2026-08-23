@@ -26,6 +26,8 @@ const hindsightEnvExample = read('.env.hindsight.example');
 const hindsightWorkerFields = [
   'HINDSIGHT_URL', 'HINDSIGHT_API_KEY', 'HINDSIGHT_EXPECTED_VERSION',
   'HINDSIGHT_REQUEST_TIMEOUT_MS', 'HINDSIGHT_MAX_FILE_BYTES',
+  'MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS', 'MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS',
+  'MAILBOX_MEMORY_CLAIM_LEASE_SECONDS', 'MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS',
 ];
 for (const field of hindsightWorkerFields) {
   if (!envContract.includes(field)) fail(`worker environment contract must define ${field}`);

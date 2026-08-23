@@ -7,6 +7,7 @@ import { withPostgresSchemas } from '../../../apps/worker/test/postgres-test.js'
 const databaseUrl = process.env.DATABASE_URL;
 const postgresUrl = databaseUrl ?? '';
 const occurredAt = '2026-08-21T12:00:00.000Z';
+const timing = { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 };
 
 async function seedTenant(sql: Sql) {
   const userId = randomUUID(); const mailboxId = randomUUID();
@@ -25,11 +26,11 @@ describe('Mailbox-memory event PostgreSQL integration', () => {
     await withPostgresSchemas(postgresUrl, async (sql) => {
       const tenant = await seedTenant(sql); const other = await seedTenant(sql);
       const firstClient = createPostgresClient(postgresUrl); const secondClient = createPostgresClient(postgresUrl);
-      const first = new PostgresMailboxMemoryEventStore(firstClient); const second = new PostgresMailboxMemoryEventStore(secondClient);
+      const first = new PostgresMailboxMemoryEventStore(firstClient, timing); const second = new PostgresMailboxMemoryEventStore(secondClient, timing);
       const sourceId = randomUUID(); const eventId = randomUUID();
       const input = { id: eventId, ...tenant, sourceType: 'message', sourceId, sourceVersion: 1,
         kind: 'retain_email', contentPayload: { canonicalMessageId: sourceId, content: 'needed until retain completes' },
-        occurredAt, maxAttempts: 3 };
+        occurredAt };
       try {
         await expect(first.enqueue(input)).resolves.toMatchObject({ id: eventId, state: 'pending' });
         await expect(first.enqueue({ ...input, id: randomUUID() })).resolves.toMatchObject({ id: eventId });
@@ -44,15 +45,15 @@ describe('Mailbox-memory event PostgreSQL integration', () => {
           .rejects.toThrow();
 
         const concurrentClaims = await Promise.all([
-          first.claim({ workerId: 'memory-worker-a', limit: 1, leaseSeconds: 60 }),
-          second.claim({ workerId: 'memory-worker-b', limit: 1, leaseSeconds: 60 }),
+          first.claim({ workerId: 'memory-worker-a', limit: 1 }),
+          second.claim({ workerId: 'memory-worker-b', limit: 1 }),
         ]);
         expect(concurrentClaims.flat()).toHaveLength(1);
         const claim = concurrentClaims.flat()[0];
         expect(claim).toBeDefined();
         if (!claim) throw new Error('Expected one Mailbox-memory claim.');
 
-        await expect(first.renew(claim.fence, 3_600)).resolves.toBeUndefined();
+        await expect(first.renew(claim.fence)).resolves.toBeUndefined();
         await expect(first.complete({ ...claim.fence, userId: other.userId, mailboxId: other.mailboxId }, { documentId: `event-${eventId}` }))
           .rejects.toThrow('tenant scope');
         await expect(first.complete(claim.fence, { documentId: `event-${eventId}` })).resolves.toMatchObject({
@@ -65,8 +66,8 @@ describe('Mailbox-memory event PostgreSQL integration', () => {
 
         const retryId = randomUUID();
         await first.enqueue({ ...input, id: retryId, sourceId: randomUUID(), kind: 'retain_attachment_metadata',
-          contentPayload: { mediaType: 'application/pdf', sizeBytes: 42 }, maxAttempts: 2 });
-        const retryClaim = (await first.claim({ workerId: 'memory-worker-a', limit: 1, leaseSeconds: 60 }))[0];
+          contentPayload: { mediaType: 'application/pdf', sizeBytes: 42 } });
+        const retryClaim = (await first.claim({ workerId: 'memory-worker-a', limit: 1 }))[0];
         if (!retryClaim) throw new Error('Expected retry claim.');
         const deferred = await first.defer(retryClaim.fence, { code: 'HINDSIGHT_UNAVAILABLE', metadata: { retryable: true } });
         expect(deferred).toMatchObject({ state: 'pending', attemptCount: 1, lastErrorCode: 'HINDSIGHT_UNAVAILABLE' });
@@ -75,8 +76,8 @@ describe('Mailbox-memory event PostgreSQL integration', () => {
 
         const indefiniteRetryId = randomUUID();
         await first.enqueue({ ...input, id: indefiniteRetryId, sourceId: randomUUID(), kind: 'retain_question_answer',
-          contentPayload: { answerDigest: 'b'.repeat(64) }, maxAttempts: 1 });
-        const indefiniteRetryClaim = (await first.claim({ workerId: 'memory-worker-a', limit: 1, leaseSeconds: 60 }))[0];
+          contentPayload: { answerDigest: 'b'.repeat(64) } });
+        const indefiniteRetryClaim = (await first.claim({ workerId: 'memory-worker-a', limit: 1 }))[0];
         if (!indefiniteRetryClaim) throw new Error('Expected retryable claim.');
         await expect(first.defer(indefiniteRetryClaim.fence, { code: 'HINDSIGHT_UNAVAILABLE' })).resolves.toMatchObject({
           state: 'pending', contentPayload: { answerDigest: 'b'.repeat(64) }, attemptCount: 1,

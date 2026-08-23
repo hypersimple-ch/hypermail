@@ -106,6 +106,24 @@ describe('environment contracts', () => {
     expect(env.INCORRECT_MUTATION_THRESHOLD).toBe(0.01);
     expect(env.HINDSIGHT_REQUEST_TIMEOUT_MS).toBe(30_000);
     expect(env.HINDSIGHT_MAX_FILE_BYTES).toBe(10 * 1024 * 1024);
+    expect(env).toMatchObject({
+      MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: 5,
+      MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS: 900,
+      MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: 3_600,
+      MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: 5,
+    });
+  });
+
+  it('rejects unsafe mailbox-memory timing combinations before startup', () => {
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: '30', MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS: '29' }))
+      .toThrow(/MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      HINDSIGHT_REQUEST_TIMEOUT_MS: '30000', MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: '30' }))
+      .toThrow(/MAILBOX_MEMORY_CLAIM_LEASE_SECONDS/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker,
+      MAILBOX_MEMORY_CLAIM_LEASE_SECONDS: '30', MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: '30' }))
+      .toThrow(/MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS/);
   });
 
   it('rejects unknown variables and unsafe polling intervals without echoing values', () => {

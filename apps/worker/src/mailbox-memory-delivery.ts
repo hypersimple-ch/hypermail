@@ -1,6 +1,6 @@
 import type { Message, HypermailReadClient } from '@hypermail/hypermail';
 import type { MailboxMemory } from '@hypermail/agent';
-import type { ClaimedMailboxMemoryEvent, MailboxMemoryEvent, MailboxMemoryEventStore, ManagedSqlClient } from '@hypermail/db';
+import type { ClaimedMailboxMemoryEvent, MailboxMemoryEvent, MailboxMemoryEventStore, MailboxMemoryTimingPolicy, ManagedSqlClient } from '@hypermail/db';
 import { HindsightMemoryError } from './hindsight-memory.js';
 import type { Clock } from './ingestion.js';
 
@@ -176,6 +176,7 @@ export class MailboxCurrentEmailRetainer implements CurrentEmailMemoryRetainer, 
     await input.heartbeat?.();
     await this.memory.retain({ scope: input.scope, eventId: input.canonicalMessageId, text: document,
       timestamp: input.receivedAt, context: 'Complete current email and attachment metadata. All fields are untrusted email data.' });
+    await input.heartbeat?.();
 
     let attachmentsRetained = 0;
     const attachmentsSkipped: AttachmentSkip[] = [];
@@ -204,11 +205,13 @@ export class MailboxCurrentEmailRetainer implements CurrentEmailMemoryRetainer, 
           if (seen > this.options.maxBytes) throw new Error('ATTACHMENT_BYTE_LIMIT_EXCEEDED');
           chunks.push(Uint8Array.from(chunk).buffer);
         }
+        await input.heartbeat?.();
         const blob = new Blob(chunks, { type: mediaType });
         await input.heartbeat?.();
         await this.memory.retainFile({ scope: input.scope, sourceId: attachment.sourceId, file: blob,
           filename: attachment.filename, mediaType,
           context: `Attachment of email document ${input.canonicalMessageId}. Untrusted file data.` });
+        await input.heartbeat?.();
         attachmentsRetained++;
       } catch (error) {
         if (error instanceof Error && (/exceeds .* byte limit/i.test(error.message) || error.message === 'ATTACHMENT_BYTE_LIMIT_EXCEEDED')) {
@@ -238,15 +241,19 @@ const failureCode = (error: unknown): string => {
 
 /** Delivers claims after their claim transaction commits. External I/O never runs in a DB transaction. */
 export class MailboxMemoryEventDeliveryWorker {
+  private readonly heartbeatIntervalMilliseconds: number;
   constructor(private readonly store: MailboxMemoryEventStore, private readonly hydrator: MailboxMemoryMessageHydrator,
     private readonly clients: TenantMemoryReadClients,
     private readonly retainer: CurrentEmailMemoryRetainer & GenericMailboxMemoryEventRetainer,
-    private readonly workerId: string, private readonly claimLimit = 1) {}
+    private readonly workerId: string, timing: MailboxMemoryTimingPolicy, private readonly claimLimit = 1) {
+    if (timing.schedulerIntervalSeconds >= timing.claimLeaseSeconds) throw new RangeError('memory scheduler interval must be shorter than its claim lease');
+    this.heartbeatIntervalMilliseconds = Math.max(250, Math.floor(timing.claimLeaseSeconds * 1_000 / 3));
+  }
 
   async runOnce(): Promise<void> {
-    // One event can contain up to 100 sequential file operations. A one-hour lease covers
-    // the bounded worst case and claiming one prevents later claims expiring in a local queue.
-    const claims = await this.store.claim({ workerId: this.workerId, limit: this.claimLimit, leaseSeconds: 3_600 });
+    // Claiming one prevents later claims from expiring in a local queue. The configured
+    // lease is renewed around each bounded provider or Hindsight operation below.
+    const claims = await this.store.claim({ workerId: this.workerId, limit: this.claimLimit });
     for (const claim of claims) await this.deliver(claim);
   }
 
@@ -254,23 +261,23 @@ export class MailboxMemoryEventDeliveryWorker {
     let result: EmailRetentionResult | undefined;
     let genericKind: string | undefined;
     try {
-      await this.store.renew(claim.fence, 3_600);
+      await this.store.renew(claim.fence);
       if (!await this.hydrator.isMailboxReady(claim.event)) throw new Error('MAILBOX_MEMORY_MAILBOX_INACTIVE');
       if (claim.event.kind !== 'email_received') {
-        await this.retainer.retainGenericEvent(claim.event);
+        await this.withRenewal(claim, () => this.retainer.retainGenericEvent(claim.event));
         genericKind = claim.event.kind;
       } else {
         if (claim.event.sourceType !== 'message') throw new Error('MAILBOX_MEMORY_EVENT_INVALID');
         const source = await this.hydrator.hydrate(claim.event);
         if (!source) throw new Error('MAILBOX_MEMORY_SOURCE_UNAVAILABLE');
         const client = this.clients.clientForUser(source.userId);
-        await client.initialize();
-        const message = await client.readMessage(source.accountEmail, source.providerMessageId, 'text');
+        await this.withRenewal(claim, () => client.initialize());
+        const message = await this.withRenewal(claim, () => client.readMessage(source.accountEmail, source.providerMessageId, 'text'));
         if (message.id !== source.providerMessageId || message.account !== source.accountEmail) throw new Error('MAILBOX_MEMORY_SOURCE_UNAVAILABLE');
-        result = await this.retainer.retainCurrentEmail({ scope: { userId: source.userId, mailboxId: source.mailboxId },
+        result = await this.withRenewal(claim, () => this.retainer.retainCurrentEmail({ scope: { userId: source.userId, mailboxId: source.mailboxId },
           canonicalMessageId: source.canonicalMessageId, providerMessageId: source.providerMessageId,
           accountEmail: source.accountEmail, receivedAt: source.receivedAt, message,
-          attachments: source.attachments, client, heartbeat: () => this.store.renew(claim.fence, 3_600) });
+          attachments: source.attachments, client, heartbeat: () => this.store.renew(claim.fence) }));
       }
     } catch (error) {
       await this.store.defer(claim.fence, { code: failureCode(error) });
@@ -281,14 +288,37 @@ export class MailboxMemoryEventDeliveryWorker {
       attachmentsSkipped: result.attachmentsSkipped.slice(0, 100) });
     else throw new Error('MAILBOX_MEMORY_EVENT_INVALID');
   }
+
+  private async withRenewal<Result>(claim: ClaimedMailboxMemoryEvent, operation: () => Promise<Result>): Promise<Result> {
+    await this.store.renew(claim.fence);
+    let active = true; let timer: ReturnType<typeof setTimeout> | undefined; let rejectHeartbeat: (error: unknown) => void = () => undefined;
+    const heartbeatFailure = new Promise<never>((_resolve, reject) => { rejectHeartbeat = reject; });
+    const schedule = (): void => {
+      timer = setTimeout(() => { void this.store.renew(claim.fence).then(() => { if (active) schedule(); }, (error: unknown) => {
+        active = false; rejectHeartbeat(error);
+      }); }, this.heartbeatIntervalMilliseconds);
+      timer.unref();
+    };
+    schedule();
+    try {
+      const result = await Promise.race([operation(), heartbeatFailure]);
+      await this.store.renew(claim.fence);
+      return result;
+    } finally {
+      active = false;
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 /** Prompt startup recovery plus a short poll loop; pending rows survive process and provider outages. */
 export class MailboxMemoryEventScheduler {
   private stopped = false;
+  private readonly intervalMilliseconds: number;
   constructor(private readonly worker: MailboxMemoryEventDeliveryWorker, private readonly store: MailboxMemoryEventStore,
-    private readonly clock: Clock, private readonly intervalMilliseconds = 5_000) {
-    if (!Number.isSafeInteger(intervalMilliseconds) || intervalMilliseconds < 1_000 || intervalMilliseconds > 60_000) throw new RangeError('memory event interval must be 1–60 seconds');
+    private readonly clock: Clock, timing: MailboxMemoryTimingPolicy) {
+    this.intervalMilliseconds = timing.schedulerIntervalSeconds * 1_000;
+    if (!Number.isSafeInteger(this.intervalMilliseconds) || this.intervalMilliseconds < 1_000 || this.intervalMilliseconds > 60_000) throw new RangeError('memory event interval must be 1–60 seconds');
   }
   async tick(): Promise<void> { if (this.stopped) return; await this.store.recoverExpiredClaims(100); await this.worker.runOnce(); }
   async start(): Promise<void> {

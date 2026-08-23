@@ -9,12 +9,24 @@ const userId = randomUUID();
 const mailboxId = randomUUID();
 const scope = { userId, mailboxId };
 
+const completeOpenApi = (): Record<string, unknown> => ({
+  openapi: '3.1.0',
+  paths: {
+    '/v1/default/banks/{bank_id}': { put: { responses: {} }, delete: { responses: {} } },
+    '/v1/default/banks/{bank_id}/memories': { post: { responses: {} } },
+    '/v1/default/banks/{bank_id}/memories/recall': { post: { responses: {} } },
+    '/v1/default/banks/{bank_id}/files/retain': { post: { responses: {} } },
+    '/v1/default/banks/{bank_id}/operations/{operation_id}': { get: { responses: {} } },
+  },
+});
+
 function fakeApi(overrides: Partial<HindsightApi> = {}): HindsightApi & { calls: Array<{ method: string; args: unknown[] }> } {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const record = <T>(method: string, result: T) => async (...args: unknown[]): Promise<T> => { calls.push({ method, args }); return result; };
   return {
     calls,
     getReadiness: record('getReadiness', { status: 'ready' }),
+    getOpenApi: record('getOpenApi', completeOpenApi()),
     getVersion: record('getVersion', { api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: true, store_document_text: true } }),
     createBank: record('createBank', { bank_id: mailboxBankId(scope), mission: 'x', name: 'x', disposition: { skepticism: 3, literalism: 3, empathy: 3 } }),
     retain: record('retain', { success: true, bank_id: mailboxBankId(scope), items_count: 1, async: true, operation_id: '11111111-1111-4111-8111-111111111111' }),
@@ -118,15 +130,46 @@ describe('Hindsight Mailbox memory adapter', () => {
     expect(calls).toEqual(['retain']);
   });
 
-  it('requires the exact server version/features and supports explicit bank deletion', async () => {
+  it('accepts a complete read-only 0.9.1 contract before supporting explicit bank deletion', async () => {
     const api = fakeApi();
     const adapter = memory(api);
     await expect(adapter.readiness()).resolves.toEqual({ version: '0.9.1' });
-    await expect(memory(fakeApi({ getVersion: async () => ({ api_version: '0.9.0', features: { observations: true } }) })).readiness())
-      .rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
-    await expect(memory(fakeApi({ getVersion: async () => ({ api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: false, store_document_text: true } }) })).readiness())
-      .rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+    expect(api.calls.slice(0, 3).map(({ method }) => method)).toEqual(['getReadiness', 'getVersion', 'getOpenApi']);
+    expect(api.calls.every(({ method }) => ['getReadiness', 'getVersion', 'getOpenApi'].includes(method))).toBe(true);
     await adapter.deleteMailbox(scope);
     expect(api.calls.find((call) => call.method === 'deleteBank')?.args[0]).toBe(mailboxBankId(scope));
+  });
+
+  it('fails closed before schema discovery for wrong versions or incomplete feature flags', async () => {
+    const wrongVersion = fakeApi({ getVersion: async () => ({ api_version: '0.9.0', features: { observations: true } }) });
+    await expect(memory(wrongVersion).readiness()).rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+    expect(wrongVersion.calls.some(({ method }) => method === 'getOpenApi')).toBe(false);
+    const incompleteFeatures = fakeApi({ getVersion: async () => ({ api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: false, store_document_text: true } }) });
+    await expect(memory(incompleteFeatures).readiness()).rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+    expect(incompleteFeatures.calls.some(({ method }) => method === 'getOpenApi')).toBe(false);
+  });
+
+  it.each([
+    ['bank create/configure', '/v1/default/banks/{bank_id}', 'put'],
+    ['retain', '/v1/default/banks/{bank_id}/memories', 'post'],
+    ['recall', '/v1/default/banks/{bank_id}/memories/recall', 'post'],
+    ['file upload', '/v1/default/banks/{bank_id}/files/retain', 'post'],
+    ['operation status', '/v1/default/banks/{bank_id}/operations/{operation_id}', 'get'],
+    ['bank delete', '/v1/default/banks/{bank_id}', 'delete'],
+  ])('rejects an incomplete OpenAPI schema missing %s', async (_operation, path, method) => {
+    const document = completeOpenApi();
+    const paths = document['paths'] as Record<string, Record<string, unknown>>;
+    delete paths[path]?.[method];
+    await expect(memory(fakeApi({ getOpenApi: async () => document })).readiness())
+      .rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+  });
+
+  it('rejects malformed and timed-out OpenAPI schemas without invoking adapter operations', async () => {
+    const malformed = fakeApi({ getOpenApi: async () => ({ openapi: '3.1.0', paths: [] }) });
+    await expect(memory(malformed).readiness()).rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+    expect(malformed.calls.every(({ method }) => !['createBank', 'retain', 'recall', 'retainFiles', 'getOperationStatus', 'deleteBank'].includes(method))).toBe(true);
+    const never = new Promise<never>(() => undefined);
+    await expect(memory(fakeApi({ getOpenApi: async () => never }), 2).readiness())
+      .rejects.toMatchObject({ code: 'HINDSIGHT_TIMEOUT' });
   });
 });

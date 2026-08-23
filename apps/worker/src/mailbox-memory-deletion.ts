@@ -7,6 +7,7 @@ export type PermanentMailboxMemoryDeletion = Readonly<{ userId: string; mailboxI
 /**
  * Explicit operator boundary for permanent Hindsight deletion.
  * The worker must be stopped before calling it so an already claimed retain cannot recreate the bank.
+ * PostgreSQL history remains canonical: completed events are untouched and replayable events are cancelled/minimized.
  */
 export async function permanentlyDeleteMailboxMemory(input: Readonly<{
   database: ManagedSqlClient;
@@ -41,12 +42,10 @@ export async function permanentlyDeleteMailboxMemory(input: Readonly<{
     await database.query(`insert into app.audits(actor_type,actor_id,account_id,event,correlation_id,metadata)
       values('operator',$1,$2::uuid,'mailbox_memory.delete_requested',$3,$4::jsonb)`,
     [input.userId, input.mailboxId, `mailbox-memory-delete:${input.mailboxId}`, { bankId }]);
-    await database.query(`update app.mailbox_memory_events set state='pending',claim_worker=null,claimed_at=null,
-      claim_expires_at=null,last_error_code='OWNER_MEMORY_DELETION',last_error_metadata='{}'::jsonb,updated_at=clock_timestamp()
-      where user_id=$1::uuid and account_id=$2::uuid and state='processing'`, [input.userId, input.mailboxId]);
-    await database.query(`select set_config('app.mailbox_memory_deletion','on',true)`);
-    await database.query(`delete from app.mailbox_memory_events where user_id=$1::uuid and account_id=$2::uuid`,
-      [input.userId, input.mailboxId]);
+    await database.query(`update app.mailbox_memory_events set state='cancelled',content_payload=null,
+      last_error_code='OWNER_MEMORY_DELETION',last_error_metadata='{}'::jsonb,
+      cancelled_at=clock_timestamp(),claim_worker=null,claimed_at=null,claim_expires_at=null,updated_at=clock_timestamp()
+      where user_id=$1::uuid and account_id=$2::uuid and state in ('pending','processing')`, [input.userId, input.mailboxId]);
     return { alreadyDeleted: false };
   });
   if (prepared.alreadyDeleted) return { userId: input.userId, mailboxId: input.mailboxId, alreadyDeleted: true };

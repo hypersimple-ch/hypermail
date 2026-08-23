@@ -54,7 +54,7 @@ export const agentTaskPendingReason = app.enum('agent_task_pending_reason', ['in
 export const agentTaskErrorCode = app.enum('agent_task_error_code', ['MANAGER_UNAVAILABLE','RATE_LIMITED','DEPENDENCY_UNAVAILABLE','LEASE_EXPIRED','DEADLINE_EXCEEDED','INVALID_REPORT','AUTHORIZATION_REVOKED','OWNER_CANCELLED','INTERNAL']);
 export const agentTaskOutboxEvent = app.enum('agent_task_outbox_event', ['task_available','task_obsolete','question_answered','task_terminal']);
 export const agentTaskReportKind = app.enum('agent_task_report_kind', ['heartbeat','result','failure','answer']);
-export const mailboxMemoryEventState = app.enum('mailbox_memory_event_state', ['pending','processing','completed','dead_letter']);
+export const mailboxMemoryEventState = app.enum('mailbox_memory_event_state', ['pending','processing','completed','cancelled']);
 
 export const users = app.table('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -465,7 +465,6 @@ export const mailboxMemoryEvents = app.table('mailbox_memory_events', {
   contentPayload: jsonb('content_payload').$type<Readonly<Record<string, unknown>>>(),
   state: mailboxMemoryEventState('state').notNull().default('pending'),
   attemptCount: integer('attempt_count').notNull().default(0),
-  maxAttempts: integer('max_attempts').notNull().default(8),
   claimGeneration: integer('claim_generation').notNull().default(0),
   claimToken: uuid('claim_token'),
   claimWorker: text('claim_worker'),
@@ -474,7 +473,7 @@ export const mailboxMemoryEvents = app.table('mailbox_memory_events', {
   availableAt: timestamp('available_at', { withTimezone: true }).notNull(),
   occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
-  deadLetteredAt: timestamp('dead_lettered_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
   resultMetadata: jsonb('result_metadata').$type<Readonly<Record<string, unknown>>>(),
   lastErrorCode: text('last_error_code'),
   lastErrorMetadata: jsonb('last_error_metadata').$type<Readonly<Record<string, unknown>>>(),
@@ -488,10 +487,10 @@ export const mailboxMemoryEvents = app.table('mailbox_memory_events', {
   check('mailbox_memory_events_source_type_valid', sql`${table.sourceType} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('mailbox_memory_events_kind_valid', sql`${table.kind} ~ '^[a-z][a-z0-9_]{0,63}$'`),
   check('mailbox_memory_events_digest_valid', sql`${table.contentDigest} ~ '^[0-9a-f]{64}$'`),
-  check('mailbox_memory_events_counts_valid', sql`${table.sourceVersion} > 0 and ${table.attemptCount} >= 0 and ${table.maxAttempts} between 1 and 25 and ${table.claimGeneration} = ${table.attemptCount}`),
+  check('mailbox_memory_events_counts_valid', sql`${table.sourceVersion} > 0 and ${table.attemptCount} >= 0 and ${table.claimGeneration} = ${table.attemptCount}`),
   check('mailbox_memory_events_payload_valid', sql`${table.contentPayload} is null or jsonb_typeof(${table.contentPayload}) = 'object'`),
   check('mailbox_memory_events_metadata_valid', sql`(${table.resultMetadata} is null or (jsonb_typeof(${table.resultMetadata}) = 'object' and octet_length(${table.resultMetadata}::text) <= 8192)) and (${table.lastErrorMetadata} is null or (jsonb_typeof(${table.lastErrorMetadata}) = 'object' and octet_length(${table.lastErrorMetadata}::text) <= 8192)) and (${table.lastErrorCode} is null or ${table.lastErrorCode} ~ '^[A-Z][A-Z0-9_]{0,63}$')`),
-  check('mailbox_memory_events_state_shape', sql`(${table.state} = 'pending' and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.deadLetteredAt} is null) or (${table.state} = 'processing' and ${table.claimToken} is not null and ${table.claimWorker} is not null and ${table.claimedAt} is not null and ${table.claimExpiresAt} is not null and ${table.completedAt} is null and ${table.deadLetteredAt} is null) or (${table.state} = 'completed' and ${table.claimToken} is not null and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is not null and ${table.deadLetteredAt} is null and ${table.contentPayload} is null) or (${table.state} = 'dead_letter' and ${table.claimToken} is not null and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.deadLetteredAt} is not null)`),
+  check('mailbox_memory_events_state_shape', sql`(${table.state} = 'pending' and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.cancelledAt} is null) or (${table.state} = 'processing' and ${table.claimToken} is not null and ${table.claimWorker} is not null and ${table.claimedAt} is not null and ${table.claimExpiresAt} is not null and ${table.completedAt} is null and ${table.cancelledAt} is null) or (${table.state} = 'completed' and ${table.claimToken} is not null and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is not null and ${table.cancelledAt} is null and ${table.contentPayload} is null) or (${table.state} = 'cancelled' and ${table.claimWorker} is null and ${table.claimedAt} is null and ${table.claimExpiresAt} is null and ${table.completedAt} is null and ${table.cancelledAt} is not null and ${table.contentPayload} is null)`),
 ]);
 
 export const agentMutationIdempotency = app.table('agent_mutation_idempotency',{accountId:uuid('account_id').notNull(),operation:text('operation').notNull(),idempotencyKey:text('idempotency_key').notNull(),requestDigest:text('request_digest').notNull(),state:text('state').notNull(),result:jsonb('result'),createdAt,updatedAt},table=>[primaryKey({columns:[table.accountId,table.operation,table.idempotencyKey]})]);

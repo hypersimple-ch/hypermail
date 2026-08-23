@@ -1,15 +1,16 @@
 /* eslint-disable @typescript-eslint/restrict-template-expressions, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment */
 import { createHash, randomUUID } from 'node:crypto';
-import { enqueueMailboxMemoryEventInPostgresTransaction, mailboxMemoryTextEvidence } from '@hypermail/db';
+import { enqueueMailboxMemoryEventInPostgresTransaction } from '@hypermail/db';
 import type { Sql } from 'postgres';
 import { hashSendConfirmation } from '../drafts/service.js';
 import { draftFieldsSchema } from '../drafts/contracts.js';
+import { draftMemoryProjection } from '../drafts/memory-projection.js';
 import { SendRequestConflictError, SendRequestNotFoundError, type OwnerSendRequest, type OwnerSendScope, type SendClaim } from './contracts.js';
 type Row=Record<string,any>;
 const text=(v:unknown)=>typeof v==='string'?v:''; const iso=(v:unknown)=>v instanceof Date?v.toISOString():text(v);
 const model=(r:Row):OwnerSendRequest=>({id:text(r['id']),accountId:text(r['account_id']),draftId:text(r['draft_id']),draftVersion:Number(r['draft_version']),state:text(r['state']) as OwnerSendRequest['state'],approvalId:r['approval_id']?text(r['approval_id']):null,actionId:r['action_id']?text(r['action_id']):null,providerMessageId:r['provider_message_id']?text(r['provider_message_id']):null,expiresAt:iso(r['expires_at']),completedAt:r['completed_at']?iso(r['completed_at']):null,reasonCode:r['reason_code']?text(r['reason_code']):null,createdAt:iso(r['created_at']),updatedAt:iso(r['updated_at'])});
 const key=(r:Row)=>`send-request:${text(r['id'])}:${text(r['draft_id'])}:${String(r['draft_version'])}`;
-const memoryDraft=(row:Row)=>{const parsed=draftFieldsSchema.safeParse({recipients:typeof row['recipients']==='string'?JSON.parse(row['recipients']):row['recipients'],subject:text(row['subject']),body:text(row['body']),bodyFormat:row['body_format']==='html'?'html':'markdown'});return parsed.success?{creator:text(row['created_by']),recipients:parsed.data.recipients.slice(0,20).map(({kind,address})=>({kind,address:address.slice(0,320)})),subject:mailboxMemoryTextEvidence(parsed.data.subject,998),body:mailboxMemoryTextEvidence(parsed.data.body),bodyFormat:parsed.data.bodyFormat}:undefined};
+const memoryDraft=(row:Row)=>{const parsed=draftFieldsSchema.safeParse({recipients:typeof row['recipients']==='string'?JSON.parse(row['recipients']):row['recipients'],subject:text(row['subject']),body:text(row['body']),bodyFormat:row['body_format']==='html'?'html':'markdown'});const creator=text(row['created_by']);return parsed.success&&(creator==='agent'||creator==='user')?draftMemoryProjection(parsed.data,creator):undefined};
 export class PostgresOwnerSendRequestRepository {
  constructor(private readonly sql:Sql,private readonly now:()=>Date=()=>new Date(),private readonly ids:()=>string=randomUUID){}
  async list(scope:OwnerSendScope):Promise<readonly OwnerSendRequest[]>{return (await this.sql<Row[]>`select r.* from app.public_mcp_send_requests r join app.user_accounts ua on (ua.user_id,ua.account_id)=(r.user_id,r.account_id) where r.user_id=${scope.subjectId} and r.account_id=any(${scope.accountIds}) order by r.created_at desc,r.id desc limit 100`).map(model)}

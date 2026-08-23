@@ -1,8 +1,8 @@
 import { Readable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { MailboxMemory } from '@hypermail/agent';
 import type { ClaimedMailboxMemoryEvent, MailboxMemoryEvent, MailboxMemoryEventStore } from '@hypermail/db';
-import { MailboxCurrentEmailRetainer, MailboxMemoryEventDeliveryWorker, type HydratedMailboxMessage } from '../src/mailbox-memory-delivery.js';
+import { MailboxCurrentEmailRetainer, MailboxMemoryEventDeliveryWorker, MailboxMemoryEventScheduler, type HydratedMailboxMessage } from '../src/mailbox-memory-delivery.js';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const mailboxId = '00000000-0000-4000-8000-000000000002';
@@ -10,6 +10,7 @@ const messageId = '00000000-0000-4000-8000-000000000003';
 const attachmentId = '00000000-0000-4000-8000-000000000004';
 const eventId = '00000000-0000-4000-8000-000000000005';
 const occurredAt = '2026-01-01T00:00:00.000Z';
+const timing = { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 };
 
 function memory(calls: string[], failFile = false): MailboxMemory {
   return {
@@ -94,7 +95,7 @@ describe('MailboxCurrentEmailRetainer', () => {
 const baseEvent: MailboxMemoryEvent = {
   id: eventId, userId, mailboxId, sourceType: 'message', sourceId: messageId, sourceVersion: 1,
   kind: 'email_received', contentDigest: 'a'.repeat(64), contentPayload: {}, state: 'processing', attemptCount: 1,
-  maxAttempts: 8, claimGeneration: 1, availableAt: occurredAt, occurredAt, completedAt: null, deadLetteredAt: null,
+  claimGeneration: 1, availableAt: occurredAt, occurredAt, completedAt: null, cancelledAt: null,
   resultMetadata: null, lastErrorCode: null, lastErrorMetadata: null, createdAt: occurredAt, updatedAt: occurredAt,
 };
 const claim: ClaimedMailboxMemoryEvent = { event: baseEvent, fence: { eventId, userId, mailboxId, generation: 1, token: '00000000-0000-4000-8000-000000000006' } };
@@ -113,7 +114,7 @@ describe('MailboxMemoryEventDeliveryWorker', () => {
       { clientForUser: () => ({ initialize: () => Promise.resolve(),
         readMessage: () => available ? Promise.resolve({ id: 'provider-message', account: 'mailbox@example.test', body: 'body' }) : Promise.reject(new Error('secret provider response')),
         openAttachment: () => Promise.reject(new Error('unused')) }) },
-      { retainCurrentEmail: () => Promise.resolve({ attachmentsRetained: 0, attachmentsSkipped: [] }), retainGenericEvent: () => Promise.resolve() }, 'worker');
+      { retainCurrentEmail: () => Promise.resolve({ attachmentsRetained: 0, attachmentsSkipped: [] }), retainGenericEvent: () => Promise.resolve() }, 'worker', timing);
     await worker.runOnce(); available = true; await worker.runOnce();
     expect(actions).toEqual(['defer:MAILBOX_MEMORY_DEPENDENCY_UNAVAILABLE', 'complete']);
   });
@@ -128,10 +129,32 @@ describe('MailboxMemoryEventDeliveryWorker', () => {
       defer: () => Promise.resolve(generic) } satisfies MailboxMemoryEventStore;
     const worker = new MailboxMemoryEventDeliveryWorker(store, { isMailboxReady: () => Promise.resolve(true), hydrate: () => Promise.reject(new Error('must not hydrate')) },
       { clientForUser: () => { throw new Error('must not open provider'); } },
-      { retainCurrentEmail: () => Promise.reject(new Error('must not retain email')), retainGenericEvent: (event) => { retained.push(event); return Promise.resolve(); } }, 'worker');
+      { retainCurrentEmail: () => Promise.reject(new Error('must not retain email')), retainGenericEvent: (event) => { retained.push(event); return Promise.resolve(); } }, 'worker', timing);
     await worker.runOnce();
     expect(retained).toEqual([generic]);
     expect(completions).toEqual([{ kind: 'question_answered' }]);
+  });
+
+  it('periodically renews the exact fenced claim during a long Hindsight operation', async () => {
+    vi.useFakeTimers();
+    try {
+      const fences: unknown[] = []; let finish: (() => void) | undefined;
+      const generic = { ...baseEvent, kind: 'question_answered', sourceType: 'question', contentPayload: { answer: 'remember' } };
+      const genericClaim = { event: generic, fence: claim.fence };
+      const store = { claim: () => Promise.resolve([genericClaim]), recoverExpiredClaims: () => Promise.resolve(0), enqueue: () => Promise.reject(new Error()),
+        renew: (renewedFence) => { fences.push(renewedFence); return Promise.resolve(); },
+        complete: () => Promise.resolve({ ...generic, state: 'completed' as const }), defer: () => Promise.resolve(generic) } satisfies MailboxMemoryEventStore;
+      const worker = new MailboxMemoryEventDeliveryWorker(store,
+        { isMailboxReady: () => Promise.resolve(true), hydrate: () => Promise.reject(new Error('unused')) },
+        { clientForUser: () => { throw new Error('unused'); } },
+        { retainCurrentEmail: () => Promise.reject(new Error('unused')),
+          retainGenericEvent: () => new Promise<void>((resolve) => { finish = resolve; }) },
+        'worker', { ...timing, claimLeaseSeconds: 2, schedulerIntervalSeconds: 1 });
+      const delivery = worker.runOnce(); await vi.advanceTimersByTimeAsync(1_400);
+      expect(fences).toEqual([claim.fence, claim.fence, claim.fence, claim.fence]);
+      finish?.(); await delivery;
+      expect(fences).toEqual([claim.fence, claim.fence, claim.fence, claim.fence, claim.fence]);
+    } finally { vi.useRealTimers(); }
   });
 
   it('defers without external I/O when the Mailbox was disabled after claim', async () => {
@@ -140,7 +163,7 @@ describe('MailboxMemoryEventDeliveryWorker', () => {
       complete: () => Promise.reject(new Error('must not complete')), defer: (_fence, failure) => { actions.push(failure.code); return Promise.resolve(baseEvent); } } satisfies MailboxMemoryEventStore;
     const worker = new MailboxMemoryEventDeliveryWorker(store, { isMailboxReady: () => Promise.resolve(false), hydrate: () => Promise.reject(new Error('must not hydrate')) },
       { clientForUser: () => { throw new Error('must not contact provider'); } },
-      { retainCurrentEmail: () => Promise.reject(new Error('must not retain')), retainGenericEvent: () => Promise.reject(new Error('must not retain')) }, 'worker');
+      { retainCurrentEmail: () => Promise.reject(new Error('must not retain')), retainGenericEvent: () => Promise.reject(new Error('must not retain')) }, 'worker', timing);
     await worker.runOnce();
     expect(actions).toEqual(['MAILBOX_MEMORY_MAILBOX_INACTIVE']);
   });
@@ -152,8 +175,32 @@ describe('MailboxMemoryEventDeliveryWorker', () => {
     const worker = new MailboxMemoryEventDeliveryWorker(store, { isMailboxReady: () => Promise.resolve(true), hydrate: (event) => { tenants.push(`${event.userId}:${event.mailboxId}`); return Promise.resolve(hydrated); } },
       { clientForUser: (requestedUser) => { tenants.push(requestedUser); return { initialize: () => Promise.resolve(),
         readMessage: () => Promise.resolve({ id: 'provider-message', account: 'mailbox@example.test' }), openAttachment: () => Promise.reject(new Error('unused')) }; } },
-      { retainCurrentEmail: () => Promise.resolve({ attachmentsRetained: 0, attachmentsSkipped: [] }), retainGenericEvent: () => Promise.resolve() }, 'worker');
+      { retainCurrentEmail: () => Promise.resolve({ attachmentsRetained: 0, attachmentsSkipped: [] }), retainGenericEvent: () => Promise.resolve() }, 'worker', timing);
     await worker.runOnce();
     expect(tenants).toEqual([`${userId}:${mailboxId}`, userId]);
+  });
+});
+
+
+describe('MailboxMemoryEventScheduler', () => {
+  it('uses the injected interval with a fake clock and recovers before delivery', async () => {
+    const actions: string[] = [];
+
+    const store = {
+      enqueue: () => Promise.reject(new Error('unused')), claim: () => Promise.resolve([]), renew: () => Promise.resolve(),
+      complete: () => Promise.reject(new Error('unused')), defer: () => Promise.reject(new Error('unused')),
+      recoverExpiredClaims: () => { actions.push('recover'); return Promise.resolve(0); },
+    } satisfies MailboxMemoryEventStore;
+    const worker = new MailboxMemoryEventDeliveryWorker(store,
+      { isMailboxReady: () => Promise.resolve(true), hydrate: () => Promise.resolve(null) },
+      { clientForUser: () => { throw new Error('unused'); } },
+      { retainCurrentEmail: () => Promise.reject(new Error('unused')), retainGenericEvent: () => Promise.reject(new Error('unused')) },
+      'worker', timing);
+    const clock = { now: () => new Date(occurredAt), sleep: (milliseconds: number) => {
+      actions.push(`sleep:${String(milliseconds)}`); scheduler.stop(); return Promise.resolve();
+    } };
+    const scheduler = new MailboxMemoryEventScheduler(worker, store, clock, { ...timing, schedulerIntervalSeconds: 7 });
+    await scheduler.start();
+    expect(actions).toEqual(['recover', 'sleep:7000']);
   });
 });

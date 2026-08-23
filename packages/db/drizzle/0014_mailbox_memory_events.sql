@@ -1,5 +1,5 @@
 -- Durable, tenant-owned Mailbox-memory projection outbox (Issue #31).
-CREATE TYPE "app"."mailbox_memory_event_state" AS ENUM('pending','processing','completed','dead_letter');
+CREATE TYPE "app"."mailbox_memory_event_state" AS ENUM('pending','processing','completed','cancelled');
 --> statement-breakpoint
 CREATE TABLE "app"."mailbox_memory_events" (
   "id" uuid PRIMARY KEY,
@@ -13,7 +13,6 @@ CREATE TABLE "app"."mailbox_memory_events" (
   "content_payload" jsonb,
   "state" "app"."mailbox_memory_event_state" DEFAULT 'pending' NOT NULL,
   "attempt_count" integer DEFAULT 0 NOT NULL,
-  "max_attempts" integer DEFAULT 8 NOT NULL,
   "claim_generation" integer DEFAULT 0 NOT NULL,
   "claim_token" uuid,
   "claim_worker" text,
@@ -22,7 +21,7 @@ CREATE TABLE "app"."mailbox_memory_events" (
   "available_at" timestamptz NOT NULL,
   "occurred_at" timestamptz NOT NULL,
   "completed_at" timestamptz,
-  "dead_lettered_at" timestamptz,
+  "cancelled_at" timestamptz,
   "result_metadata" jsonb,
   "last_error_code" text,
   "last_error_metadata" jsonb,
@@ -33,7 +32,7 @@ CREATE TABLE "app"."mailbox_memory_events" (
   CONSTRAINT "mailbox_memory_events_source_type_valid" CHECK(source_type ~ '^[a-z][a-z0-9_]{0,63}$'),
   CONSTRAINT "mailbox_memory_events_kind_valid" CHECK(kind ~ '^[a-z][a-z0-9_]{0,63}$'),
   CONSTRAINT "mailbox_memory_events_digest_valid" CHECK(content_digest ~ '^[0-9a-f]{64}$'),
-  CONSTRAINT "mailbox_memory_events_counts_valid" CHECK(source_version>0 AND attempt_count>=0 AND max_attempts BETWEEN 1 AND 25 AND claim_generation=attempt_count),
+  CONSTRAINT "mailbox_memory_events_counts_valid" CHECK(source_version>0 AND attempt_count>=0 AND claim_generation=attempt_count),
   CONSTRAINT "mailbox_memory_events_payload_valid" CHECK(content_payload IS NULL OR jsonb_typeof(content_payload)='object'),
   CONSTRAINT "mailbox_memory_events_metadata_valid" CHECK(
     (result_metadata IS NULL OR (jsonb_typeof(result_metadata)='object' AND octet_length(result_metadata::text)<=8192))
@@ -41,10 +40,10 @@ CREATE TABLE "app"."mailbox_memory_events" (
     AND (last_error_code IS NULL OR last_error_code ~ '^[A-Z][A-Z0-9_]{0,63}$')
   ),
   CONSTRAINT "mailbox_memory_events_state_shape" CHECK(
-    (state='pending' AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NULL AND dead_lettered_at IS NULL)
-    OR (state='processing' AND claim_token IS NOT NULL AND claim_worker IS NOT NULL AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND completed_at IS NULL AND dead_lettered_at IS NULL)
-    OR (state='completed' AND claim_token IS NOT NULL AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NOT NULL AND dead_lettered_at IS NULL AND content_payload IS NULL)
-    OR (state='dead_letter' AND claim_token IS NOT NULL AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NULL AND dead_lettered_at IS NOT NULL)
+    (state='pending' AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NULL AND cancelled_at IS NULL)
+    OR (state='processing' AND claim_token IS NOT NULL AND claim_worker IS NOT NULL AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL AND completed_at IS NULL AND cancelled_at IS NULL)
+    OR (state='completed' AND claim_token IS NOT NULL AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NOT NULL AND cancelled_at IS NULL AND content_payload IS NULL)
+    OR (state='cancelled' AND claim_worker IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL AND completed_at IS NULL AND cancelled_at IS NOT NULL AND content_payload IS NULL)
   )
 );
 --> statement-breakpoint
@@ -55,23 +54,26 @@ CREATE INDEX "mailbox_memory_events_expired_claim_idx" ON "app"."mailbox_memory_
 CREATE FUNCTION app.guard_mailbox_memory_event_history() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP='DELETE' THEN
-    IF current_setting('app.mailbox_memory_deletion',true)='on' AND EXISTS (SELECT 1 FROM app.accounts a WHERE a.id=OLD.account_id AND a.user_id=OLD.user_id AND a.state='disabled') THEN RETURN OLD; END IF;
     RAISE EXCEPTION 'mailbox memory events are append-only';
   END IF;
   IF ROW(NEW.id,NEW.user_id,NEW.account_id,NEW.source_type,NEW.source_id,NEW.source_version,NEW.kind,
-         NEW.content_digest,NEW.max_attempts,NEW.occurred_at,NEW.created_at)
+         NEW.content_digest,NEW.occurred_at,NEW.created_at)
      IS DISTINCT FROM
      ROW(OLD.id,OLD.user_id,OLD.account_id,OLD.source_type,OLD.source_id,OLD.source_version,OLD.kind,
-         OLD.content_digest,OLD.max_attempts,OLD.occurred_at,OLD.created_at) THEN
+         OLD.content_digest,OLD.occurred_at,OLD.created_at) THEN
     RAISE EXCEPTION 'mailbox memory event identity is immutable';
   END IF;
 
   IF NEW.content_payload IS DISTINCT FROM OLD.content_payload
-     AND NOT (OLD.content_payload IS NOT NULL AND NEW.content_payload IS NULL AND NEW.state='completed') THEN
-    RAISE EXCEPTION 'mailbox memory event content is immutable except for completion minimization';
+     AND NOT (OLD.content_payload IS NOT NULL AND NEW.content_payload IS NULL AND NEW.state IN ('completed','cancelled')) THEN
+    RAISE EXCEPTION 'mailbox memory event content is immutable except for terminal minimization';
   END IF;
 
-  IF OLD.state='pending' AND NEW.state='processing' THEN
+  IF OLD.state='pending' AND NEW.state='cancelled' THEN
+    IF NEW.attempt_count<>OLD.attempt_count OR NEW.claim_generation<>OLD.claim_generation OR NEW.claim_token IS DISTINCT FROM OLD.claim_token THEN
+      RAISE EXCEPTION 'invalid mailbox memory event cancellation fence';
+    END IF;
+  ELSIF OLD.state='pending' AND NEW.state='processing' THEN
     IF NEW.attempt_count<>OLD.attempt_count+1 OR NEW.claim_generation<>OLD.claim_generation+1
        OR NEW.claim_token IS NULL OR NEW.claim_token IS NOT DISTINCT FROM OLD.claim_token THEN
       RAISE EXCEPTION 'invalid mailbox memory event claim fence';
@@ -81,7 +83,7 @@ BEGIN
        OR NEW.claim_token IS DISTINCT FROM OLD.claim_token OR NEW.claim_expires_at<=OLD.claim_expires_at THEN
       RAISE EXCEPTION 'invalid mailbox memory event lease renewal';
     END IF;
-  ELSIF OLD.state='processing' AND NEW.state IN ('pending','completed','dead_letter') THEN
+  ELSIF OLD.state='processing' AND NEW.state IN ('pending','completed','cancelled') THEN
     IF NEW.attempt_count<>OLD.attempt_count OR NEW.claim_generation<>OLD.claim_generation
        OR NEW.claim_token IS DISTINCT FROM OLD.claim_token THEN
       RAISE EXCEPTION 'invalid mailbox memory event terminal fence';

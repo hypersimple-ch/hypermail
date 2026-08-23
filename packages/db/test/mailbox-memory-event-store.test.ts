@@ -20,14 +20,15 @@ const sourceId = '00000000-0000-4000-8000-000000000003';
 const eventId = '00000000-0000-4000-8000-000000000004';
 const token = '00000000-0000-4000-8000-000000000005';
 const occurredAt = '2026-08-21T12:00:00.000Z';
+const timing = { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 };
 const payload = { document: { subject: 'A subject', body: 'necessary until retained' }, source: 'message' };
 const contentDigest = createHash('sha256').update('{"document":{"body":"necessary until retained","subject":"A subject"},"source":"message"}').digest('hex');
 const baseRow = {
   id: eventId, user_id: userId, account_id: mailboxId, source_type: 'message', source_id: sourceId,
   source_version: 1, kind: 'retain_email', content_digest: contentDigest, content_payload: payload, state: 'pending',
-  attempt_count: 0, max_attempts: 8, claim_generation: 0, claim_token: null, claim_worker: null,
+  attempt_count: 0, claim_generation: 0, claim_token: null, claim_worker: null,
   claimed_at: null, claim_expires_at: null, available_at: new Date(occurredAt), occurred_at: new Date(occurredAt),
-  completed_at: null, dead_lettered_at: null, result_metadata: null, last_error_code: null,
+  completed_at: null, cancelled_at: null, result_metadata: null, last_error_code: null,
   last_error_metadata: null, created_at: new Date(occurredAt), updated_at: new Date(occurredAt),
 };
 const input = { id: eventId, userId, mailboxId, sourceType: 'message', sourceId, kind: 'retain_email', contentPayload: payload, occurredAt };
@@ -65,7 +66,7 @@ describe('canonical mailbox learning enqueue', () => {
 describe('PostgresMailboxMemoryEventStore', () => {
   it('enqueues once by tenant-owned source identity and verifies immutable replay content', async () => {
     const sql = new FakeSql([[], [baseRow]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).enqueue(input)).resolves.toMatchObject({ id: eventId, contentDigest, state: 'pending' });
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).enqueue(input)).resolves.toMatchObject({ id: eventId, contentDigest, state: 'pending' });
     expect(sql.transactions).toBe(1);
     expect(sql.calls[0]?.statement).toContain('on conflict(user_id,account_id,source_type,source_id,source_version,kind) do nothing');
     expect(sql.calls[1]?.statement).toContain('for update');
@@ -74,7 +75,7 @@ describe('PostgresMailboxMemoryEventStore', () => {
 
   it('rejects a source replay with different content without overwriting the first event', async () => {
     const sql = new FakeSql([[], [baseRow]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).enqueue({ ...input, contentPayload: { document: { body: 'different' } } }))
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).enqueue({ ...input, contentPayload: { document: { body: 'different' } } }))
       .rejects.toThrow('different immutable content');
     expect(sql.calls[0]?.statement).toContain('do nothing');
     expect(sql.calls[0]?.statement).not.toContain('do update');
@@ -82,7 +83,7 @@ describe('PostgresMailboxMemoryEventStore', () => {
 
   it('claims with SKIP LOCKED and returns a tenant-bound generation/token fence after commit', async () => {
     const sql = new FakeSql([[processingRow]]);
-    const claims = await new PostgresMailboxMemoryEventStore(sql).claim({ workerId: 'memory-worker-1', limit: 2, leaseSeconds: 60 });
+    const claims = await new PostgresMailboxMemoryEventStore(sql, timing).claim({ workerId: 'memory-worker-1', limit: 2 });
     expect(sql.transactions).toBe(1);
     expect(sql.calls[0]?.statement).toContain('for update of e skip locked');
     expect(sql.calls[0]?.statement).toContain('claim_generation=e.claim_generation+1');
@@ -92,16 +93,17 @@ describe('PostgresMailboxMemoryEventStore', () => {
 
   it('renews only the exact processing fence before long attachment operations', async () => {
     const sql = new FakeSql([[{ id: eventId }]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).renew(fence, 3_600)).resolves.toBeUndefined();
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).renew(fence)).resolves.toBeUndefined();
     expect(sql.calls[0]?.statement).toContain('claim_expires_at=clock_timestamp()+make_interval');
-    expect(sql.calls[0]?.values).toEqual([eventId, userId, mailboxId, 1, token, 3_600]);
+    expect(sql.calls[0]?.values).toEqual([eventId, userId, mailboxId, 1, token, 60]);
+    expect(sql.calls[0]?.statement).toContain('claim_expires_at>clock_timestamp()');
   });
 
   it('completes only the exact tenant fence and minimizes retained content', async () => {
     const completed = { ...processingRow, state: 'completed', content_payload: null, claim_worker: null, claimed_at: null,
       claim_expires_at: null, result_metadata: { documentId: 'doc-stable-1' }, completed_at: new Date(occurredAt) };
     const sql = new FakeSql([[completed]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).complete(fence, { documentId: 'doc-stable-1' }))
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).complete(fence, { documentId: 'doc-stable-1' }))
       .resolves.toMatchObject({ state: 'completed', contentPayload: null });
     expect(sql.transactions).toBe(0);
     expect(sql.calls[0]?.statement).toContain('id=$1 and user_id=$2 and account_id=$3');
@@ -109,29 +111,30 @@ describe('PostgresMailboxMemoryEventStore', () => {
   });
 
   it('defers indefinitely with capped exponential backoff while preserving the same fence history', async () => {
-    const pending = { ...processingRow, max_attempts: 1, state: 'pending', claim_worker: null, claimed_at: null,
+    const pending = { ...processingRow, state: 'pending', claim_worker: null, claimed_at: null,
       claim_expires_at: null, last_error_code: 'HINDSIGHT_UNAVAILABLE', last_error_metadata: { retryable: true },
-      dead_lettered_at: null };
+      cancelled_at: null };
     const sql = new FakeSql([[pending]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).defer(fence, { code: 'HINDSIGHT_UNAVAILABLE', metadata: { retryable: true } }))
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).defer(fence, { code: 'HINDSIGHT_UNAVAILABLE', metadata: { retryable: true } }))
       .resolves.toMatchObject({ state: 'pending', lastErrorCode: 'HINDSIGHT_UNAVAILABLE' });
     expect(sql.calls[0]?.statement).not.toContain("'dead_letter'");
     expect(sql.calls[0]?.statement).toContain('least($8,power(2,least(attempt_count-1,16))*$7)');
-    expect(sql.calls[0]?.values.slice(0, 5)).toEqual([eventId, userId, mailboxId, 1, token]);
+    expect(sql.calls[0]?.values).toEqual([eventId, userId, mailboxId, 1, token, 'HINDSIGHT_UNAVAILABLE', 5, 900, { retryable: true }]);
   });
 
   it('recovers expired leases in a bounded SKIP LOCKED transaction without external I/O', async () => {
     const sql = new FakeSql([[{ id: eventId }, { id: '00000000-0000-4000-8000-000000000006' }]]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).recoverExpiredClaims(2)).resolves.toBe(2);
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).recoverExpiredClaims(2)).resolves.toBe(2);
     expect(sql.transactions).toBe(1);
     expect(sql.calls[0]?.statement).toContain("state='processing' and claim_expires_at<=clock_timestamp()");
     expect(sql.calls[0]?.statement).toContain('for update skip locked limit $1');
     expect(sql.calls[0]?.statement).toContain("last_error_code='CLAIM_EXPIRED'");
+    expect(sql.calls[0]?.values).toEqual([2, 5, 900]);
   });
 
   it('rejects unsanitized error metadata before it can reach PostgreSQL', async () => {
     const sql = new FakeSql([]);
-    await expect(new PostgresMailboxMemoryEventStore(sql).defer(fence, { code: 'raw provider failure: email body' })).rejects.toThrow('sanitized');
+    await expect(new PostgresMailboxMemoryEventStore(sql, timing).defer(fence, { code: 'raw provider failure: email body' })).rejects.toThrow('sanitized');
     expect(sql.calls).toHaveLength(0);
   });
 });

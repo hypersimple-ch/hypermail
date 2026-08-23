@@ -86,7 +86,7 @@ describe('production composition', () => {
   it('does not claim duplicate terminal jobs and marks pre-triage adapter failures failed', async () => {
     const queries: string[] = [];
     const database = { query: (sql: string) => { queries.push(sql); return Promise.resolve({ rows: [] }); }, transaction: async (operation: (client: never) => Promise<void>) => operation(database) } as unknown as ManagedSqlClient;
-    expect(await new PostgresAgentJobStore(database).claim('job', job.userId)).toBeNull();
+    expect(await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim('job', job.userId)).toBeNull();
     expect(queries[0]).toContain("state IN ('pending', 'running')");
     expect(queries[0]).toContain("ac.state in ('ready','degraded')");
     const failures: string[] = [];
@@ -116,10 +116,10 @@ describe('production composition', () => {
     const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
     const database = { query: (sql: string, values?: readonly unknown[]) => { queries.push({ sql, values }); return Promise.resolve({ rows: [{ id: job.id }] }); } } as unknown as ManagedSqlClient;
     const runId = '00000000-0000-4000-8000-000000000005';
-    await new PostgresAgentJobStore(database).deferMemory({ ...job, runId, attachments: [...job.attachments] });
-    expect(queries[0]?.sql).toMatch(/state='pending'.*least\(300/s);
+    await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).deferMemory({ ...job, runId, attachments: [...job.attachments] });
+    expect(queries[0]?.sql).toMatch(/state='pending'.*least\(\$4, \$3/s);
     expect(queries[0]?.sql).toContain("last_error_code='MAILBOX_MEMORY_UNAVAILABLE'");
-    expect(queries[0]?.values).toEqual([job.id, runId]);
+    expect(queries[0]?.values).toEqual([job.id, runId, 5, 900]);
   });
 
   it.each([
@@ -135,7 +135,7 @@ describe('production composition', () => {
     const database = { query: (sql: string, values?: readonly unknown[]) => {
       queries.push({ sql, values }); return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] });
     }, transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
-    expect(await new PostgresAgentJobStore(database).claim(job.id, job.userId)).toBeNull();
+    expect(await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim(job.id, job.userId)).toBeNull();
     expect(queries.some(query => query.values?.includes(reason))).toBe(true);
     expect(queries.some(query => query.sql.includes('insert into app.agent_runs'))).toBe(false);
   });
@@ -149,7 +149,7 @@ describe('production composition', () => {
     const database = { query: (sql: string) => { queries.push(sql);
       return Promise.resolve({ rows: sql.includes('select j.id') ? [row] : [] }); },
       transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database) } as unknown as ManagedSqlClient;
-    const claimed = await new PostgresAgentJobStore(database).claim(job.id, job.userId);
+    const claimed = await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim(job.id, job.userId);
     expect(claimed?.runId).toMatch(/^[0-9a-f-]{36}$/);
     expect(queries.filter(query => query.includes('insert into app.agent_runs'))).toHaveLength(1);
     expect(queries.some(query => query.includes("'running',now(),now()") && query.includes('on conflict(id) do nothing'))).toBe(true);

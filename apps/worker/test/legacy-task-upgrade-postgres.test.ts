@@ -23,6 +23,6 @@ describe('legacy Activity upgrade into durable task delivery',()=>{
   const migration=await readFile(resolve(process.cwd(),'packages/db/drizzle/0011_durable_agent_tasks.sql'),'utf8');
   await sql.unsafe(migration.slice(0,migration.indexOf('-- Durable automatic-task delivery')));
   expect(await sql`select id from app.agent_activities where id=${activity}`).toEqual([{id:activity}]);
-  const client=createPostgresClient(url??'');try{const claimed=await new PostgresAgentJobStore(client).claim(job,user);expect(claimed?.activityId).toBe(activity);expect(await sql`select state from app.agent_runs where activity_id=${activity}`).toEqual([{state:'running'}]);}finally{await client.close();}
+  const client=createPostgresClient(url??'');try{const claimed=await new PostgresAgentJobStore(client, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim(job,user);expect(claimed?.activityId).toBe(activity);expect(await sql`select state from app.agent_runs where activity_id=${activity}`).toEqual([{state:'running'}]);}finally{await client.close();}
  }));
 });
