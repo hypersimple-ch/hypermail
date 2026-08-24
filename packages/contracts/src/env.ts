@@ -75,6 +75,7 @@ export const workerEnvSchema = z.strictObject({
   MODEL_PROVIDER: z.enum(['codex-cli', 'openai', 'anthropic', 'google']).optional(),
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: secret.optional(),
+  MODEL_BASE_URL: z.url().optional(),
   VAPID_SUBJECT: z.string().startsWith('mailto:'),
   VAPID_PUBLIC_KEY: secret,
   VAPID_PRIVATE_KEY: secret,
@@ -113,6 +114,9 @@ export const workerEnvSchema = z.strictObject({
   }
   if (environment.MODEL_PROVIDER && environment.MODEL_PROVIDER !== 'codex-cli' && environment.MODEL_API_KEY === undefined) {
     context.addIssue({ code: 'custom', path: ['MODEL_API_KEY'], message: 'is required for hosted model providers' });
+  }
+  if (environment.MODEL_BASE_URL !== undefined && (environment.MODEL_PROVIDER ?? 'codex-cli') === 'codex-cli') {
+    context.addIssue({ code: 'custom', path: ['MODEL_BASE_URL'], message: 'requires a hosted model provider' });
   }
 }).transform((environment) => ({
   ...environment,

@@ -238,13 +238,14 @@ export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
 
 type ProviderModel = ReturnType<ReturnType<typeof createOpenAI>> | CodexCliModel;
 /** Constructs a configured AI SDK model without probing or sending content. */
-export function createModel(environment: Pick<WorkerEnvironment, 'MODEL_PROVIDER' | 'MODEL_API_KEY' | 'MODEL_NAME'>): ProviderModel {
+export function createModel(environment: Pick<WorkerEnvironment, 'MODEL_PROVIDER' | 'MODEL_API_KEY' | 'MODEL_NAME' | 'MODEL_BASE_URL'>): ProviderModel {
   if (environment.MODEL_PROVIDER === 'codex-cli') return createCodexCliModel({ modelId: environment.MODEL_NAME });
   if (environment.MODEL_API_KEY === undefined) throw new Error('MODEL_API_KEY_REQUIRED');
+  const baseURL = environment.MODEL_BASE_URL;
   switch (environment.MODEL_PROVIDER) {
-    case 'openai': return createOpenAI({ apiKey: environment.MODEL_API_KEY })(environment.MODEL_NAME);
-    case 'anthropic': return createAnthropic({ apiKey: environment.MODEL_API_KEY })(environment.MODEL_NAME);
-    case 'google': return createGoogleGenerativeAI({ apiKey: environment.MODEL_API_KEY })(environment.MODEL_NAME);
+    case 'openai': return createOpenAI({ apiKey: environment.MODEL_API_KEY, ...(baseURL !== undefined ? { baseURL } : {}) })(environment.MODEL_NAME);
+    case 'anthropic': return createAnthropic({ apiKey: environment.MODEL_API_KEY, ...(baseURL !== undefined ? { baseURL } : {}) })(environment.MODEL_NAME);
+    case 'google': return createGoogleGenerativeAI({ apiKey: environment.MODEL_API_KEY, ...(baseURL !== undefined ? { baseURL } : {}) })(environment.MODEL_NAME);
   }
 }
 
