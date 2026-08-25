@@ -33,6 +33,23 @@ function fakeServer(overrides: Partial<Record<string, unknown>> = {}) {
 function client(server: ReturnType<typeof fakeServer>) { return new HypermailReadClient({ endpoint: "http://fixture/mcp", protocolVersion: "deployment", fetch: server.request, headers: { authorization: "Bearer private" }, accountCacheTtlMs: 60_000, folderCacheTtlMs: 60_000 }); }
 
 describe("Hypermail read worker", () => {
+  it("recovers the MCP session when a server restart invalidates it", async () => {
+    let initialized = 0; let rejectFirst = true;
+    const request: typeof fetch = (_url, init) => {
+      const body = JSON.parse(init?.body as string) as Request;
+      if (body.method === "initialize") {
+        initialized += 1;
+        return Promise.resolve(new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? null, result: { protocolVersion: "deployment", capabilities: {} } }), { headers: { "content-type": "application/json", "mcp-session-id": `session-${String(initialized)}` } }));
+      }
+      if (body.method === "notifications/initialized") return Promise.resolve(new Response(null, { status: 202 }));
+      if (body.params?.name === "get_new_emails" && rejectFirst) { rejectFirst = false; return Promise.resolve(new Response("session expired", { status: 404 })); }
+      return Promise.resolve(new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? null, result: { emails: [] } }), { headers: { "content-type": "application/json" } }));
+    };
+    const client = new HypermailReadClient({ endpoint: "http://fixture/mcp", protocolVersion: "deployment", fetch: request });
+    await client.initialize();
+    await expect(client.pollNewInbox("a@example.test")).resolves.toEqual([]);
+    expect(initialized).toBe(2);
+  });
   it("projects Microsoft/Gmail/IMAP accounts without credential fields and keeps auth/session headers", async () => {
     const server = fakeServer(), subject = client(server); await subject.initialize(); const projected = await subject.accounts();
     expect(projected.map((account) => account.provider)).toEqual(["outlook", "gmail", "imap"]);

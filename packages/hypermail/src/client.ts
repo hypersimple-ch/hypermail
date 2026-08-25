@@ -37,14 +37,24 @@ type Cursor = { scope: "all" | "account"; account?: string; offsets: Record<stri
 
 /** Low-level Streamable HTTP client. It exposes only lifecycle and tool calls; no write-tool helpers exist here. */
 export class HypermailMcpHttpClient {
-  #id = 0; #sessionId?: string; #initialized = false;
+  #id = 0; #sessionId?: string; #initialized = false; #protocolVersion?: string;
   readonly endpoint: string;
   constructor(endpoint: string, private readonly request: typeof fetch = fetch, private readonly headers: Record<string, string> = {}, private readonly maxRetries = 0) { this.endpoint = endpoint; }
 
   async initialize(protocolVersion: string): Promise<Json> {
     if (this.#initialized) throw new Error("MCP client is already initialized");
     const result = await this.rpc("initialize", { protocolVersion, capabilities: {}, clientInfo: { name: "hypermail-read-worker", version: "0.1.0" } });
-    await this.notify("notifications/initialized"); this.#initialized = true; return result;
+    await this.notify("notifications/initialized"); this.#initialized = true; this.#protocolVersion = protocolVersion; return result;
+  }
+  /** A server restart invalidates the negotiated MCP session; recover once instead of failing until process restart. */
+  async #recoverSession(method: string, error: unknown): Promise<boolean> {
+    if (method === "initialize" || (!this.#initialized && this.#sessionId === undefined)) return false;
+    if (this.#protocolVersion === undefined) return false;
+    if (!(error instanceof McpTransportError) || error.reason !== "http" || (error.status !== 400 && error.status !== 404)) return false;
+    this.#sessionId = undefined; this.#initialized = false;
+    await this.rpc("initialize", { protocolVersion: this.#protocolVersion, capabilities: {}, clientInfo: { name: "hypermail-read-worker", version: "0.1.0" } });
+    await this.send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }); this.#initialized = true;
+    return true;
   }
   async listTools(): Promise<Json> { return this.rpc("tools/list", {}); }
   async close(): Promise<void> {
@@ -68,12 +78,17 @@ export class HypermailMcpHttpClient {
   async notify(method: string): Promise<void> { await this.#retry(() => this.send({ jsonrpc: "2.0", method, params: {} })); }
   async rpc(method: string, params: Record<string, Json>): Promise<Json> {
     const id = ++this.#id;
-    return this.#retry(async () => {
+    const once = async (): Promise<Json> => {
       const response = await this.send({ jsonrpc: "2.0", id, method, params });
       if (response === undefined || response.jsonrpc !== "2.0" || response.id !== id || (("result" in response) === ("error" in response))) throw new McpTransportError("Malformed JSON-RPC response");
       if (response.error) throw new McpJsonRpcError(response.error.code, response.error.message, response.error.data);
       return response.result as Json;
-    });
+    };
+    try { return await this.#retry(once); }
+    catch (error) {
+      if (!(await this.#recoverSession(method, error))) throw error;
+      return await this.#retry(once);
+    }
   }
   async send(body: Record<string, Json | number | string>): Promise<RpcResponse | undefined> {
     let response: Response;
