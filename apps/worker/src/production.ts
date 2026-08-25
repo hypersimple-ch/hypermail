@@ -410,7 +410,8 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
       await Promise.allSettled(closers);
     };
     return new TriageService({ model: mastraDecisionModel(agent), persistence: new PostgresDecisionPersistence(decisionSql), mailboxMemory,
-      sourceHistory: new MastraSourceHistory(memory), modelProvider: environment.MODEL_PROVIDER, modelName: environment.MODEL_NAME });
+      sourceHistory: new MastraSourceHistory(memory), modelProvider: environment.MODEL_PROVIDER, modelName: environment.MODEL_NAME,
+      timeoutMs: environment.MODEL_TIMEOUT_MS });
   })();
   const policyDispatcher = new PgBossPolicyDispatcher(rawBoss);
   const legacyPolicyMcp = (client as unknown as { transport?: Pick<HypermailMcpHttpClient, 'call'> } | undefined)?.transport;

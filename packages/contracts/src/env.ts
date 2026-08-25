@@ -76,6 +76,7 @@ export const workerEnvSchema = z.strictObject({
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_API_KEY: secret.optional(),
   MODEL_BASE_URL: z.url().optional(),
+  MODEL_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(600_000).default(30_000),
   VAPID_SUBJECT: z.string().startsWith('mailto:'),
   VAPID_PUBLIC_KEY: secret,
   VAPID_PRIVATE_KEY: secret,
