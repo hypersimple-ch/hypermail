@@ -6,6 +6,7 @@ import type { AgentDashboard, AgentUiHandlers, AutonomyScope, AutonomyState } fr
 import { ToastProvider, toast } from '@/components/heroui/toast.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/heroui/card.js';
+import { X } from 'lucide-react';
 import { Field, FieldDescription, FieldLabel, FieldSet } from '@/components/heroui/field.js';
 import { Input } from '@/components/heroui/input.js';
 import { Spinner } from '@/components/heroui/spinner.js';
@@ -80,13 +81,14 @@ function useOnlineStatus(): boolean {
 }
 
 function PwaPresentation(): React.JSX.Element {
-  const online = useOnlineStatus(); const [installAvailable, setInstallAvailable] = React.useState(false); const [updateAvailable, setUpdateAvailable] = React.useState(false);
+  const online = useOnlineStatus(); const [installAvailable, setInstallAvailable] = React.useState(false); const [updateAvailable, setUpdateAvailable] = React.useState(false); const [dismissed, setDismissed] = React.useState(false);
   const deferredInstall = React.useRef<BeforeInstallPromptEvent | undefined>(undefined); const registration = React.useRef<ServiceWorkerRegistrationLike | undefined>(undefined);
   React.useEffect(() => { const available = (event: Event) => { event.preventDefault(); deferredInstall.current = event as BeforeInstallPromptEvent; setInstallAvailable(true); }; addEventListener('beforeinstallprompt', available); return () => { removeEventListener('beforeinstallprompt', available); }; }, []);
   React.useEffect(() => { if (!('serviceWorker' in navigator)) return; let reloading = false; const reload = () => { if (!reloading) { reloading = true; location.reload(); } }; navigator.serviceWorker.addEventListener('controllerchange', reload); void registerPwaWorker(navigator.serviceWorker, (pwaState) => { setUpdateAvailable(pwaState.update === 'available'); }, initialPwaState).then((value) => { registration.current = value; }).catch(() => {}); return () => { navigator.serviceWorker.removeEventListener('controllerchange', reload); }; }, []);
   const install = () => { void deferredInstall.current?.prompt(); };
   const update = () => { if (registration.current) activateWaitingUpdate(registration.current); };
-  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p>{installAvailable || updateAvailable ? <aside aria-label="Application utilities" className="fixed inset-x-0 bottom-20 z-10 flex flex-wrap justify-start gap-2 px-4 [@media(min-width:700px)]:bottom-3 [@media(min-width:700px)]:justify-center"><Card className="flex-row items-center gap-2 p-2">{installAvailable ? <Button type="button" variant="outline" onClick={install}>Install Hypermail</Button> : null}{updateAvailable ? <Button type="button" variant="outline" onClick={update}>Reload to update</Button> : null}</Card></aside> : null}</>;
+  const hideUtilities = () => { setDismissed(true); };
+  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p>{!dismissed && (installAvailable || updateAvailable) ? <aside aria-label="Application utilities" className="fixed inset-x-0 bottom-20 z-10 flex flex-wrap justify-start gap-2 px-4 [@media(min-width:700px)]:bottom-3 [@media(min-width:700px)]:justify-center"><Card className="flex-row items-center gap-2 p-2">{installAvailable ? <Button type="button" variant="outline" onClick={install}>Install Hypermail</Button> : null}{updateAvailable ? <Button type="button" variant="outline" onClick={update}>Reload to update</Button> : null}<Button type="button" variant="ghost" size="icon" onClick={hideUtilities} aria-label="Dismiss install options"><X aria-hidden="true" /></Button></Card></aside> : null}</>;
 }
 
 function App(): React.JSX.Element {
