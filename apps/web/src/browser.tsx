@@ -188,7 +188,17 @@ function App(): React.JSX.Element {
   if (state === 'loading') return <main className="grid min-h-dvh place-items-center bg-background" aria-busy="true"><span className="sr-only" role="status">Checking session…</span><Spinner className="size-6" /></main>;
   if (state === 'bootstrap') return <Bootstrap onComplete={() => { window.location.reload(); }} onSetupCompleted={() => { setLoginNotice('Setup is complete. Sign in to continue.'); setState('unauthenticated'); }} />;
   if (state === 'unauthenticated') return <Login onComplete={() => { window.location.reload(); }} notice={loginNotice} />;
-  const openMessage = async (message: ShellData['messages'][number]) => { const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error('message unavailable'); const detail = (await response.json() as { message: { body: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; subject: string } }).message; return { ...message, sender: detail.sender || message.sender, subject: detail.subject || message.subject, body: detail.body || '', attachments: detail.attachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) }; };
+  const openMessage = async (message: ShellData['messages'][number]) => {
+    const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error('message unavailable');
+    const detail = (await response.json() as { message: { body: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; sender_address: string | null; subject: string } }).message;
+    if (message.unread) {
+      void fetch(`/api/v1/messages/${encodeURIComponent(message.id)}/read`, { method: 'POST' }).then((marked) => {
+        if (!marked.ok) return;
+        setData((current) => ({ ...current, accounts: current.accounts.map((account) => account.id === message.accountId ? { ...account, unread: Math.max(0, account.unread - 1) } : account), messages: current.messages.map((item) => item.id === message.id ? { ...item, unread: false } : item) }));
+      }).catch(() => {});
+    }
+    return { ...message, sender: detail.sender || message.sender, ...(detail.sender_address ? { replyTo: detail.sender_address } : {}), subject: detail.subject || message.subject, body: detail.body || '', attachments: detail.attachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) };
+  };
   const saveDraft = async (draft: DraftSaveInput) => { const response = await fetch(draft.id ? `/api/v1/drafts/${encodeURIComponent(draft.id)}` : '/api/v1/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: draft.accountId, recipients: [{ kind: 'to', address: draft.recipient }], subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat, ...(draft.id ? { expectedVersion: draft.expectedVersion } : {}) }) }); if (!response.ok) throw new Error('draft unavailable'); await load(); };
   const updateManagerSettings = async (path: string, body: Readonly<Record<string, unknown>>): Promise<void> => {
     if (!navigator.onLine) throw new Error('offline');

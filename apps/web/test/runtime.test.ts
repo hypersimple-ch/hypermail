@@ -81,4 +81,24 @@ describe('runtime recovery delivery', () => {
     });
     await runtime.close();
   });
+
+  it('marks an owned unread message read inside the account scope and refuses unknown messages', async () => {
+    const runtime = createWebRuntimeFromEnvironment(environment);
+    const base = { query: {}, remoteAddress: '127.0.0.1', correlationId: 'test', apiVersion: null, body: {} } as const;
+    const bootstrap = await runtime.dispatch({ ...base, method: 'POST', pathname: '/api/v1/auth/bootstrap', origin: 'https://mail.example.test', cookie: null, body: { email: 'Owner@Example.test', password: 'correct horse battery staple' } });
+    const cookie = bootstrap?.setCookie?.split(';')[0] ?? null;
+    const pathname = '/api/v1/messages/01234567-89ab-cdef-0123-456789abcdef/read';
+
+    database.query.mockResolvedValueOnce({ rows: [] });
+    database.query.mockResolvedValueOnce({ rows: [{ account_id: '00000000-0000-4000-8000-000000000003' }] });
+    await expect(runtime.dispatch({ ...base, method: 'POST', pathname, origin: null, cookie })).resolves.toMatchObject({ status: 200 });
+    const update = database.query.mock.calls.find(([statement]) => String(statement).includes('is_read = true'));
+    expect(String(update?.[0])).toContain('account_id = ANY($2::uuid[])');
+    expect(String(update?.[0])).toContain('deleted_at IS NULL');
+
+    database.query.mockResolvedValueOnce({ rows: [] });
+    database.query.mockResolvedValueOnce({ rows: [] });
+    await expect(runtime.dispatch({ ...base, method: 'POST', pathname, origin: null, cookie })).resolves.toMatchObject({ status: 404 });
+    await runtime.close();
+  });
 });
