@@ -143,7 +143,8 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
       const inputDigest = createHash('sha256').update(JSON.stringify({ messageId: row.messageId,
         providerMessageId: row.providerMessageId, sender: row.sender, subject: row.subject,
         receivedAt: new Date(row.receivedAt).toISOString(), attachments: attachmentMetadata(row.attachments) })).digest('hex');
-      await db.query(`insert into app.agent_runs
+      // The run row survives retries; re-inserting it would trip the run-sequence trigger before the conflict guard.
+      if (!row.runId) await db.query(`insert into app.agent_runs
         (id,activity_id,user_id,account_id,sequence,manager_kind,manager_lifecycle_revision,
          assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,mode,trigger,input_digest,
          correlation_id,causation_id,state,created_at,started_at)
