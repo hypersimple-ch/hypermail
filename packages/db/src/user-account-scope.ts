@@ -7,6 +7,7 @@ export interface AccountProjection {
   readonly email: string;
   readonly displayName: string | null;
   readonly state: 'pending' | 'ready' | 'degraded' | 'disabled';
+  readonly unread: number;
 }
 
 /** A validated, credential-free account result from Hypermail. */
@@ -52,8 +53,11 @@ export class UserAccountScopeStore {
       email: string;
       display_name: string | null;
       state: AccountProjection['state'];
+      unread: number;
     }>(
-      `select a.id, a.provider, a.email, a.display_name, a.state
+      `select a.id, a.provider, a.email, a.display_name, a.state,
+              (select count(*)::int from app.messages m
+               where m.account_id = a.id and m.deleted_at is null and m.is_read = false) as unread
        from app.accounts a
        where a.user_id = $1
        order by lower(coalesce(a.display_name, a.email)), a.id`,
@@ -65,6 +69,7 @@ export class UserAccountScopeStore {
       email: row.email,
       displayName: row.display_name,
       state: row.state,
+      unread: row.unread,
     }));
   }
 
@@ -129,7 +134,11 @@ export class UserAccountScopeStore {
       );
       await new AgentManagerStore(sql).assignCurrentDefault(normalizedUserId, accountId);
 
-      return { id: accountId, provider: account.provider, email: account.email, displayName: account.displayName, state: 'ready' };
+      const unread = await sql.query<{ count: number }>(
+        `select count(*)::int from app.messages where account_id = $1 and deleted_at is null and is_read = false`,
+        [accountId],
+      );
+      return { id: accountId, provider: account.provider, email: account.email, displayName: account.displayName, state: 'ready', unread: unread.rows[0]?.count ?? 0 };
     });
   }
 }

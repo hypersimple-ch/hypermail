@@ -25,6 +25,7 @@ export interface SettingsMailbox {
   email: string;
   displayName: string | null;
   state: MailboxState;
+  unread?: number;
 }
 
 export interface ImapConnectionInput {

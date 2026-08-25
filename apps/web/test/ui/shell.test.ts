@@ -54,6 +54,29 @@ describe('responsive shell rendering contracts', () => {
     expect(error).toContain('Could not load mail');
   });
 
+  it('sums per-account unread counts into the inbox header', () => {
+    const markup = render(React.createElement(Inbox, { data: mockShellData }));
+    expect(markup).toContain('12 unread');
+  });
+
+  it('groups inbox mail into stable day sections and marks unread rows', () => {
+    const markup = render(React.createElement(Inbox, { data: mockShellData }));
+    expect(markup).toContain('>Today</h2>');
+    expect(markup).toContain('>Yesterday</h2>');
+    const todayFirst = markup.indexOf('>Today</h2>');
+    const yesterday = markup.indexOf('>Yesterday</h2>');
+    expect(todayFirst).toBeGreaterThanOrEqual(0);
+    expect(yesterday).toBeGreaterThan(todayFirst);
+    expect(markup).toContain('font-semibold');
+  });
+
+  it('keeps undated messages in the leading Today group', () => {
+    const undated = { accounts: [], messages: [{ id: 'm1', accountId: 'a', sender: 'Sender', initials: 'S', subject: 'Subject', preview: 'Preview', received: '7:58', body: 'Body' }], activity: mockShellData.activity };
+    const markup = render(React.createElement(Inbox, { data: undated }));
+    expect(markup).toContain('>Today</h2>');
+    expect(markup).not.toContain('>Yesterday</h2>');
+  });
+
   it('uses shared fields and a high-contrast primary save action in compose', () => {
     const markup = render(React.createElement(Compose, { accounts: mockShellData.accounts }));
     expect(markup).toContain('data-slot="select-trigger"');

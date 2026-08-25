@@ -25,13 +25,22 @@ describe('user account scope', () => {
     expect(sql.calls[0]?.statement).toContain('user_id = $1');
   });
 
-  it('returns only joined account projections', async () => {
-    const sql = new FakeSql([[{ id: accountId, provider: 'gmail', email: 'owner@example.test', display_name: null, state: 'ready' }]]);
+  it('returns only joined account projections with unread counts', async () => {
+    const sql = new FakeSql([[{ id: accountId, provider: 'gmail', email: 'owner@example.test', display_name: null, state: 'ready', unread: 3 }]]);
     await expect(new UserAccountScopeStore(sql).accountsForUser(userId)).resolves.toEqual([
-      { id: accountId, provider: 'gmail', email: 'owner@example.test', displayName: null, state: 'ready' },
+      { id: accountId, provider: 'gmail', email: 'owner@example.test', displayName: null, state: 'ready', unread: 3 },
     ]);
     expect(sql.calls[0]?.statement).toContain('from app.accounts');
     expect(sql.calls[0]?.statement).toContain('a.user_id = $1');
+    expect(sql.calls[0]?.statement).toContain('is_read = false');
+    expect(sql.calls[0]?.statement).toContain('deleted_at is null');
+  });
+
+  it('counts unread mail when projecting a ready account', async () => {
+    const sql = new FakeSql([[], [{ id: accountId }], [], [], [{ manager_kind: 'mastra', agent_connection_id: null }], [], [{ count: 2 }]]);
+    await expect(new UserAccountScopeStore(sql).projectReadyAccount(userId, {
+      provider: 'gmail', email: 'owner@example.test',
+    })).resolves.toEqual({ id: accountId, provider: 'gmail', email: 'owner@example.test', displayName: null, state: 'ready', unread: 2 });
   });
 
   it('fails closed when no ownership row exists', async () => {
@@ -40,10 +49,10 @@ describe('user account scope', () => {
   });
 
   it('normalizes Outlook and creates a ready account linked to its owner transactionally', async () => {
-    const sql = new FakeSql([[], [{ id: accountId }], [], [], [{ manager_kind: 'mastra', agent_connection_id: null }], []]);
+    const sql = new FakeSql([[], [{ id: accountId }], [], [], [{ manager_kind: 'mastra', agent_connection_id: null }], [], [{ count: 0 }]]);
     await expect(new UserAccountScopeStore(sql).projectReadyAccount(` ${userId} `, {
       provider: 'outlook', email: ' Owner@Example.Test ', displayName: ' Owner ',
-    })).resolves.toEqual({ id: accountId, provider: 'microsoft', email: 'owner@example.test', displayName: 'Owner', state: 'ready' });
+    })).resolves.toEqual({ id: accountId, provider: 'microsoft', email: 'owner@example.test', displayName: 'Owner', state: 'ready', unread: 0 });
     expect(sql.transactions).toBe(2);
     expect(sql.calls[0]?.values).toEqual([userId, 'microsoft', 'owner@example.test']);
     expect(sql.calls[1]?.values).toEqual([userId, 'microsoft', 'owner@example.test', 'owner@example.test', 'Owner']);

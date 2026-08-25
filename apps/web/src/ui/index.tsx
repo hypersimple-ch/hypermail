@@ -28,7 +28,7 @@ export interface Account { id: string; label: string; address: string; unread: n
 export interface Attachment { id: string; name: string; size: string; safe?: boolean; }
 export interface Draft { id: string; accountId: string; recipients: readonly { kind: string; address: string }[]; subject: string; body: string; bodyFormat: DraftBodyFormat; state: string; updatedAt: string; version?: number; }
 export type DraftSaveInput = { id?: string; expectedVersion?: number; accountId: string; recipient: string; subject: string; body: string; bodyFormat: DraftBodyFormat };
-export interface Message { id: string; accountId: string; sender: string; initials: string; subject: string; preview: string; received: string; unread?: boolean; body: string; attachments?: readonly Attachment[]; }
+export interface Message { id: string; accountId: string; sender: string; initials: string; subject: string; preview: string; received: string; receivedAt?: string; unread?: boolean; body: string; attachments?: readonly Attachment[]; }
 export interface ShellData { accounts: readonly Account[]; messages: readonly Message[]; activity: ActivityPage; }
 
 const formText = (form: FormData, name: string) => { const value = form.get(name); return typeof value === 'string' ? value : ''; };
@@ -52,10 +52,28 @@ export function MessageRow({ message, selected, onOpen }: { message: Message; se
   </article>;
 }
 
+const dayKey = (date: Date): string => `${String(date.getFullYear())}-${String(date.getMonth())}-${String(date.getDate())}`;
+
+/** Stable day grouping: Today, Yesterday, then full dates; undated messages keep the leading Today group. */
+export function inboxDayGroups(messages: readonly Message[]): Array<{ label: string; messages: Message[] }> {
+  const now = new Date();
+  const today = dayKey(now);
+  const yesterday = dayKey(new Date(now.getTime() - 86_400_000));
+  const groups: Array<{ label: string; messages: Message[] }> = [];
+  for (const message of messages) {
+    const key = message.receivedAt ? dayKey(new Date(message.receivedAt)) : today;
+    const label = key === today ? 'Today' : key === yesterday ? 'Yesterday' : new Date(message.receivedAt ?? now).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.messages.push(message);
+    else groups.push({ label, messages: [message] });
+  }
+  return groups;
+}
+
 export function Inbox({ data, state = 'ready', selectedId, onOpen, onRetry }: { data: ShellData; state?: MailState; selectedId?: string | undefined; onOpen?: ((message: Message) => void) | undefined; onRetry?: (() => void) | undefined }) {
   const unread = data.accounts.reduce((sum, account) => sum + account.unread, 0);
   return <section className={paneClass} aria-label="Inbox"><div className="border-b border-border px-4 py-4"><PageHeader title="All Accounts" description={`${String(unread)} unread`} /></div>
-    {state === 'loading' ? <StatePanel className="m-4 w-auto" title="Loading inbox…" loading /> : state === 'error' ? <ErrorState action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>}>Could not load mail.</ErrorState> : state === 'empty' ? <StatePanel className="m-4 w-auto" title="No mail here yet." /> : <><h2 className="px-4 pt-3 text-xs font-medium tracking-widest text-muted-foreground uppercase">Today</h2>{data.messages.map((message) => <MessageRow key={message.id} message={message} selected={selectedId === message.id} onOpen={() => onOpen?.(message)} />)}</>}
+    {state === 'loading' ? <StatePanel className="m-4 w-auto" title="Loading inbox…" loading /> : state === 'error' ? <ErrorState action={<Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button>}>Could not load mail.</ErrorState> : state === 'empty' ? <StatePanel className="m-4 w-auto" title="No mail here yet." /> : inboxDayGroups(data.messages).map((group) => <React.Fragment key={group.label}><h2 className="px-4 pt-3 text-xs font-medium tracking-widest text-muted-foreground uppercase">{group.label}</h2>{group.messages.map((message) => <MessageRow key={message.id} message={message} selected={selectedId === message.id} onOpen={() => onOpen?.(message)} />)}</React.Fragment>)}
   </section>;
 }
 
