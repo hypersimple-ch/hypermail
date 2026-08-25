@@ -75,7 +75,19 @@ export class PostgresPolicyPlanner {
         if (!action||!rawTarget||typeof kind!=='string'||!capability) throw new Error('POLICY_DECISION_INVALID');
         if (!allowed.has(capability)||!ceiling.has(capability)) { await this.event(database,run,{type:'authorization_denied',runId:String(run['id']),reasonCode:'CAPABILITY_NOT_FROZEN'}); continue; }
         if (typeof rawTarget['accountId']!=='string' || typeof run['account_id']!=='string' || rawTarget['accountId']!==run['account_id']) throw new Error('POLICY_TARGET_OUTSIDE_RUN_MAILBOX');
-        const target={...rawTarget}; delete target['accountId']; const id=uuidFor(`canonical-action:${decisionRow.id}:${String(index)}`); const key=keyFor(decisionRow.id,index);
+        const target={...rawTarget}; delete target['accountId'];
+        if (kind==='draft_create') {
+          const proposed='draft' in action && action['draft'] && typeof action['draft']==='object' ? action['draft'] as {to:{address:string}[];cc?:{address:string}[];subject:string;body:string} : undefined;
+          const draftId=uuidFor(`draft:${decisionRow.id}:${String(index)}`);
+          await database.query(`insert into app.drafts (id,account_id,source_message_id,created_by,state,recipients,subject,body,body_format,version)
+            values ($1::uuid,$2::uuid,$3::uuid,'agent','editing',$4::jsonb,$5,$6,'markdown',1)
+            on conflict (id) do nothing`,[draftId,run['account_id'],run['message_id']??null,
+            JSON.stringify([...(proposed?.to??[]).map((r)=>({kind:'to',address:r.address})),...(proposed?.cc??[]).map((r)=>({kind:'cc',address:r.address}))]),
+            proposed?.subject??'', proposed?.body??'']);
+          await database.query(`insert into app.draft_revisions (draft_id,version,editor,snapshot) values ($1::uuid,1,'agent',$2::jsonb) on conflict (draft_id,version) do nothing`,[draftId,JSON.stringify({recipients:[...(proposed?.to??[]).map((r)=>({kind:'to',address:r.address})),...(proposed?.cc??[]).map((r)=>({kind:'cc',address:r.address}))],subject:proposed?.subject??'',body:proposed?.body??'',bodyFormat:'markdown'})]);
+          target['draftId']=draftId;
+        }
+        const id=uuidFor(`canonical-action:${decisionRow.id}:${String(index)}`); const key=keyFor(decisionRow.id,index);
         const inserted=await database.query<{id:string}>(`insert into app.agent_authorized_actions
           (id,activity_id,run_id,user_id,account_id,correlation_id,causation_id,manager_kind,manager_connection_id,manager_legacy_source_id,manager_lifecycle_revision,mode,assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,kind,target,authorization_revision,idempotency_key,attempt,retry_of_action_id,state,authorized_at)
           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21,1,null,'authorized',now())

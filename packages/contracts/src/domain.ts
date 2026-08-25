@@ -57,16 +57,35 @@ const targetSchema = z.strictObject({
   destinationFolderId: idSchema.optional(),
 });
 
+export const proposedDraftSchema = z.strictObject({
+  to: z.array(z.strictObject({ address: z.email() })).min(1).max(10),
+  cc: z.array(z.strictObject({ address: z.email() })).max(10).default([]),
+  subject: z.string().min(1).max(998),
+  body: z.string().min(1).max(500_000),
+});
+
 export const plannedActionSchema = z.strictObject({
   kind: actionKindSchema,
   target: targetSchema,
   reason: z.string().min(1).max(2_000),
+  draft: proposedDraftSchema.optional(),
 }).superRefine((action, context) => {
   if (action.kind === 'move' && !action.target.destinationFolderId) {
     context.addIssue({ code: 'custom', path: ['target', 'destinationFolderId'], message: 'move requires destinationFolderId' });
   }
-  if (action.kind.startsWith('draft_') && !action.target.draftId) {
-    context.addIssue({ code: 'custom', path: ['target', 'draftId'], message: 'draft action requires draftId' });
+  if (action.kind === 'draft_create') {
+    if (!action.target.messageId) {
+      context.addIssue({ code: 'custom', path: ['target', 'messageId'], message: 'draft_create requires the source messageId' });
+    }
+    if (action.draft === undefined) {
+      context.addIssue({ code: 'custom', path: ['draft'], message: 'draft_create requires the proposed draft content' });
+    }
+    if (action.target.draftId !== undefined) {
+      context.addIssue({ code: 'custom', path: ['target', 'draftId'], message: 'draft_create must not name an existing draft' });
+    }
+  }
+  if (action.kind === 'draft_edit' && !action.target.draftId) {
+    context.addIssue({ code: 'custom', path: ['target', 'draftId'], message: 'draft_edit requires draftId' });
   }
   if (!action.kind.startsWith('draft_') && !action.target.messageId) {
     context.addIssue({ code: 'custom', path: ['target', 'messageId'], message: 'mailbox action requires messageId' });

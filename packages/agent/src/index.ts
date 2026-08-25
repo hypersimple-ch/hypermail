@@ -114,7 +114,8 @@ export interface DecisionModel {
 export const TRIAGE_SYSTEM_PROMPT = `You are Hypermail's triage planner. Produce only the requested structured decision.
 Respond with exactly one JSON object and nothing else. It must match one of these shapes and use no other top-level keys:
 {"state":"question","rationale":"<1+ chars>","question":"<1-4000 chars>"}
-{"state":"actionable","rationale":"<1+ chars>","actions":[{"kind":"archive|recoverable_trash|move|mark_read|mark_unread|draft_create|draft_edit","target":{"accountId":"<uuid>","messageId":"<uuid>","draftId":"<uuid when kind starts with draft_>","destinationFolderId":"<uuid when kind is move>"},"reason":"<1-2000 chars>"}]}
+{"state":"actionable","rationale":"<1+ chars>","actions":[{"kind":"archive|recoverable_trash|move|mark_read|mark_unread|draft_create|draft_edit","target":{"accountId":"<uuid>","messageId":"<uuid of the source message>","draftId":"<uuid, only for draft_edit>","destinationFolderId":"<uuid, only for move>"},"reason":"<1-2000 chars>","draft":{"to":[{"address":"<email>"}],"subject":"<1-998 chars>","body":"<the full proposed reply text>"}}]}
+For draft_create you must also include the "draft" key with the complete proposed reply and must never invent a draftId; draft_edit instead names an existing draftId and omits "draft".
 {"state":"no_action","rationale":"<1+ chars>"}
 {"state":"failed","rationale":"<1+ chars>","errorCode":"<1+ chars>"}
 Do not wrap the object in prose, markdown fences, or an envelope such as {"type":"triage_decision"}.
