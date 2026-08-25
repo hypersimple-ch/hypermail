@@ -79,6 +79,6 @@ needs your accounts, devices, or VPS.
   failures (unhandled imapflow error) and caches stale IMAP pools after
   the IMAP server restarts; Compose restarts it, but the fix belongs
   upstream. Avoid restarting your IMAP provider mid-poll.
-- `apps/web/test/ui/rich-text-editor.test.tsx` is intermittently flaky
-  under full-suite parallel load; it passes in isolation and in the UI
-  group. Worth stabilizing separately.
+- The rich-text-editor test was intermittently flaky under full-suite
+  parallel load; its async waits now use 10s timeouts and three
+  consecutive full runs passed.
