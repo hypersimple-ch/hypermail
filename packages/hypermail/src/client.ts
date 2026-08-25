@@ -14,7 +14,7 @@ const toolFailure = (result: Record<string, unknown>): McpTransportError => {
   return new McpTransportError("MCP tool failed");
 };
 const text = (value: unknown, field: string): string => { if (typeof value !== "string" || value.length === 0) throw new McpTransportError(`Malformed ${field}`); return value; };
-const optionalText = (value: unknown, field: string): string | undefined => value === undefined ? undefined : text(value, field);
+const optionalText = (value: unknown, field: string): string | undefined => value === undefined || value === null || value === "" ? undefined : text(value, field);
 const bool = (value: unknown, field: string): boolean | undefined => value === undefined ? undefined : typeof value === "boolean" ? value : (() => { throw new McpTransportError(`Malformed ${field}`); })();
 const positive = (value: number | undefined, name: string, maximum = 100): number => { const result = value ?? 25; if (!Number.isSafeInteger(result) || result < 1 || result > maximum) throw new RangeError(`${name} must be an integer from 1 to ${String(maximum)}`); return result; };
 
