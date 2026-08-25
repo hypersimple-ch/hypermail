@@ -156,7 +156,7 @@ export function RichTextEditor({ id, name, defaultValue = '', defaultFormat = 'm
   const icon = 'size-4';
 
   return <div data-slot="rich-text-editor" className={cn('min-w-0 max-w-full overflow-hidden [contain:paint] rounded-lg border border-input bg-card focus-within:ring-2 focus-within:ring-ring', className)}>
-    <div role="toolbar" aria-label="Message formatting" className="w-full min-w-0 max-w-full overflow-x-auto border-b border-border bg-muted">
+    <div role="toolbar" aria-label="Message formatting" className="w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-b border-border bg-muted">
       <div className="flex w-max items-center gap-1 p-1.5">
       <ToolbarButton label="Bold" active={toolbarState.bold} disabled={unavailable} onPress={() => { editor?.chain().focus().toggleBold().run(); }}><Bold aria-hidden="true" className={icon} /></ToolbarButton>
       <ToolbarButton label="Italic" active={toolbarState.italic} disabled={unavailable} onPress={() => { editor?.chain().focus().toggleItalic().run(); }}><Italic aria-hidden="true" className={icon} /></ToolbarButton>
