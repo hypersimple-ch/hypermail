@@ -26,7 +26,7 @@ type FilterGroupProps<T extends string> = Readonly<{
 }>;
 
 function FilterGroup<T extends string>({ label, value, options, onChange, className }: FilterGroupProps<T>): React.JSX.Element {
-  return <div data-slot="filter-group" role="group" aria-label={label} className={cn('flex flex-nowrap gap-2 overflow-x-auto overscroll-x-contain', className)}>
+  return <div data-slot="filter-group" role="group" aria-label={label} className={cn('flex flex-nowrap gap-2 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden', className)}>
     {options.map((option) => <Button key={option.value} type="button" size="sm" variant={option.value === value ? 'secondary' : 'ghost'} aria-pressed={option.value === value} className="shrink-0 rounded-full" onClick={() => { onChange(option.value); }}>
       {option.label}{option.count === undefined ? null : <span aria-label={`${String(option.count)} items`} className="text-xs text-muted-foreground">{option.count}</span>}
     </Button>)}

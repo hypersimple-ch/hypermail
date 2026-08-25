@@ -19,6 +19,18 @@ const status = (activity: ActivityRecord): string => {
 };
 const statusVariant = (activity: ActivityRecord): 'default' | 'secondary' | 'destructive' | 'outline' => activity.state === 'failed' ? 'destructive' : activity.state === 'waiting_question' ? 'outline' : activity.state === 'acknowledged' ? 'secondary' : 'default';
 
+/** Coarse relative time for human scanning; the machine-readable value stays on the element. */
+export function relativeTime(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const seconds = Math.round((now.getTime() - at.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${String(Math.floor(seconds / 60))}m ago`;
+  if (seconds < 86_400) return `${String(Math.floor(seconds / 3600))}h ago`;
+  if (seconds < 604_800) return `${String(Math.floor(seconds / 86_400))}d ago`;
+  return at.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 export type ActivityScreenProps = Readonly<{
   page: ActivityPage;
   filter?: ActivityFilter;
@@ -38,7 +50,7 @@ export function ActivityScreen({ page, filter = 'new', onFilterChange, onOpen }:
         <Card className="gap-4 py-4">
           <CardContent className="grid min-w-0 gap-3 px-4 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
             <Badge className="w-fit" variant={statusVariant(activity)}>{status(activity)}</Badge>
-            <div className="min-w-0 break-words"><strong>{activity.title}</strong><p className="text-sm text-muted-foreground">{activity.messageLabel} · {activity.accountLabel}</p><time className="block text-sm text-muted-foreground" dateTime={activity.updatedAt}>{activity.updatedAt}</time></div>
+            <div className="min-w-0 break-words"><strong>{activity.title}</strong><p className="text-sm text-muted-foreground">{activity.messageLabel} · {activity.accountLabel}</p><time className="block text-sm text-muted-foreground" dateTime={activity.updatedAt}>{relativeTime(activity.updatedAt)}</time></div>
             <Button className="justify-self-start" type="button" variant="outline" size="sm" onClick={() => onOpen?.(activity)} aria-label={`Open: ${activity.title}`}>Open</Button>
           </CardContent>
         </Card>
@@ -67,7 +79,7 @@ export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage
     {activity.failure ? <Card aria-label="Failure and retry"><CardHeader><CardTitle>{activity.failure.retrying ? 'Retrying' : 'Failed'}</CardTitle><CardDescription>{activity.failure.code}: {activity.failure.message}</CardDescription></CardHeader><CardFooter><Button type="button" disabled={activity.failure.retrying || pendingAction === 'retry'} onClick={() => onRetry?.(activity)}>{activity.failure.retrying || pendingAction === 'retry' ? 'Retrying…' : 'Retry'}</Button></CardFooter></Card> : null}
     <AgentCardPlaceholder />
     {activity.runs ? <Card aria-label="Agent work history"><CardHeader><CardTitle>Agent work history</CardTitle><CardDescription>Immutable Runs and authorized mailbox Actions.</CardDescription></CardHeader><CardContent className="min-w-0"><ol className="grid min-w-0 gap-3">{activity.runs.map((run)=><li className="min-w-0 break-words" key={run.id}><strong>Run {run.sequence}</strong> · {run.state}{run.outcome?` · ${run.outcome}`:''}<br/><span className="text-sm text-muted-foreground">{run.managerKind} · {run.mode} · assignment r{run.assignmentRevision} · grant r{run.grantRevision} · safety r{run.safetyRevision}</span><ul className="mt-1 grid gap-1 pl-5">{activity.actions?.filter((item)=>item.runId===run.id).map((item)=><li className="break-words" key={item.id}>{item.kind}: {item.state} · authorization r{item.authorizationRevision}{item.verification?` · verified by ${item.verification.verifier}`:''}</li>)}</ul></li>)}</ol></CardContent></Card> : null}
-    <Card><CardHeader><CardTitle>Timeline</CardTitle></CardHeader><CardContent className="min-w-0"><ol className="grid gap-3">{activity.timeline.map((event) => <li className="min-w-0 break-words" key={event.id}><time className="block text-sm text-muted-foreground" dateTime={event.at}>{event.at}</time>{event.label}{event.detail ? `: ${event.detail}` : ''}</li>)}</ol></CardContent></Card>
+    <Card><CardHeader><CardTitle>Timeline</CardTitle></CardHeader><CardContent className="min-w-0"><ol className="grid gap-3">{activity.timeline.map((event) => <li className="min-w-0 break-words" key={event.id}><time className="block text-sm text-muted-foreground" dateTime={event.at}>{relativeTime(event.at)}</time>{event.label}{event.detail ? `: ${event.detail}` : ''}</li>)}</ol></CardContent></Card>
     <Card><CardFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">{activity.messageId ? <Button type="button" variant="outline" onClick={() => onOpenMessage?.(activity.messageId as string)}>Open original message</Button> : null}<Button type="button" disabled={acknowledgementReason !== null || pendingAction === 'acknowledge'} aria-describedby={acknowledgementReason ? 'activity-acknowledgement-reason' : undefined} onClick={() => onAcknowledge?.(activity)}>{pendingAction === 'acknowledge' ? 'Acknowledging…' : 'Acknowledge'}</Button>{acknowledgementReason ? <p id="activity-acknowledgement-reason" role="status" className="w-full text-sm text-muted-foreground">{acknowledgementReason}</p> : null}</CardFooter></Card>
   </article></PageContainer></AppPage>;
 }

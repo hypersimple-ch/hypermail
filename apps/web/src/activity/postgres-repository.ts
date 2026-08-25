@@ -31,7 +31,7 @@ const projection = `
     COALESCE(ca.updated_at,a.updated_at) AS updated_at,
     COALESCE(m.subject,m.preview,CASE WHEN ca.kind='interactive_request' THEN 'Interactive request' ELSE 'Agent activity' END) AS title,
     COALESCE(ac.display_name, ac.email) AS account_label,
-    COALESCE(m.subject,m.preview,CASE WHEN ca.kind='interactive_request' THEN 'Interactive request' ELSE 'Agent activity' END) AS message_label,
+    COALESCE(m.sender->>'name', m.sender->>'address', m.subject, m.preview, CASE WHEN ca.kind='interactive_request' THEN 'Interactive request' ELSE 'Agent activity' END) AS message_label,
     q.id AS question_id, q.version AS question_version, q.prompt AS question_prompt, q.state AS question_state,
     a.last_error_code AS failure_code, COALESCE(failure_audit.metadata->>'message', a.last_error_code) AS failure_message,
     CASE WHEN j.state IN ('pending', 'running') THEN true ELSE false END AS retrying,

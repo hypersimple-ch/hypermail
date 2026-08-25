@@ -5,10 +5,29 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acknowledgementBlockReason, ActivityBlockedError, ActivityConflictError, ActivityService, createActivityRoutes,
-  InMemoryActivityRepository, type ActivityRecord, ActivityDetail, ActivityScreen,
+  InMemoryActivityRepository, type ActivityRecord, ActivityDetail, ActivityScreen, relativeTime,
 } from '../../src/activity/index.js';
 
 afterEach(cleanup);
+
+describe('relative activity timestamps', () => {
+  const now = new Date('2026-01-15T12:00:00Z');
+  it('renders coarse human intervals and keeps invalid input as-is', () => {
+    expect(relativeTime('2026-01-15T11:59:30Z', now)).toBe('just now');
+    expect(relativeTime('2026-01-15T11:30:00Z', now)).toBe('30m ago');
+    expect(relativeTime('2026-01-15T09:00:00Z', now)).toBe('3h ago');
+    expect(relativeTime('2026-01-13T12:00:00Z', now)).toBe('2d ago');
+    expect(relativeTime('2020-01-15T12:00:00Z', now)).toContain('2020');
+    expect(relativeTime('not-a-date', now)).toBe('not-a-date');
+  });
+  it('renders relative time instead of raw ISO timestamps in the list', () => {
+    const recent = new Date(Date.now() - 30 * 60_000).toISOString();
+    const page = { items: [{ ...(record('a1', 'new')), title: 'Subject', messageLabel: 'Sender', accountLabel: 'Personal', updatedAt: recent }], nextCursor: null, counts: { new: 1, questions: 0, failed: 0, history: 0 } };
+    const markup = renderToStaticMarkup(React.createElement(ActivityScreen, { page }));
+    expect(markup).toContain('30m ago');
+    expect(markup).not.toContain(`${recent}</time>`);
+  });
+});
 
 const scope = { subjectId: 'person-1', accountIds: ['account-a'] } as const;
 const record = (id: string, state: ActivityRecord['state'], version = 1): ActivityRecord => ({
