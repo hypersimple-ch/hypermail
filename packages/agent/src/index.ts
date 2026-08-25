@@ -362,7 +362,8 @@ export class PostgresDecisionPersistence implements DecisionPersistence {
       if (canonicalQuestion) await tx`insert into app.questions (id, activity_id, decision_id, prompt) values (${canonicalQuestion.id}, ${canonicalQuestion.activityId}, ${canonicalQuestion.decisionId}, ${canonicalQuestion.prompt}) on conflict (id) do nothing`;
       const activityState = canonical.state === 'question' ? 'waiting_question' : canonical.state === 'failed' ? 'failed' : 'handled';
       const jobState = canonical.state === 'question' ? 'suspended' : canonical.state === 'failed' ? 'failed' : 'succeeded';
-      await tx`update app.activities set state = ${activityState}, updated_at = now() where id = ${decision.activityId}`;
+      const errorCode = canonical.state === 'failed' ? canonical.errorCode : null;
+      await tx`update app.activities set state = ${activityState}, last_error_code = ${errorCode}, updated_at = now() where id = ${decision.activityId}`;
       await tx`update app.agent_jobs set state = ${jobState}, attempt = greatest(attempt, ${decision.attempt}), updated_at = now() where activity_id = ${decision.activityId}`;
       // Canonical Run completion is in this same transaction as the legacy decision,
       // question, Activity and job projection. "actionable" records emitted requests;
@@ -370,7 +371,6 @@ export class PostgresDecisionPersistence implements DecisionPersistence {
       const runOutcome = canonical.state === 'actionable' ? 'action_requests_emitted'
         : canonical.state === 'question' ? 'question_asked'
           : canonical.state === 'failed' ? 'failed' : 'no_action';
-      const errorCode = canonical.state === 'failed' ? canonical.errorCode : null;
       await tx`update app.agent_runs r set state='completed', outcome=${runOutcome}::app.agent_run_outcome,
         error_code=${errorCode}, completed_at=now()
         from app.agent_jobs j where j.activity_id=${decision.activityId} and j.agent_run_id=r.id and r.state='running'`;

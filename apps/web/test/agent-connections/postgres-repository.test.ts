@@ -37,4 +37,12 @@ describe('agent connections repository grant minting', () => {
     await new PostgresAgentConnectionsRepository(sql as unknown as SqlClient).setAssignment('user-1', 'mailbox-1', { kind: 'mastra' }, false, 1);
     expect(sql.calls.find((call) => call.statement.includes('insert into app.agent_capability_grants'))).toBeUndefined();
   });
+
+  it('redispatches unavailable pending jobs when a grant is approved', async () => {
+    const sql = new FakeSql([[{ id: 'grant-1', revision: 2 }], []]);
+    await new PostgresAgentConnectionsRepository(sql as unknown as SqlClient).reapproveGrant('user-1', 'mailbox-1', 1, 'event-1', '2026-01-01T00:00:00Z');
+    const redispatch = sql.calls.find((call) => call.statement.includes('unavailable_reason is not null'));
+    expect(redispatch).toBeTruthy();
+    expect(redispatch?.statement).toContain('queue_job_id=null');
+  });
 });
