@@ -149,16 +149,16 @@ function failDecision(errorCode: string, rationale: string): AgentDecision {
 }
 
 function validateDecision(raw: unknown, input: TriageInput): AgentDecision {
-  // Models paraphrase opaque identifiers; every consumer re-verifies the run's account and
-  // message anyway, so pin targets to the single in-scope mailbox and message instead of
-  // failing when the model echoes them imperfectly.
-  if (raw && typeof raw === 'object' && 'state' in raw && (raw as { state?: unknown }).state === 'actionable' && Array.isArray((raw as { actions?: unknown }).actions)) {
+  // A different accountId is a cross-mailbox attempt and fails closed below. The messageId,
+  // however, has exactly one legitimate value in scope and models paraphrase opaque
+  // identifiers, so pin it to the source message instead of failing on echo noise. The
+  // planner and provider transport still verify the account and message independently.
+  if (raw && typeof raw === 'object' && 'state' in raw && (raw as { state?: unknown }).state === 'actionable' && Array.isArray((raw as { actions?: unknown[] }).actions)) {
     for (const action of (raw as { actions?: unknown[] }).actions ?? []) {
       if (!action || typeof action !== 'object') continue;
       const target = (action as { target?: unknown }).target;
-      if (!target || typeof target !== 'object') continue;
-      (target as Record<string, unknown>)['accountId'] = input.accountId;
-      if (!((action as { kind?: unknown }).kind === 'draft_edit')) (target as Record<string, unknown>)['messageId'] = input.email.messageId;
+      if (!target || typeof target !== 'object' || (action as { kind?: unknown }).kind === 'draft_edit') continue;
+      (target as Record<string, unknown>)['messageId'] = input.email.messageId;
     }
   }
   const parsed = agentDecisionSchema.safeParse(raw);
