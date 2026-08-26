@@ -148,8 +148,20 @@ function failDecision(errorCode: string, rationale: string): AgentDecision {
   return { state: 'failed', errorCode, rationale };
 }
 
-function validateDecision(value: unknown, input: TriageInput): AgentDecision {
-  const parsed = agentDecisionSchema.safeParse(value);
+function validateDecision(raw: unknown, input: TriageInput): AgentDecision {
+  // Models paraphrase opaque identifiers; every consumer re-verifies the run's account and
+  // message anyway, so pin targets to the single in-scope mailbox and message instead of
+  // failing when the model echoes them imperfectly.
+  if (raw && typeof raw === 'object' && 'state' in raw && (raw as { state?: unknown }).state === 'actionable' && Array.isArray((raw as { actions?: unknown }).actions)) {
+    for (const action of (raw as { actions?: unknown[] }).actions ?? []) {
+      if (!action || typeof action !== 'object') continue;
+      const target = (action as { target?: unknown }).target;
+      if (!target || typeof target !== 'object') continue;
+      (target as Record<string, unknown>)['accountId'] = input.accountId;
+      if (!((action as { kind?: unknown }).kind === 'draft_edit')) (target as Record<string, unknown>)['messageId'] = input.email.messageId;
+    }
+  }
+  const parsed = agentDecisionSchema.safeParse(raw);
   if (!parsed.success) return failDecision('MALFORMED_MODEL_OUTPUT', 'The model returned an invalid decision.');
   if (parsed.data.state === 'actionable' && parsed.data.actions.some((action) =>
     action.target.accountId !== input.accountId || (!action.kind.startsWith('draft_') && action.target.messageId !== input.email.messageId),
