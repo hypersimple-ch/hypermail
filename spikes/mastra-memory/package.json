@@ -10,14 +10,14 @@
     "db:down": "docker compose down -v"
   },
   "dependencies": {
-    "@mastra/core": "1.54.0",
-    "@mastra/memory": "1.24.0",
-    "@mastra/pg": "1.18.0",
-    "zod": "4.4.3"
+    "@mastra/core": "1.74.0",
+    "@mastra/memory": "1.35.0",
+    "@mastra/pg": "1.29.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "25.5.0",
-    "tsx": "4.23.1",
-    "typescript": "5.9.3"
+    "@types/node": "26.6.4",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
   }
 }

@@ -7,22 +7,22 @@ syncInjectedDepsAfterScripts:
   - build
 
 overrides:
-  deepmerge-ts: 8.0.0
+  deepmerge-ts: 8.0.2
   fast-uri: 3.1.8
   js-yaml@3: 3.15.2
-  nanoid@3: 3.3.18
-  nodemailer@<=10.0.5: 10.0.6
-  postcss: 8.5.24
-  '@tiptap/core': 3.30.5
-  '@tiptap/pm': 3.30.5
+  nanoid@3: 3.3.20
+  nodemailer@<=10.0.5: 10.0.15
+  postcss: 8.5.29
+  '@tiptap/core': 3.31.4
+  '@tiptap/pm': 3.31.4
   brace-expansion@2: 2.1.7
   brace-expansion@5: 5.0.12
   probe-image-size: 7.4.0
-  prosemirror-view: 1.42.3
+  prosemirror-view: 1.42.6
   proxy-addr: 2.0.8
   source-map-js: 1.2.2
-  tinypool: 2.1.2
-  undici@7: 7.29.1
+  tinypool: 2.2.0
+  undici@7: 7.30.0
 
 onlyBuiltDependencies:
   - '@parcel/watcher'
@@ -32,8 +32,3 @@ allowBuilds:
   esbuild: true
   # Hypermail does not use OS keychain storage; retain its encrypted file store.
   keytar: false
-minimumReleaseAgeExclude:
-  - '@ai-sdk/anthropic@4.0.24'
-  - '@ai-sdk/google@4.0.28'
-  - '@ai-sdk/openai@4.0.24'
-  - '@ai-sdk/provider-utils@5.0.15'

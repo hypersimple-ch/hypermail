@@ -5,8 +5,7 @@
     "outDir": "dist",
     "lib": ["ES2024", "DOM", "WebWorker"],
     "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["dist"]

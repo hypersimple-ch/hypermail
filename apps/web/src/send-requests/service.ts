@@ -12,7 +12,7 @@ export class OwnerSendRequestService {
   const claimed=await this.repository.claim(scope,id,approvalId,confirmation);if(!('message' in claimed))return this.repository.detail(scope,id);
   const result=await provider.submit({approvalId:claimed.approvalId,idempotencyKey:claimed.idempotencyKey,...claimed.message});
   if(result.state==='rejected'){await this.repository.finish(scope,id,{kind:'failed',reason:result.reasonCode.toLowerCase()});return this.repository.detail(scope,id);}
-  if(result.state==='reported')await this.repository.markReported(scope,id,result.reference?.value??'');
+  if(result.state==='reported')await this.repository.markReported(scope,id);
   await this.applyReadback(scope,id,approvalId);return this.repository.detail(scope,id);
  }
  async reconcile(scope:OwnerSendScope,id:string,approvalId:string,expectedVersion:number):Promise<OwnerSendRequest>{const current=await this.repository.reconciliationScope(scope,id,approvalId,expectedVersion);if(!['sending','unverifiable'].includes(current.state))return current;await this.applyReadback(scope,id,approvalId);return this.repository.detail(scope,id);}

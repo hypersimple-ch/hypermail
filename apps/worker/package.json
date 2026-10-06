@@ -12,24 +12,24 @@
     "memory:delete": "node dist/delete-mailbox-memory.js"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.24",
-    "@ai-sdk/provider": "2.0.3",
-    "@openai/codex": "0.145.0",
-    "@ai-sdk/google": "4.0.28",
-    "@ai-sdk/openai": "4.0.24",
+    "@ai-sdk/anthropic": "4.0.71",
+    "@ai-sdk/google": "4.0.87",
+    "@ai-sdk/openai": "4.0.83",
+    "@ai-sdk/provider": "4.0.21",
     "@hypermail/agent": "workspace:*",
     "@hypermail/auth": "workspace:*",
     "@hypermail/contracts": "workspace:*",
     "@hypermail/db": "workspace:*",
     "@hypermail/hypermail": "workspace:*",
     "@hypermail/notifications": "workspace:*",
-    "@hypermail/policy": "workspace:*",
     "@hypermail/observability": "workspace:*",
-    "@mastra/core": "1.61.0",
-    "@mastra/memory": "1.27.0",
-    "@mastra/pg": "1.21.1",
-    "pg-boss": "10.1.5",
-    "postgres": "3.4.9",
-    "@vectorize-io/hindsight-client": "0.9.1"
+    "@hypermail/policy": "workspace:*",
+    "@mastra/core": "1.74.0",
+    "@mastra/memory": "1.35.0",
+    "@mastra/pg": "1.29.0",
+    "@openai/codex": "0.160.0",
+    "@vectorize-io/hindsight-client": "0.10.2",
+    "pg-boss": "12.36.0",
+    "postgres": "3.4.9"
   }
 }

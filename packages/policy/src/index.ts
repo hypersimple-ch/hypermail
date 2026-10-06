@@ -63,7 +63,7 @@ export type Completion = Readonly<{ outcome: ActionOutcome; receipt?: ProviderRe
 export interface PolicyPersistence {
   claim(input: PolicyActionInput, isGloballyPaused: () => boolean): Promise<Claim>;
   claimImmediatelyBeforeMutation(actionId: string, accountId: string, isGloballyPaused: () => boolean): Promise<'run' | 'paused' | 'finished'>;
-  reportProvider(actionId: string, accountId: string, receipt: ProviderReceipt): Promise<void>;
+  reportProvider(actionId: string, accountId: string): Promise<void>;
   complete(actionId: string, accountId: string, completion: Completion, safety: PolicySafetyConfig): Promise<ActionOutcome>;
 }
 export type PolicySafetyConfig = Readonly<{ maxIncorrectRate: number; windowMs: number }>;
@@ -152,7 +152,7 @@ export class PolicyExecutor {
     }
 
     // A connector report is durable progress, never success. Hypermail readback alone decides verification.
-    await this.options.persistence.reportProvider(claim.actionId, claim.accountId, receipt);
+    await this.options.persistence.reportProvider(claim.actionId, claim.accountId);
     return this.finish(claim, await this.verify(input, receipt, true));
   }
 
@@ -298,8 +298,7 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
     });
   }
 
-  async reportProvider(actionId:string, accountId:string, receipt:ProviderReceipt):Promise<void> {
-    void receipt;
+  async reportProvider(actionId:string, accountId:string):Promise<void> {
     await this.sql.transaction(async sql => {
       const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='verifying',provider_reported_at=now()
         WHERE id=$1::uuid AND account_id=$2::uuid AND state='executing'

@@ -151,9 +151,13 @@ class OfficialHindsightApi implements HindsightApi {
     return response.data;
   }
   async deleteBank(bankId: string, signal?: AbortSignal): Promise<unknown> {
-    const response = await sdk.deleteBank({ client: this.generated, path: { bank_id: bankId }, ...(signal ? { signal } : {}) });
-    if (response.error && response.response.status !== 404) throw new Error('HINDSIGHT_DELETE_FAILED');
-    return { absent: response.response.status === 404 };
+    const result = await sdk.deleteBank({ client: this.generated, throwOnError: false,
+      path: { bank_id: bankId }, ...(signal ? { signal } : {}) });
+    const response = result.response;
+    if (!response || (response.status !== 404 && (!response.ok || result.error !== undefined))) {
+      throw new HindsightMemoryError('HINDSIGHT_UNAVAILABLE');
+    }
+    return { absent: response.status === 404 };
   }
 }
 

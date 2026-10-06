@@ -7,9 +7,11 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 ## Requirements
 
 - Node.js 22.23.2 (see `.nvmrc`)
-- pnpm 11.11.0 through Corepack
+- pnpm 12.9.1 through Corepack
 - PostgreSQL 16+ for migrations and integration work
 - Google Chrome or Chromium for the responsive UI checks in `pnpm check` (`CHROME_BIN` can point to a non-standard installation)
+
+Dependencies are pinned in the manifests and lockfiles. TypeScript stays at 6.0.3 because the current `typescript-eslint` release supports TypeScript below 6.1; TypeScript 7 is not yet compatible. The local Hypermail runtime is now 0.7.27; production image approval and the historical 0.7.26 contract evidence remain separate release gates. The Hindsight client SDK is updated independently of the approved 0.9.1 server contract.
 
 ## Workspace
 

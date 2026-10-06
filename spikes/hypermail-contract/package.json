@@ -2,7 +2,7 @@
   "name": "hypermail-contract-proof",
   "private": true,
   "type": "module",
-  "devDependencies": { "@types/node": "^24.0.0" },
+  "devDependencies": { "@types/node": "26.6.4" },
   "scripts": {
     "test": "node --test --experimental-strip-types test/contract.test.ts",
     "typecheck": "tsc --noEmit",

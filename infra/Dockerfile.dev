@@ -5,7 +5,7 @@ ENV NODE_ENV=development \
     npm_config_inject_workspace_packages=false
 WORKDIR /workspace
 RUN corepack enable \
-  && corepack prepare pnpm@11.11.0 --activate \
+  && corepack prepare pnpm@12.9.1 --activate \
   && apk add --no-cache su-exec \
   && addgroup -S hypermail \
   && adduser -S -G hypermail -u 10001 hypermail \

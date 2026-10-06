@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await */
 import { randomUUID } from 'node:crypto';
 import { Blob } from 'node:buffer';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { MailboxMemory } from '@hypermail/agent';
-import { HindsightMailboxMemory, HindsightMemoryError, mailboxBankId, ReadinessGatedMailboxMemory, type HindsightApi } from '../src/hindsight-memory.js';
+import { createHindsightMailboxMemory, HindsightMailboxMemory, HindsightMemoryError, mailboxBankId, ReadinessGatedMailboxMemory, type HindsightApi } from '../src/hindsight-memory.js';
 
 const userId = randomUUID();
 const mailboxId = randomUUID();
@@ -138,6 +138,34 @@ describe('Hindsight Mailbox memory adapter', () => {
     expect(api.calls.every(({ method }) => ['getReadiness', 'getVersion', 'getOpenApi'].includes(method))).toBe(true);
     await adapter.deleteMailbox(scope);
     expect(api.calls.find((call) => call.method === 'deleteBank')?.args[0]).toBe(mailboxBankId(scope));
+  });
+
+  it.each([204, 404])('accepts successful deletion or an already absent bank (HTTP %s)', async (status) => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status }));
+    try {
+      const adapter = createHindsightMailboxMemory({ baseUrl: 'http://hindsight.test' });
+      await expect(adapter.deleteMailbox(scope)).resolves.toBeUndefined();
+    } finally { fetch.mockRestore(); }
+  });
+
+  it('fails closed with a sanitized error when bank deletion produces no HTTP response', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('https://secret.internal token=secret'));
+    try {
+      const adapter = createHindsightMailboxMemory({ baseUrl: 'http://hindsight.test' });
+      await expect(adapter.deleteMailbox(scope)).rejects.toMatchObject({
+        name: 'HindsightMemoryError', code: 'HINDSIGHT_UNAVAILABLE', message: 'Hindsight memory is unavailable.',
+      });
+    } finally { fetch.mockRestore(); }
+  });
+
+  it.each([401, 500])('rejects non-404 deletion failures without leaking HTTP error details (HTTP %s)', async (status) => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('token=secret', { status }));
+    try {
+      const adapter = createHindsightMailboxMemory({ baseUrl: 'http://hindsight.test' });
+      await expect(adapter.deleteMailbox(scope)).rejects.toMatchObject({
+        name: 'HindsightMemoryError', code: 'HINDSIGHT_UNAVAILABLE', message: 'Hindsight memory is unavailable.',
+      });
+    } finally { fetch.mockRestore(); }
   });
 
   it('fails closed before schema discovery for wrong versions or incomplete feature flags', async () => {

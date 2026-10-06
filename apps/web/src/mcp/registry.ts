@@ -14,7 +14,7 @@ const descriptions: Record<PublicToolName, readonly [string, string]> = {
   move_email: ['Move email', 'Move one message to an existing folder.'], mark_read: ['Mark read', 'Mark one message read.'],
   mark_unread: ['Mark unread', 'Mark one message unread.'], draft_email: ['Create draft', 'Create an app draft without sending it.'],
   edit_draft: ['Edit draft', 'Edit an app draft using optimistic versioning.'], request_send_email: ['Request send', 'Create a pending owner approval request; this never sends mail.'],
-};
+} satisfies Record<PublicAgentTool, readonly [string, string]>;
 const readOnly = new Set<PublicToolName>(['list_emails', 'search_emails', 'read_email', 'read_attachment', 'list_folders']);
 const destructive = new Set<PublicToolName>(['archive_email', 'trash_email', 'move_email']);
 
@@ -25,11 +25,5 @@ export const publicToolRegistry = Object.fromEntries(names.map((name) => [name, 
   args: publicToolContracts[name].args, result: publicToolContracts[name].result,
 }])) as { readonly [Name in PublicToolName]: PublicToolDefinition<Name> };
 
-// Both directions intentionally fail compilation if either explicit public list drifts.
-type MissingFacadeTool = Exclude<PublicAgentTool, PublicToolName>;
-type ExtraFacadeTool = Exclude<PublicToolName, PublicAgentTool>;
-const noMissingTool: [MissingFacadeTool] extends [never] ? true : never = true;
-const noExtraTool: [ExtraFacadeTool] extends [never] ? true : never = true;
-void noMissingTool; void noExtraTool;
 export const PUBLIC_MCP_RESOURCE_PATH = '/mcp' as const;
 export const PUBLIC_MCP_PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource/mcp' as const;

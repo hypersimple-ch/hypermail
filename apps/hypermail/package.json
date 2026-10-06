@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "hypermail-mcp": "0.7.26"
+    "hypermail-mcp": "0.7.27"
   }
 }

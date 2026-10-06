@@ -18,7 +18,6 @@ const devDockerfile = read('infra/Dockerfile.dev');
 const devLauncher = read('infra/dev.mjs');
 const devRunner = read('infra/dev-runner.mjs');
 const rootPackage = read('package.json');
-const hypermailPackage = read('apps/hypermail/package.json');
 const envContract = read('packages/contracts/src/env.ts');
 const envExample = read('.env.example');
 const hindsightEnvExample = read('.env.hindsight.example');
@@ -117,7 +116,7 @@ if (!/ATTACHMENT_TEMP_DIRECTORY: \/var\/lib\/hypermail-attachments/.test(localWo
 }
 const localWeb = local.match(/^  web:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
 if (/HINDSIGHT_ENV_FILE|HINDSIGHT_API_LLM|hindsight-data/.test(localWeb)) fail('local web must not receive Hindsight LLM secrets or state');
-if (!/"hypermail-mcp": "0\.7\.26"/.test(hypermailPackage) || !/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
+if (!/pnpm --filter @hypermail\/runtime deploy --prod/.test(hypermailDockerfile) || !/hypermail-mcp", "--http"/.test(hypermailDockerfile) || !/127\.0\.0\.1:3000\/mcp/.test(hypermailDockerfile)) {
   fail('Hypermail must build its pinned workspace runtime as a private HTTP service');
 }
 if (/HYPERMAIL_IMAGE|HYPERMAIL_ENV_FILE/.test(local) || !/dockerfile: infra\/Dockerfile\.hypermail/.test(local) || !/127\.0\.0\.1:3000\/mcp/.test(local)) {

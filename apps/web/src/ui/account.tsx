@@ -33,38 +33,36 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
   const [passwordError, setPasswordError] = React.useState('');
   const pending = passwordPending || signOutPending;
 
-  const changePassword = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (pending) return;
-    if (!currentPassword) {
-      setPasswordError('Enter your current password.');
+  const changePassword = (event: React.SubmitEvent<HTMLFormElement>) => { event.preventDefault();
+  if (pending) return;
+  if (!currentPassword) {
+    setPasswordError('Enter your current password.');
+    return;
+  }
+  if (newPassword.length < minimumPasswordLength) {
+    setPasswordError('Your new password must be at least 12 characters.');
+    return;
+  }
+  if (newPassword !== confirmation) {
+    setPasswordError('New password and confirmation must match.');
+    return;
+  }
+  setPasswordError('');
+  setPasswordPending(true);
+  void onChangePassword({ currentPassword, newPassword }).then((result) => {
+    if (!result.ok) {
+      toast.danger(result.error);
       return;
     }
-    if (newPassword.length < minimumPasswordLength) {
-      setPasswordError('Your new password must be at least 12 characters.');
-      return;
-    }
-    if (newPassword !== confirmation) {
-      setPasswordError('New password and confirmation must match.');
-      return;
-    }
-    setPasswordError('');
-    setPasswordPending(true);
-    void onChangePassword({ currentPassword, newPassword }).then((result) => {
-      if (!result.ok) {
-        toast.danger(result.error);
-        return;
-      }
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmation('');
-      toast.success('Password changed.');
-    }).catch(() => {
-      toast.danger('Could not change your password. Try again.');
-    }).finally(() => {
-      setPasswordPending(false);
-    });
-  };
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmation('');
+    toast.success('Password changed.');
+  }).catch(() => {
+    toast.danger('Could not change your password. Try again.');
+  }).finally(() => {
+    setPasswordPending(false);
+  }); };
 
   const signOut = () => {
     if (pending) return;

@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { CodexCliModel } from '../src/codex-cli-model.js';
+import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
+import { CodexCliModel, type CodexCliModelOptions } from '../src/codex-cli-model.js';
 
 class Child extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -14,17 +15,17 @@ class Child extends EventEmitter {
 }
 
 const result = (text = 'answer') => `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } })}\n${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3, cached_input_tokens: 1, output_tokens: 2, reasoning_output_tokens: 1 } })}\n`;
-const input = (extra: Record<string, unknown> = {}) => ({ prompt: [{ role: 'system', content: 'be brief' }, { role: 'user', content: [{ type: 'text', text: 'hello' }] }], ...extra }) as never;
+const input = (extra: Partial<LanguageModelV4CallOptions> = {}): LanguageModelV4CallOptions => ({ prompt: [{ role: 'system', content: 'be brief' }, { role: 'user', content: [{ type: 'text', text: 'hello' }] }], ...extra });
 const waitForChild = async (children: readonly Child[]) => { while (!children[0]) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
-function controlled(modelId = 'test-model', options: Record<string, unknown> = {}) {
+function controlled(modelId = 'test-model', options: Omit<CodexCliModelOptions, 'modelId' | 'spawnCommand'> = {}) {
   const children: Child[] = [];
   const calls: Array<{ command: string; args: readonly string[]; cwd: string }> = [];
   const model = new CodexCliModel(modelId, {
     ...options,
-    spawnCommand: ((command: string, args: readonly string[], spawnOptions: { cwd: string }) => {
+    spawnCommand: (command, args, spawnOptions) => {
       const child = new Child(); children.push(child); calls.push({ command, args, cwd: spawnOptions.cwd }); return child;
-    }) as never,
+    },
   });
   return { model, children, calls };
 }
@@ -35,9 +36,23 @@ describe('CodexCliModel', () => {
     const pending = model.doGenerate(input());
     await waitForChild(children);
     children[0]!.stdout.write(result()); children[0]!.complete();
-    await expect(pending).resolves.toMatchObject({ content: [{ type: 'text', text: 'answer' }], finishReason: 'stop', usage: { inputTokens: 3, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 } });
+    await expect(pending).resolves.toMatchObject({ content: [{ type: 'text', text: 'answer' }], finishReason: { unified: 'stop' }, usage: { inputTokens: { total: 3, noCache: 2, cacheRead: 1 }, outputTokens: { total: 2, text: 1, reasoning: 1 } } });
     expect(calls[0]).toMatchObject({ command: 'codex' });
     expect(calls[0]!.args).toEqual(expect.arrayContaining(['exec', '--json', '--sandbox', 'read-only', '--ask-for-approval', 'never', '--skip-git-repo-check', '--ephemeral', '--model', 'test-model', 'SYSTEM:\nbe brief\n\nUSER:\nhello']));
+  });
+
+  it('keeps unavailable token details unknown instead of reporting zero usage', async () => {
+    const { model, children } = controlled();
+    const pending = model.doGenerate(input());
+    await waitForChild(children);
+    children[0]!.stdout.write(`${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'answer' } })}\n${JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 3, output_tokens: 2 } })}\n`);
+    children[0]!.complete();
+    await expect(pending).resolves.toMatchObject({
+      usage: {
+        inputTokens: { total: 3, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+        outputTokens: { total: 2, text: undefined, reasoning: undefined },
+      },
+    });
   });
 
   it('omits the default model and uses output schema plus last message for JSON', async () => {
@@ -70,7 +85,7 @@ describe('CodexCliModel', () => {
 
   it('rejects unsupported tools, failures, malformed output, and bounded output', async () => {
     const unsupported = controlled().model;
-    await expect(unsupported.doGenerate(input({ tools: [{ type: 'function' }] }))).rejects.toThrow('CODEX_CLI_UNSUPPORTED_TOOLS');
+    await expect(unsupported.doGenerate(input({ tools: [{ type: 'function', name: 'unsupported', inputSchema: {} }] }))).rejects.toThrow('CODEX_CLI_UNSUPPORTED_TOOLS');
     const failed = controlled(); const failure = failed.model.doGenerate(input()); await waitForChild(failed.children); failed.children[0]!.stderr.write('denied'); failed.children[0]!.complete(2);
     await expect(failure).rejects.toThrow('CODEX_CLI_EXIT: denied');
     const invalid = controlled(); const malformed = invalid.model.doGenerate(input()); await waitForChild(invalid.children); invalid.children[0]!.stdout.write('not-json\n'); invalid.children[0]!.complete();
@@ -98,7 +113,7 @@ describe('CodexCliModel', () => {
       { type: 'text-start', id: 'codex-cli-result' },
       { type: 'text-delta', id: 'codex-cli-result', delta: 'streamed' },
       { type: 'text-end', id: 'codex-cli-result' },
-      { type: 'finish', finishReason: 'stop', usage: { inputTokens: 3, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1, totalTokens: undefined } },
+      { type: 'finish', finishReason: { unified: 'stop', raw: undefined }, usage: { inputTokens: { total: 3, noCache: 2, cacheRead: 1, cacheWrite: undefined }, outputTokens: { total: 2, text: 1, reasoning: 1 } } },
     ]);
   });
 });

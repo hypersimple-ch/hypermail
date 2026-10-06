@@ -107,28 +107,26 @@ function AddMailboxForm({ disabled, onStart }: { disabled: boolean; onStart: (in
   const [provider, setProvider] = React.useState<AddMailboxProvider>('gmail');
   const [validationError, setValidationError] = React.useState('');
   const formRef = React.useRef<HTMLFormElement>(null);
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setValidationError('');
-    if (provider !== 'imap') {
-      const email = formText(form, 'email').trim();
-      void onStart({ provider: provider === 'outlook' ? 'microsoft' : 'gmail', ...(email ? { email } : {}) }).finally(() => { formRef.current?.reset(); });
-      return;
-    }
-    const email = formText(form, 'imap-email').trim();
-    const imapHost = formText(form, 'imap-host').trim();
-    const imapPort = Number(formText(form, 'imap-port'));
-    const username = formText(form, 'imap-username').trim();
-    const password = formText(form, 'imap-password');
-    const smtpHost = formText(form, 'smtp-host').trim();
-    const smtpPortText = formText(form, 'smtp-port').trim();
-    if (!email || !imapHost || !Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535 || !username || !password || (smtpHost && (!smtpPortText || !Number.isInteger(Number(smtpPortText)) || Number(smtpPortText) < 1 || Number(smtpPortText) > 65535))) {
-      setValidationError('Enter the required IMAP details and a valid port.');
-      return;
-    }
-    void onStart({ provider: 'imap', imap: { email, imapHost, imapPort, imapTls: form.get('imap-tls') === 'on', username, password, ...(smtpHost ? { smtpHost, smtpPort: Number(smtpPortText), smtpTls: form.get('smtp-tls') === 'on' } : {}) } }).finally(() => { formRef.current?.reset(); });
-  };
+  const submit = (event: React.SubmitEvent<HTMLFormElement>) => { event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  setValidationError('');
+  if (provider !== 'imap') {
+    const email = formText(form, 'email').trim();
+    void onStart({ provider: provider === 'outlook' ? 'microsoft' : 'gmail', ...(email ? { email } : {}) }).finally(() => { formRef.current?.reset(); });
+    return;
+  }
+  const email = formText(form, 'imap-email').trim();
+  const imapHost = formText(form, 'imap-host').trim();
+  const imapPort = Number(formText(form, 'imap-port'));
+  const username = formText(form, 'imap-username').trim();
+  const password = formText(form, 'imap-password');
+  const smtpHost = formText(form, 'smtp-host').trim();
+  const smtpPortText = formText(form, 'smtp-port').trim();
+  if (!email || !imapHost || !Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535 || !username || !password || (smtpHost && (!smtpPortText || !Number.isInteger(Number(smtpPortText)) || Number(smtpPortText) < 1 || Number(smtpPortText) > 65535))) {
+    setValidationError('Enter the required IMAP details and a valid port.');
+    return;
+  }
+  void onStart({ provider: 'imap', imap: { email, imapHost, imapPort, imapTls: form.get('imap-tls') === 'on', username, password, ...(smtpHost ? { smtpHost, smtpPort: Number(smtpPortText), smtpTls: form.get('smtp-tls') === 'on' } : {}) } }).finally(() => { formRef.current?.reset(); }); };
   return <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-3"><CardTitle>Add mailbox</CardTitle><CardDescription>Choose a provider and follow its connection steps.</CardDescription></CardHeader><CardContent className="px-4 pb-4"><form ref={formRef} noValidate onSubmit={submit} className="space-y-4">
     <Field><Select id="mailbox-provider" label="Provider" value={provider} onValueChange={(selected) => { setProvider(selected as AddMailboxProvider); setValidationError(''); }} disabled={disabled} options={[{ value: 'gmail', label: 'Gmail' }, { value: 'outlook', label: 'Outlook' }, { value: 'imap', label: 'IMAP' }]} /></Field>
     {provider !== 'imap' ? <Field><FieldLabel htmlFor="provider-email">Email address (optional)</FieldLabel><Input id="provider-email" name="email" type="email" autoComplete="email" placeholder="name@example.com" disabled={disabled} /><FieldDescription>Used to identify the mailbox while you connect it.</FieldDescription></Field> : <FieldSet disabled={disabled}><Field><FieldLabel htmlFor="imap-email">Mailbox email</FieldLabel><Input id="imap-email" name="imap-email" type="email" autoComplete="email" required disabled={disabled} /></Field><div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]"><Field><FieldLabel htmlFor="imap-host">IMAP host</FieldLabel><Input id="imap-host" name="imap-host" autoComplete="off" required disabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-port">IMAP port</FieldLabel><Input id="imap-port" name="imap-port" type="number" min="1" max="65535" defaultValue="993" required disabled={disabled} /></Field></div><Field><Checkbox name="imap-tls" label="Use TLS for IMAP" defaultSelected isDisabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-username">Username</FieldLabel><Input id="imap-username" name="imap-username" autoComplete="username" required disabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-password">Password</FieldLabel><Input id="imap-password" name="imap-password" type="password" autoComplete="current-password" required disabled={disabled} /><FieldDescription>Your password is used only to connect this mailbox.</FieldDescription></Field><Separator /><p className="text-sm font-medium">SMTP (optional)</p><div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]"><Field><FieldLabel htmlFor="smtp-host">SMTP host</FieldLabel><Input id="smtp-host" name="smtp-host" autoComplete="off" disabled={disabled} /></Field><Field><FieldLabel htmlFor="smtp-port">SMTP port</FieldLabel><Input id="smtp-port" name="smtp-port" type="number" min="1" max="65535" defaultValue="587" disabled={disabled} /></Field></div><Field><Checkbox name="smtp-tls" label="Use TLS for SMTP" defaultSelected isDisabled={disabled} /></Field></FieldSet>}

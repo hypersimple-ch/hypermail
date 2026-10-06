@@ -2,9 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { LanguageModelV2, LanguageModelV2CallOptions, LanguageModelV2StreamPart } from '@ai-sdk/provider';
-
-type LanguageModelV2GenerateResult = Awaited<ReturnType<LanguageModelV2['doGenerate']>>;
+import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult, LanguageModelV4StreamPart, LanguageModelV4StreamResult } from '@ai-sdk/provider';
 
 const DEFAULT_OUTPUT_LIMIT_BYTES = 1_048_576;
 const DEFAULT_KILL_GRACE_MILLISECONDS = 1_000;
@@ -25,8 +23,8 @@ const abortError = (): Error => Object.assign(new Error('CODEX_CLI_ABORTED'), { 
 const cliError = (code: string, detail?: string): Error => new Error(detail ? `${code}: ${detail}` : code);
 const token = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
-/** Converts the V2 text-only prompt subset into the one prompt accepted by `codex exec`. */
-function promptText(prompt: LanguageModelV2CallOptions['prompt']): string {
+/** Converts the V4 text-only prompt subset into the one prompt accepted by `codex exec`. */
+function promptText(prompt: LanguageModelV4CallOptions['prompt']): string {
   const lines: string[] = [];
   for (const message of prompt) {
     if (message.role === 'tool') throw cliError('CODEX_CLI_UNSUPPORTED_TOOLS');
@@ -45,11 +43,11 @@ function promptText(prompt: LanguageModelV2CallOptions['prompt']): string {
 }
 
 /**
- * A deliberately narrow LanguageModelV2 adapter for the locally installed Codex CLI.
+ * A deliberately narrow LanguageModelV4 adapter for the locally installed Codex CLI.
  * Codex has no streaming event for assistant deltas, so doStream emits one completed result.
  */
-export class CodexCliModel implements LanguageModelV2 {
-  readonly specificationVersion = 'v2' as const;
+export class CodexCliModel implements LanguageModelV4 {
+  readonly specificationVersion = 'v4' as const;
   readonly provider = 'codex-cli';
   readonly supportedUrls = {};
   private readonly command: string;
@@ -67,13 +65,13 @@ export class CodexCliModel implements LanguageModelV2 {
     if (!Number.isSafeInteger(this.killGraceMilliseconds) || this.killGraceMilliseconds < 0) throw new Error('killGraceMilliseconds must be a non-negative integer');
   }
 
-  doGenerate(options: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult> {
+  doGenerate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
     return this.singleFlight(async () => this.generate(options));
   }
 
-  doStream(options: LanguageModelV2CallOptions) {
+  doStream(options: LanguageModelV4CallOptions): Promise<LanguageModelV4StreamResult> {
     const id = 'codex-cli-result';
-    const stream = new ReadableStream<LanguageModelV2StreamPart>({
+    const stream = new ReadableStream<LanguageModelV4StreamPart>({
       start: (controller) => {
         void this.doGenerate(options).then((result) => {
           controller.enqueue({ type: 'stream-start', warnings: result.warnings });
@@ -95,7 +93,7 @@ export class CodexCliModel implements LanguageModelV2 {
     return result;
   }
 
-  private async generate(options: LanguageModelV2CallOptions): Promise<LanguageModelV2GenerateResult> {
+  private async generate(options: LanguageModelV4CallOptions): Promise<LanguageModelV4GenerateResult> {
     if (options.tools?.length) throw cliError('CODEX_CLI_UNSUPPORTED_TOOLS');
     const prompt = promptText(options.prompt);
     const directory = await mkdtemp(join(tmpdir(), 'hypermail-codex-'));
@@ -122,7 +120,28 @@ export class CodexCliModel implements LanguageModelV2 {
       const text = structured ? await readFile(outputPath, 'utf8') : typeof message?.item?.text === 'string' ? message.item.text : undefined;
       if (text === undefined) throw cliError('CODEX_CLI_MISSING_RESPONSE');
       const usage = usageEvent?.usage;
-      return { content: [{ type: 'text', text }], finishReason: 'stop', usage: { inputTokens: token(usage?.input_tokens), cachedInputTokens: token(usage?.cached_input_tokens), outputTokens: token(usage?.output_tokens), reasoningTokens: token(usage?.reasoning_output_tokens), totalTokens: undefined }, warnings: [] };
+      const inputTokens = token(usage?.input_tokens);
+      const cachedInputTokens = token(usage?.cached_input_tokens);
+      const outputTokens = token(usage?.output_tokens);
+      const reasoningTokens = token(usage?.reasoning_output_tokens);
+      return {
+        content: [{ type: 'text', text }],
+        finishReason: { unified: 'stop', raw: undefined },
+        usage: {
+          inputTokens: {
+            total: inputTokens,
+            noCache: inputTokens !== undefined && cachedInputTokens !== undefined ? inputTokens - cachedInputTokens : undefined,
+            cacheRead: cachedInputTokens,
+            cacheWrite: undefined,
+          },
+          outputTokens: {
+            total: outputTokens,
+            text: outputTokens !== undefined && reasoningTokens !== undefined ? outputTokens - reasoningTokens : undefined,
+            reasoning: reasoningTokens,
+          },
+        },
+        warnings: [],
+      };
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

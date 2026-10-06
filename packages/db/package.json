@@ -14,11 +14,11 @@
   },
   "dependencies": {
     "@hypermail/contracts": "workspace:*",
-    "drizzle-orm": "0.45.2",
+    "drizzle-orm": "0.45.3",
     "postgres": "3.4.9",
-    "zod": "4.4.3"
+    "zod": "4.6.5"
   },
   "devDependencies": {
-    "drizzle-kit": "0.31.10"
+    "drizzle-kit": "0.31.11"
   }
 }

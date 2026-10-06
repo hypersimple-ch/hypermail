@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-parameters, @typescript-eslint/require-await, @typescript-eslint/no-confusing-void-expression, @typescript-eslint/no-unnecessary-type-conversion */
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
+import { PgBoss } from 'pg-boss';
 import { describe, expect, it } from 'vitest';
 import { AgentProposalStore, createPostgresClient, proposalUuid, validateAuthorizedProposalInTransaction, type SqlClient as DatabaseSqlClient } from '@hypermail/db';
 import type { PlannedAction } from '@hypermail/contracts';
@@ -133,11 +134,11 @@ describe('worker PostgreSQL runtime integration', () => {
       expect(await lifecycle.disableExpiredPushSubscriptions(now, 10)).toBe(1);
 
       const port = await unusedPort(); let initializations = 0;
-      const rawBoss = new (await import('pg-boss')).default({ connectionString: databaseUrl });
+      const rawBoss = new PgBoss({ connectionString: databaseUrl });
       const hindsight = await hindsightReadinessFixture();
       const runtime = composeWorkerRuntime(environment(port, hindsight.url), {
         createDatabase: () => database,
-        createBoss: () => rawBoss as never,
+        createBoss: () => rawBoss,
         createHypermail: () => ({ initialize: async () => { initializations += 1; }, establishBaseline: async () => undefined, pollNewInbox: async () => [], inbox: async () => ({ messages: [] }), readMessage: async () => ({ body: '' }) }) as never,
         createTriageService: () => ({ triage: async () => ({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'test' } }) }) as never,
         createNotificationTransport: () => ({ send: async () => ({ ok: true }) }), holderId: () => 'postgres-runtime-test',

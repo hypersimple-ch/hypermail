@@ -196,11 +196,9 @@ export function AgentQuestionSheet({ question, idempotencyKey, pending = false, 
   onAnswer?: AgentUiHandlers['onAnswer'];
 }>): React.JSX.Element {
   const inputId = `agent-answer-${question.id}`;
-  const submit = (event: React.FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    const answer = new FormData(event.currentTarget).get('answer');
-    onAnswer?.({ questionId: question.id, answer: typeof answer === 'string' ? answer : '', expectedVersion: question.version, idempotencyKey });
-  };
+  const submit = (event: React.SubmitEvent<HTMLFormElement>): void => { event.preventDefault();
+  const answer = new FormData(event.currentTarget).get('answer');
+  onAnswer?.({ questionId: question.id, answer: typeof answer === 'string' ? answer : '', expectedVersion: question.version, idempotencyKey }); };
   return <Card role="dialog" aria-modal="true" aria-labelledby={`${inputId}-title`}>
     <CardHeader>
       <CardTitle id={`${inputId}-title`}>Agent needs your answer</CardTitle>

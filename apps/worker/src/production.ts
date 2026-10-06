@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import PgBoss from 'pg-boss';
+import { PgBoss } from 'pg-boss';
 import postgres, { type Sql } from 'postgres';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -29,17 +29,17 @@ import { DeliverConversationConsumer, DurableConversationRecovery } from './conv
 import { MailboxOwnerMemoryInputs } from './mailbox-memory-inputs.js';
 import { PostgresNotificationDispatchStore } from './notification-dispatch-store.js';
 
-/** pg-boss v10 invokes a worker with a batch, while WorkerRuntime deliberately consumes one job. */
-type PgBossV10 = PgBossLike & {
-  start(): Promise<void>;
+/** pg-boss invokes a worker with a batch, while WorkerRuntime deliberately consumes one job. */
+type PgBossClient = PgBossLike & {
+  start(): Promise<unknown>;
   createQueue(name: string): Promise<unknown>;
   stop(options?: { graceful?: boolean; timeout?: number }): Promise<void>;
   work(name: string, handler: (jobs: readonly BossJob[]) => Promise<void>): Promise<unknown>;
 };
 
 export class PgBossRuntime implements BossRuntime {
-  constructor(private readonly boss: PgBossV10) {}
-  start(): Promise<void> { return this.boss.start(); }
+  constructor(private readonly boss: PgBossClient) {}
+  async start(): Promise<void> { await this.boss.start(); }
   async createQueue(name: QueueName): Promise<void> { await this.boss.createQueue(name); }
   stop(options?: { graceful?: boolean; timeout?: number }): Promise<void> { return this.boss.stop(options); }
   async work(name: QueueName, handler: (job: BossJob) => Promise<void>): Promise<void> {
@@ -355,7 +355,7 @@ export class UnavailableConsumer implements JobConsumer {
 
 export interface ProductionFactories {
   createDatabase?(url: string): ManagedSqlClient;
-  createBoss?(url: string): PgBossV10;
+  createBoss?(url: string): PgBossClient;
   /** Legacy single-owner seam. Prefer createHypermailForUser for tenant isolation. */
   createHypermail?(environment: WorkerEnvironment): HypermailReadClient;
   createHypermailForUser?(environment: WorkerEnvironment, userId: string): HypermailReadClient;
@@ -376,7 +376,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   // Keep the shared schema as the source of truth even for direct composition callers.
   workerEnvSchema.parse(environment);
   const database = (factories.createDatabase ?? createPostgresClient)(environment.DATABASE_URL);
-  const rawBoss = (factories.createBoss ?? ((url: string) => new PgBoss({ connectionString: url }) as unknown as PgBossV10))(environment.DATABASE_URL);
+  const rawBoss = (factories.createBoss ?? ((url: string) => new PgBoss({ connectionString: url })))(environment.DATABASE_URL);
   const tenantSessions = environment.HYPERMAIL_TENANT_ROUTES ? createTenantHypermailSessionProvider({
     routes: parseTenantHypermailRoutes(environment.HYPERMAIL_TENANT_ROUTES), configVersion: 'environment', protocolVersion: environment.HYPERMAIL_PROTOCOL_VERSION,
   }) : undefined;

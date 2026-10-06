@@ -84,20 +84,18 @@ function QuestionCard({ question, onAnswer }: { question: NonNullable<ActivityRe
   const [error, setError] = React.useState('');
   const answerId = `activity-answer-${question.id ?? 'open'}`;
   const errorId = `${answerId}-error`;
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const answer = new FormData(event.currentTarget).get('answer');
-    if (typeof answer !== 'string' || !answer.trim() || !onAnswer) return;
-    setPending(true);
-    setError('');
-    void Promise.resolve(onAnswer(question, answer.trim())).then(() => {
-      toast.success('Answer recorded. A continuation Run will appear in Agent work history.');
-    }).catch(() => {
-      setError('Could not record the answer. Your text is still here; reconnect and try again.');
-    }).finally(() => {
-      setPending(false);
-    });
-  };
+  const submit = (event: React.SubmitEvent<HTMLFormElement>) => { event.preventDefault();
+  const answer = new FormData(event.currentTarget).get('answer');
+  if (typeof answer !== 'string' || !answer.trim() || !onAnswer) return;
+  setPending(true);
+  setError('');
+  void Promise.resolve(onAnswer(question, answer.trim())).then(() => {
+    toast.success('Answer recorded. A continuation Run will appear in Agent work history.');
+  }).catch(() => {
+    setError('Could not record the answer. Your text is still here; reconnect and try again.');
+  }).finally(() => {
+    setPending(false);
+  }); };
   return <Card aria-label="Open question"><CardHeader><CardTitle>Question needs your input</CardTitle><CardDescription>{question.prompt}</CardDescription></CardHeader><CardContent><form onSubmit={submit} className="grid gap-3"><Field><FieldLabel htmlFor={answerId}>Your answer</FieldLabel><Textarea id={answerId} name="answer" required disabled={pending} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} />{error ? <FieldError id={errorId}>{error}</FieldError> : null}</Field><Button type="submit" variant="outline" disabled={pending || !onAnswer}>{pending ? 'Recording…' : 'Answer and continue'}</Button></form></CardContent></Card>;
 }
 
