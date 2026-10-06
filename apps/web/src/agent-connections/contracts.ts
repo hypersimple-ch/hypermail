@@ -11,6 +11,7 @@ export interface AgentConnectionsRepository {
   setLifecycle(userId: string, connectionId: string, state: ConnectionState, expectedRevision: number): Promise<void>;
   setAssignment(userId: string, mailboxId: string, manager: ManagerChoice, automatic: boolean, expectedAssignmentRevision: number, expectedGrantRevision?: number): Promise<void>;
   reapproveGrant(userId: string, mailboxId: string, expectedGrantRevision: number, approvalEventId: string, approvedAt: string): Promise<void>;
+  activateAssistant(userId: string, mailboxId: string, expectedAssignmentRevision: number, expectedGrantRevision: number | null): Promise<void>;
 }
 export class ManagerInputError extends Error {}
 export class ManagerConflictError extends Error {}

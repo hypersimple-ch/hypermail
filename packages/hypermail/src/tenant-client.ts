@@ -4,9 +4,6 @@ export interface TenantHypermailRoute {
   readonly endpoint: string;
   readonly key: string;
   readonly protocolVersion?: string;
-  /** Optional tenant-private exactly-once send bridge. It is never inherited from another tenant. */
-  readonly approvedSendEndpoint?: string;
-  readonly approvedSendToken?: string;
 }
 
 export type TenantHypermailRouteMap = ReadonlyMap<string, TenantHypermailRoute>;
@@ -40,19 +37,13 @@ export function parseTenantHypermailRoutes(raw: string): TenantHypermailRouteMap
     if (routes.has(userId) || typeof untrustedRoute !== "object" || untrustedRoute === null || Array.isArray(untrustedRoute)) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
     const candidate = untrustedRoute as Record<string, unknown>;
     const fields = Object.keys(candidate);
-    const allowed = new Set(["endpoint", "key", "protocolVersion", "approvedSendEndpoint", "approvedSendToken"]);
-    if (fields.some((field) => !allowed.has(field)) || !own(candidate, "endpoint") || !own(candidate, "key")) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
+    const allowed:Readonly<Record<string,true>>={endpoint:true,key:true,protocolVersion:true};
+    if (fields.some((field) => allowed[field] !== true) || !own(candidate, "endpoint") || !own(candidate, "key")) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
     const endpoint = routeEndpoint(candidate["endpoint"]);
     if (endpoints.has(endpoint)) throw new Error("HYPERMAIL_TENANT_ENDPOINT_REUSED");
     if (typeof candidate["key"] !== "string" || candidate["key"].trim().length === 0) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
     if (candidate["protocolVersion"] !== undefined && (typeof candidate["protocolVersion"] !== "string" || candidate["protocolVersion"].trim().length === 0)) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
-    const hasApprovedEndpoint = candidate["approvedSendEndpoint"] !== undefined;
-    const hasApprovedToken = candidate["approvedSendToken"] !== undefined;
-    if (hasApprovedEndpoint !== hasApprovedToken) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
-    const approvedSendEndpoint = hasApprovedEndpoint ? routeEndpoint(candidate["approvedSendEndpoint"]) : undefined;
-    if (approvedSendEndpoint && !approvedSendEndpoint.startsWith("https://")) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
-    if (hasApprovedToken && (typeof candidate["approvedSendToken"] !== "string" || candidate["approvedSendToken"].trim().length < 16)) throw new Error("HYPERMAIL_TENANT_ROUTES_INVALID");
-    const route: TenantHypermailRoute = { endpoint, key: candidate["key"], ...(candidate["protocolVersion"] === undefined ? {} : { protocolVersion: candidate["protocolVersion"] }), ...(approvedSendEndpoint ? { approvedSendEndpoint, approvedSendToken: candidate["approvedSendToken"] as string } : {}) };
+    const route: TenantHypermailRoute = { endpoint, key: candidate["key"], ...(candidate["protocolVersion"] === undefined ? {} : { protocolVersion: candidate["protocolVersion"] }) };
     endpoints.add(endpoint); routes.set(userId, Object.freeze(route));
   }
   return routes;

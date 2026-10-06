@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { workerEnvSchema, type AgentEvaluateJob, type WorkerEnv } from '@hypermail/contracts';
+import { queueJobSchema, workerEnvSchema, type AgentEvaluateJob, type ConversationRespondJob, type WorkerEnv } from '@hypermail/contracts';
 import { liveness, readiness, type DependencyState, type WorkerDependency } from './health.js';
 import type { Clock } from './ingestion.js';
 
@@ -17,7 +17,7 @@ const workerEnvironmentNames = [
   'LIFECYCLE_INTERVAL_SECONDS', 'SHUTDOWN_TIMEOUT_SECONDS', 'BODY_RETENTION_DAYS',
   'OAUTH_RETENTION_HOURS', 'SESSION_RETENTION_DAYS', 'TASK_PAYLOAD_RETENTION_DAYS', 'OPERATIONAL_TEXT_RETENTION_DAYS',
   'LIFECYCLE_BATCH_SIZE', 'USER_TASK_RATE_PER_MINUTE', 'USER_TASK_CONCURRENCY', 'USER_PENDING_TASK_QUOTA',
-  'INCORRECT_MUTATION_THRESHOLD',
+  'ACTION_CONFIDENCE_THRESHOLD', 'INCORRECT_MUTATION_THRESHOLD',
 ] as const;
 
 /** Parses only declared worker settings before any network connection is attempted. */
@@ -31,8 +31,8 @@ export function parseWorkerEnvironment(values: Readonly<Record<string, string | 
   return parsed.data;
 }
 
-export type QueueName = 'agent.evaluate' | 'notification.deliver' | 'policy.execute';
-export type QueuePayload = Readonly<AgentEvaluateJob> | Readonly<{ notificationId: string }> | Readonly<{ actionId: string }>;
+export type QueueName = 'agent.evaluate' | 'notification.deliver' | 'policy.execute' | 'conversation.respond';
+export type QueuePayload = Readonly<AgentEvaluateJob> | Readonly<{ notificationId: string }> | Readonly<{ actionId: string }> | Readonly<ConversationRespondJob>;
 export interface BossJob { readonly data: unknown; }
 export interface BossRuntime { start(): Promise<void>; createQueue(name: QueueName): Promise<void>; stop(options?: { graceful?: boolean; timeout?: number }): Promise<void>; work(name: QueueName, handler: (job: BossJob) => Promise<void>): Promise<void>; }
 export interface Scheduler { start(): Promise<void>; stop(): void; }
@@ -67,31 +67,22 @@ export interface RuntimeProbe { (): Promise<boolean>; }
 export interface WorkerRuntimeDependencies {
   readonly boss: BossRuntime; readonly ingestion: Scheduler; readonly lifecycle: Scheduler; readonly mailboxMemoryEvents?: Scheduler; readonly dispatchRecovery: Recovery; readonly notificationRecovery: Recovery; readonly policyRecovery: Recovery; readonly agentTaskRecovery?: Recovery;
   readonly agentConsumer: JobConsumer; readonly notificationConsumer: JobConsumer; readonly policyConsumer: JobConsumer;
+  readonly conversationConsumer: JobConsumer; readonly conversationRecovery: Recovery;
   readonly closeDatabase: () => Promise<void>; readonly probes: Readonly<Partial<Record<WorkerDependency, RuntimeProbe>>>;
   readonly clock?: Clock; readonly holderId?: string;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
-const id = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 /** Rejects malformed, extra-field, and cross-queue payloads before domain code sees them. */
 export function parseQueuePayload(name: QueueName, raw: unknown): QueuePayload {
-  if (!isRecord(raw)) throw new Error('QUEUE_PAYLOAD_INVALID');
-  if (name === 'agent.evaluate') {
-    const keys = Object.keys(raw).sort();
-    const legacy = keys.length === 1 && keys[0] === 'jobId';
-    const tenantQualified = keys.length === 2 && keys[0] === 'jobId' && keys[1] === 'userId';
-    if ((!legacy && !tenantQualified) || !id(raw['jobId']) || (tenantQualified && !id(raw['userId']))) throw new Error('QUEUE_PAYLOAD_INVALID');
-    return tenantQualified ? { jobId: raw['jobId'], userId: raw['userId'] as string } : { jobId: raw['jobId'] };
-  }
-  const field = name === 'notification.deliver' ? 'notificationId' : 'actionId';
-  if (Object.keys(raw).length !== 1 || !id(raw[field])) throw new Error('QUEUE_PAYLOAD_INVALID');
-  return { [field]: raw[field] } as QueuePayload;
+  const parsed = queueJobSchema.safeParse({ name, payload: raw });
+  if (!parsed.success) throw new Error('QUEUE_PAYLOAD_INVALID');
+  return parsed.data.payload;
 }
 
 const dependencies = (): DependencyState => ({ database: false, queue: false, hypermail: false, hindsight: false, scheduler: false, model: false, notifications: false, policy: false });
 export class WorkerRuntime {
   private readonly status: Record<WorkerDependency, boolean> = dependencies(); private server: Server | undefined; private stopping = false;
-  private notificationTimer: ReturnType<typeof setInterval> | undefined; private hindsightProbeTimer: ReturnType<typeof setInterval> | undefined;
+  private recoveryTimer: ReturnType<typeof setInterval> | undefined; private hindsightProbeTimer: ReturnType<typeof setInterval> | undefined;
   constructor(private readonly environment: WorkerEnvironment, private readonly deps: WorkerRuntimeDependencies) {}
   get dependencyState(): DependencyState { return { ...this.status }; }
   async start(): Promise<void> {
@@ -103,23 +94,28 @@ export class WorkerRuntime {
       response.writeHead(body ? (request.url === '/ready' && body.status === 'not_ready' ? 503 : 200) : 404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(body ? JSON.stringify(body) : '');
     });
     this.server = server;
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(this.environment.HEALTH_PORT, '127.0.0.1', resolve); });
+    const { promise: listening, resolve: resolveListening, reject: rejectListening } = Promise.withResolvers<undefined>();
+    server.once('error', rejectListening);
+    server.listen(this.environment.HEALTH_PORT, '127.0.0.1', () => { resolveListening(undefined); });
+    await listening;
     try {
       await this.deps.boss.start();
-      for (const name of ['agent.evaluate', 'notification.deliver', 'policy.execute'] as const) await this.deps.boss.createQueue(name);
+      for (const name of ['agent.evaluate', 'notification.deliver', 'policy.execute', 'conversation.respond'] as const) await this.deps.boss.createQueue(name);
       await Promise.all([
         this.deps.boss.work('agent.evaluate', async ({ data }) => { await this.deps.agentConsumer.consume(parseQueuePayload('agent.evaluate', data)); }),
         this.deps.boss.work('notification.deliver', async ({ data }) => { await this.deps.notificationConsumer.consume(parseQueuePayload('notification.deliver', data)); }),
         this.deps.boss.work('policy.execute', async ({ data }) => { await this.deps.policyConsumer.consume(parseQueuePayload('policy.execute', data)); }),
+        this.deps.boss.work('conversation.respond', async ({ data }) => { await this.deps.conversationConsumer.consume(parseQueuePayload('conversation.respond', data)); }),
       ]);
       this.status.queue = true;
     } catch { this.status.queue = false; }
     const recover = (): Promise<unknown[]> => Promise.allSettled([
       this.deps.dispatchRecovery.recover(), this.deps.notificationRecovery.recover(), this.deps.policyRecovery.recover(),
       this.deps.agentTaskRecovery?.recover() ?? Promise.resolve(),
+      this.deps.conversationRecovery.recover(),
     ]);
     await recover();
-    this.notificationTimer = setInterval(() => { void recover(); }, this.environment.LIFECYCLE_INTERVAL_SECONDS * 1000);
+    this.recoveryTimer = setInterval(() => { void recover(); }, 5_000);
     void this.deps.ingestion.start().catch(() => { this.status.scheduler = false; });
     void this.deps.lifecycle.start().catch(() => { this.status.scheduler = false; });
     void this.deps.mailboxMemoryEvents?.start().catch(() => { this.status.scheduler = false; });
@@ -129,7 +125,7 @@ export class WorkerRuntime {
   }
   private async probe(dependency: WorkerDependency): Promise<boolean> { try { return await (this.deps.probes[dependency]?.() ?? Promise.resolve(dependency === 'scheduler' || dependency === 'queue')); } catch { return false; } }
   async shutdown(): Promise<void> {
-    if (this.stopping) return; this.stopping = true; if (this.notificationTimer) clearInterval(this.notificationTimer);
+    if (this.stopping) return; this.stopping = true; if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     if (this.hindsightProbeTimer) clearInterval(this.hindsightProbeTimer);
     this.deps.ingestion.stop(); this.deps.lifecycle.stop(); this.deps.mailboxMemoryEvents?.stop(); this.status.scheduler = false;
     await Promise.allSettled([this.closeServer(), this.deps.boss.stop({ graceful: true, timeout: this.environment.SHUTDOWN_TIMEOUT_SECONDS * 1000 })]);

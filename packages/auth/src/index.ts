@@ -1,8 +1,10 @@
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export { createPostgresAuthStore } from './postgres-store.js';
 export { createBetterAuth, createBetterAuthHandler, createBetterAuthOptions, type BetterAuthFactoryOptions } from './better-auth.js';
 
+export * from './recovery-delivery.js';
 const scrypt = (password: string, salt: Buffer, keyLength: number): Promise<Buffer> => new Promise((resolve, reject) => {
   scryptCallback(password, salt, keyLength, SCRYPT_PARAMS, (error, derivedKey) => {
     if (error) reject(error); else resolve(derivedKey);
@@ -26,13 +28,13 @@ export interface AuthStore {
   createFirstUser(email: string, passwordHash: string): Promise<User | null>;
   findUserByEmail(email: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
-  createSession(input: Omit<Session, 'id' | 'createdAt' | 'revokedAt'>): Promise<Session>;
+  createSession(input: Omit<Session, 'id' | 'createdAt' | 'revokedAt'> & Readonly<{ expectedPasswordHash: string }>): Promise<Session | null>;
   findSessionByTokenHash(tokenHash: string): Promise<Session | null>;
   revokeSession(id: string): Promise<void>;
-  revokeSessionsForUser(userId: string): Promise<void>;
-  createRecoveryToken(input: Omit<RecoveryToken, 'id' | 'consumedAt'>): Promise<RecoveryToken>;
-  consumeRecoveryToken(tokenHash: string, now: Date): Promise<RecoveryToken | null>;
-  updatePassword(userId: string, passwordHash: string): Promise<void>;
+  issueRecovery(input: Readonly<{ userId: string; tokenHash: string; expiresAt: Date; resetUrl: string }>): Promise<void>;
+  resetRecovery(tokenHash: string, passwordHash: string, now: Date): Promise<string | null>;
+  /** Owner-locked credential replacement and session revocation; rejects stale credentials or sessions. */
+  rotatePassword(input: Readonly<{ userId: string; sessionId: string; expectedPasswordHash: string; passwordHash: string }>): Promise<boolean>;
   /** Atomically increments a bucket and returns whether the request may proceed. */
   takeRateLimit(input: Readonly<{ bucket: string; subjectHash: string; limit: number; windowMs: number; now: Date }>): Promise<boolean>;
   audit(event: AuditEvent): Promise<void>;
@@ -55,7 +57,7 @@ export type AuthenticatedSession = Readonly<{ session: Session; user: Readonly<P
 
 export type AuthServiceOptions = Readonly<{
   store: AuthStore;
-  mail: RecoveryMailAdapter;
+  recoveryResponseFloorMs?: number;
   appOrigin: string;
   now?: () => Date;
   ids?: () => string;
@@ -145,61 +147,66 @@ export class AuthService {
       return { ok: false, reason: 'invalid_credentials' };
     }
     const user = await this.options.store.findUserById(session.userId);
-    if (!user || !await verifyPassword(currentPassword, user.passwordHash)) {
+    const expectedPasswordHash = user?.passwordHash;
+    if (!user || !expectedPasswordHash || !await verifyPassword(currentPassword, expectedPasswordHash)) {
       await this.audit('auth.password_rotation_failed', user?.id ?? null, correlationId);
       return { ok: false, reason: 'invalid_credentials' };
     }
-    if (!validPassword(newPassword) || await verifyPassword(newPassword, user.passwordHash)) {
+    if (!validPassword(newPassword) || await verifyPassword(newPassword, expectedPasswordHash)) {
       await this.audit('auth.password_rotation_failed', user.id, correlationId);
       return { ok: false, reason: 'invalid_credentials' };
     }
-    await this.options.store.updatePassword(user.id, await hashPassword(newPassword));
-    await this.options.store.revokeSessionsForUser(user.id);
+    const passwordHash = await hashPassword(newPassword);
+    if (!await this.options.store.rotatePassword({ userId: user.id, sessionId: session.id, expectedPasswordHash, passwordHash })) {
+      await this.audit('auth.password_rotation_failed', user.id, correlationId);
+      return { ok: false, reason: 'invalid_credentials' };
+    }
     await this.audit('auth.password_rotation_completed', user.id, correlationId);
-    return this.newSession(user, correlationId);
+    return this.newSession({ ...user, passwordHash }, correlationId);
   }
 
   /** Always returns successfully so account existence is not disclosed. */
   public async requestRecovery(email: string, subject: string, correlationId: string): Promise<void> {
+    const started = Date.now();
     const now = this.now();
-    if (!await this.options.store.takeRateLimit({ bucket: 'recovery', subjectHash: digest(subject), limit: 3, windowMs: 60 * 60_000, now })) {
-      await this.audit('auth.recovery_throttled', null, correlationId);
-      return;
-    }
-    const user = await this.options.store.findUserByEmail(normalizeEmail(email));
-    if (!user) {
+    try {
+      if (!await this.options.store.takeRateLimit({ bucket: 'recovery', subjectHash: digest(subject), limit: 3, windowMs: 60 * 60_000, now })) return;
+      const user = await this.options.store.findUserByEmail(normalizeEmail(email));
+      if (user) {
+        const token = this.tokens();
+        const url = new URL('/auth/recovery/confirm', this.options.appOrigin);
+        url.hash = new URLSearchParams({ token }).toString();
+        await this.options.store.issueRecovery({ userId: user.id, tokenHash: digest(token), expiresAt: new Date(now.getTime() + RECOVERY_LIFETIME_MS), resetUrl: url.toString() });
+      }
       await this.audit('auth.recovery_requested', null, correlationId);
-      return;
+    } catch {
+      // Public response is neutral even when persistence is unavailable. Never log the token/link.
+    } finally {
+      const remaining = (this.options.recoveryResponseFloorMs ?? 250) - (Date.now() - started);
+      if (remaining > 0) await delay(remaining);
     }
-    const token = this.tokens();
-    await this.options.store.createRecoveryToken({ userId: user.id, tokenHash: digest(token), expiresAt: new Date(now.getTime() + RECOVERY_LIFETIME_MS) });
-    await this.options.mail.deliver({
-      to: user.email,
-      resetUrl: new URL(`/auth/recovery/confirm?token=${encodeURIComponent(token)}`, this.options.appOrigin).toString(),
-      tags: ['recovery', 'exclude-autonomous-ingestion'],
-      autonomousIngestionExcluded: true,
-    });
-    await this.audit('auth.recovery_requested', user.id, correlationId);
   }
 
-  public async resetPassword(token: string, password: string, correlationId: string): Promise<AuthResult> {
-    if (!validPassword(password)) return { ok: false, reason: 'invalid_recovery' };
-    const recovery = await this.options.store.consumeRecoveryToken(digest(token), this.now());
-    if (!recovery) {
-      await this.audit('auth.recovery_failed', null, correlationId);
-      return { ok: false, reason: 'invalid_recovery' };
-    }
-    await this.options.store.updatePassword(recovery.userId, await hashPassword(password));
-    await this.options.store.revokeSessionsForUser(recovery.userId);
-    await this.audit('auth.recovery_completed', recovery.userId, correlationId);
-    const user = await this.options.store.findUserById(recovery.userId);
-    return user ? this.newSession(user, correlationId) : { ok: false, reason: 'invalid_recovery' };
+  public async reauthenticate(token: string, password: string, subject: string, correlationId: string): Promise<AuthResult> {
+    if (!await this.options.store.takeRateLimit({ bucket: 'reauthenticate', subjectHash: digest(subject), limit: 5, windowMs: 15 * 60_000, now: this.now() })) return { ok: false, reason: 'throttled' };
+    const session = await this.getSession(token);
+    const user = session ? await this.options.store.findUserById(session.userId) : null;
+    if (!session || !user || !await verifyPassword(password, user.passwordHash)) return { ok: false, reason: 'invalid_credentials' };
+    await this.options.store.revokeSession(session.id);
+    return this.newSession(user, correlationId);
+  }
+  public async resetPassword(token: string, password: string, correlationId: string): Promise<Readonly<{ ok: true } | { ok: false; reason: 'invalid_recovery' }>> {
+    if (!validPassword(password) || !token) return { ok: false, reason: 'invalid_recovery' };
+    const userId = await this.options.store.resetRecovery(digest(token), await hashPassword(password), this.now());
+    await this.audit(userId ? 'auth.recovery_completed' : 'auth.recovery_failed', userId, correlationId);
+    return userId ? { ok: true } : { ok: false, reason: 'invalid_recovery' };
   }
 
   private async newSession(user: User, correlationId: string): Promise<AuthResult> {
     const token = this.tokens();
     const now = this.now();
-    const session = await this.options.store.createSession({ userId: user.id, tokenHash: digest(token), expiresAt: new Date(now.getTime() + SESSION_LIFETIME_MS) });
+    const session = await this.options.store.createSession({ userId: user.id, tokenHash: digest(token), expiresAt: new Date(now.getTime() + SESSION_LIFETIME_MS), expectedPasswordHash: user.passwordHash });
+    if (!session) return { ok: false, reason: 'invalid_credentials' };
     await this.audit('auth.session_created', user.id, correlationId);
     return { ok: true, session, token };
   }

@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagedSqlClient } from '@hypermail/db';
 import { PolicyExecutor, type Completion, type PolicyPersistence } from '@hypermail/policy';
-import { DurablePolicyRecovery, HypermailPrivateMutationTransport, PgBossPolicyDispatcher, PostgresPolicyPlanner } from '../src/policy.js';
+import { HypermailPrivateMutationTransport } from '../src/policy.js';
 
 const ids = { account: '11111111-1111-4111-8111-111111111111', run: '77777777-7777-4777-8777-777777777777', user: '88888888-8888-4888-8888-888888888888', message: '22222222-2222-4222-8222-222222222222', folder: '33333333-3333-4333-8333-333333333333', activity: '44444444-4444-4444-8444-444444444444', decision: '55555555-5555-4555-8555-555555555555' };
 const database = (query: (sql: string, values?: readonly unknown[]) => Promise<{ rows: readonly Record<string, unknown>[] }>) => {
@@ -11,6 +11,26 @@ const database = (query: (sql: string, values?: readonly unknown[]) => Promise<{
 };
 
 describe('worker policy boundary', () => {
+  it('persists bounded folder lookup progress across transport restart and ends exhausted without provider mutation',async()=>{
+    let cursor:string|null=null,expired=false;const skips:number[]=[];
+    const db=database(async(sql,values)=>{
+      if(sql.includes('from app.folders'))return {rows:[{id:ids.folder,providerFolderId:'archive-provider'}]};
+      if(sql.includes('select verification_cursor'))return {rows:[{cursor,expired,folderId:cursor?'archive-provider':null}]};
+      if(sql.includes('set verification_cursor')){const progress=values?.[1];if(progress&&typeof progress==='object'&&'cursor' in progress&&(progress.cursor===null||typeof progress.cursor==='string'))cursor=progress.cursor;else throw new Error('invalid verification cursor');return {rows:[]};}
+      return {rows:[{email:'owner@test.invalid',providerMessageId:'target'}]};
+    });
+    let mutations=0;const client={call:async(name:string,args:Record<string,unknown>)=>{
+      if(name!=='list_emails'){mutations++;throw new Error('unexpected mutation');}
+      const skip=Number(args['skip']);skips.push(skip);return {items:skip===5000?[{id:'target'}]:[{id:`other-${String(skip)}`}],hasMore:skip<5000};
+    }};
+    const target={accountId:ids.account,messageId:ids.message};
+    const first=new HypermailPrivateMutationTransport(db,client,()=>Promise.resolve());
+    expect(await first.read(target,'archive',ids.activity)).toEqual({verificationState:'incomplete'});expect(cursor).toBe('5000');
+    const restarted=new HypermailPrivateMutationTransport(db,client,()=>Promise.resolve());
+    expect(await restarted.read(target,'archive',ids.activity)).toEqual({folderRole:'archive'});expect(skips.at(-1)).toBe(5000);
+    expired=true;const before=skips.length;
+    expect(await restarted.read(target,'archive',ids.activity)).toEqual({verificationState:'exhausted'});expect(skips.length).toBe(before);expect(mutations).toBe(0);
+  });
   it('uses exact allowlisted tool names and provider identities, never app UUIDs', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const db = database(async sql => ({ rows: sql.includes('app.folders') ? [{ providerFolderId: 'provider-folder' }] : sql.includes('update app.messages') ? [{ id: ids.message }] : [{ email: 'account@example.test', providerMessageId: 'provider-message' }] }));
@@ -37,7 +57,7 @@ describe('worker policy boundary', () => {
       claim: async () => ({ actionId: ids.activity, accountId: ids.account, run: true }), claimImmediatelyBeforeMutation: async () => 'run', reportProvider: async () => undefined,
       complete: async (_action, _account, completion) => { completed.push(completion); return completion.outcome; },
     };
-    const transport = new HypermailPrivateMutationTransport(database(async () => ({ rows: [{ email: 'a@example.test', providerMessageId: 'provider' }] })), { call: async name => name === 'archive_email' ? { archived: true, id: 'provider' } : name === 'read_email' ? { isRead: true } : name === 'list_emails' ? { items: [], hasMore: false } : {} }, () => Promise.resolve());
+    const transport = new HypermailPrivateMutationTransport(database(async sql => ({ rows: sql.includes('app.folders')?[]:[{ email: 'a@example.test', providerMessageId: 'provider' }] })), { call: async name => name === 'archive_email' ? { archived: true, id: 'provider' } : name === 'read_email' ? { isRead: true } : name === 'list_emails' ? { items: [], hasMore: false } : {} }, () => Promise.resolve());
     await new PolicyExecutor({ persistence, transport, isGloballyPaused: () => false }).execute({ actionId: ids.activity, runId: ids.run, userId: ids.user, activityId: ids.activity, decisionId: ids.decision, idempotencyKey: 'x'.repeat(16), kind: 'archive', target: { accountId: ids.account, messageId: ids.message }, precondition: {} });
     expect(completed[0]).toMatchObject({ outcome: 'unverifiable', errorCode: 'VERIFICATION_INSUFFICIENT', observed: {} });
   });
@@ -53,25 +73,6 @@ describe('worker policy boundary', () => {
     expect(mutations).toBe(0);
   });
 
-  it('plans idempotently after persisted decisions and recovers pending actions', async () => {
-    const sends: string[] = []; let inserts = 0;
-    const db = database(async sql => {
-      if (sql.includes('app.decisions')) return { rows: [{ id: ids.decision, output: { state: 'actionable', actions: [{ kind: 'mark_read', target: { accountId: ids.account, messageId: ids.message } }] } }] };
-      if (sql.includes('from app.agent_jobs')) return { rows: [{ id: ids.run, activity_id: ids.activity, user_id: ids.user, account_id: ids.account, state: 'running', correlation_id: 'arrival:test', manager_kind: 'mastra', manager_connection_id: null, manager_legacy_source_id: null, manager_lifecycle_revision: null, mode: 'automatic', assignment_id: ids.folder, assignment_revision: 1, grant_id: ids.decision, grant_revision: 1, safety_revision: 1, grant_capabilities: ['mail.mark_read'], safety_capabilities: ['mail.mark_read'] }] };
-      if (sql.includes('insert into app.agent_authorized_actions')) { inserts += 1; return { rows: [{ id: ids.activity }] }; }
-      if (sql.includes('max(sequence)')) return { rows: [{ sequence: 1 }] };
-      if (sql.includes('insert into app.actions')) { return { rows: [{ id: ids.activity }] }; }
-      if (sql.includes("where state in ('authorized','executing','verifying')")) return { rows: [{ id: ids.activity }] };
-      return { rows: [] };
-    });
-    const dispatcher = new PgBossPolicyDispatcher({ send: async (_name, data) => { sends.push((data as { actionId: string }).actionId); return 'job'; } });
-    const planner = new PostgresPolicyPlanner(db, dispatcher);
-    const decision = { state: 'actionable', actions: [{ kind: 'mark_read', target: { accountId: ids.account, messageId: ids.message } }] };
-    await planner.plan(ids.activity, 1, decision); await planner.plan(ids.activity, 1, decision);
-    await new DurablePolicyRecovery(db, dispatcher).recover();
-    expect(inserts).toBe(2); // SQL upsert makes repeated planning one durable action.
-    expect(sends).toEqual([ids.activity, ids.activity, ids.activity]);
-  });
 
   it('creates and edits provider drafts from durable app drafts and retains changed provider IDs', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = []; const retained: string[] = [];

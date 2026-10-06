@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { PrivateApprovedSendError, type MailSendProvider } from '@hypermail/send';
+import type { MailSendProvider } from '@hypermail/send';
+import { recipientProblem } from '@hypermail/contracts';
+import type { DraftFields } from '@hypermail/contracts';
 export interface TenantMailSendProvider { providerForUser(userId: string): MailSendProvider; }
+import type { AgentDraftWriter, ApprovalClaim, DraftRecord, DraftRepository, DraftScope, DraftSource, DraftSourceReader } from './contracts.js';
 import {
-  type AgentDraftWriter, type ApprovalClaim, type DraftFields, type DraftRecord, type DraftRepository, type DraftScope, type DraftSource, type DraftSourceReader,
   DraftBlockedError, DraftConflictError, DraftInputError, DraftNotFoundError, FreshAuthRequiredError, SendRejectedError,
-  recipientProblem,
 } from './contracts.js';
 import { sanitizeDraftHtml } from './html.js';
 
@@ -44,11 +45,12 @@ export class DraftService {
   }
   async detail(scope: DraftScope, draftId: string): Promise<DraftRecord> { this.scope(scope); const draft = await this.repository.get(scope, draftId); if (!draft) throw new DraftNotFoundError(); return draft; }
   async history(scope: DraftScope, draftId: string) { this.scope(scope); const history = await this.repository.history(scope, draftId); if (!history) throw new DraftNotFoundError(); return history; }
-  async beginApproval(scope: DraftScope, draftId: string, expectedVersion: number, confirmation: string): Promise<{ approvalId: string; expiresAt: string }> {
+  async beginApproval(scope: DraftScope, draftId: string, expectedVersion: number, confirmation: string): Promise<{ approvalId: string; expiresAt: string; snapshot:DraftRecord }> {
     this.scope(scope); this.version(expectedVersion); this.fresh(scope);
+    if('providerForUser' in this.provider)this.provider.providerForUser(scope.subjectId);
     const id = this.ids(); const expiresAt = new Date(this.now().getTime() + APPROVAL_MS).toISOString();
     const result = await this.repository.createApproval(scope, draftId, expectedVersion, hashSendConfirmation(id, confirmation), expiresAt, `send:${id}:${draftId}:${String(expectedVersion)}`);
-    if (result.kind === 'created') return { approvalId: result.approval.id, expiresAt };
+    if (result.kind === 'created') {const snapshot=await this.detail(scope,draftId);if(snapshot.version!==expectedVersion)throw new DraftConflictError();return { approvalId: result.approval.id, expiresAt, snapshot };}
     if (result.kind === 'conflict') throw new DraftConflictError();
     if (result.kind === 'blocked') throw new DraftBlockedError(result.reason);
     throw new DraftNotFoundError();
@@ -56,21 +58,25 @@ export class DraftService {
   /** Claims in a short DB transaction, then performs provider I/O after the transaction commits. */
   async confirmSend(scope: DraftScope, approvalId: string, confirmation: string): Promise<DraftRecord> {
     this.scope(scope); this.fresh(scope);
+    if('providerForUser' in this.provider)this.provider.providerForUser(scope.subjectId);
     const claim = await this.repository.claimApproval(scope, approvalId, hashSendConfirmation(approvalId, confirmation), isoNow(this.now));
     if (claim.kind !== 'claimed') throw claim.kind === 'not_found' ? new DraftNotFoundError() : new SendRejectedError(claim.reason);
     return this.deliver(scope, claim.claim);
   }
+  async reconcile(scope:DraftScope,draftId:string,approvalId:string,expectedVersion:number):Promise<DraftRecord>{this.scope(scope);this.version(expectedVersion);const claim=await this.repository.reconcileClaim(scope,draftId,approvalId,expectedVersion);return this.readback(scope,claim);}
+  manualReview(scope:DraftScope,draftId:string,approvalId:string,expectedVersion:number,outcome:'observed_sent'|'not_observed',note:string):Promise<DraftRecord>{this.scope(scope);this.version(expectedVersion);return this.repository.manualReview(scope,draftId,approvalId,expectedVersion,outcome,note);}
   private async deliver(scope: DraftScope, claim: ApprovalClaim): Promise<DraftRecord> {
     const provider = 'providerForUser' in this.provider ? this.provider.providerForUser(scope.subjectId) : this.provider;
-    let report: Awaited<ReturnType<MailSendProvider['send']>>;
-    try { report = await provider.send({ approvalId: claim.approval.id, accountId: claim.draft.accountId, draftId: claim.draft.id, draftVersion: claim.draft.version, idempotencyKey: claim.approval.idempotencyKey, recipients: claim.draft.recipients, subject: claim.draft.subject, body: claim.draft.body, bodyFormat: claim.draft.bodyFormat }); }
-    catch (error) { if (error instanceof PrivateApprovedSendError && error.definiteRejection) return this.repository.completeSend(scope, claim, 'failed'); return this.detail(scope, claim.draft.id); }
-    if (!provider.status) return this.detail(scope, claim.draft.id);
-    let status: Awaited<ReturnType<NonNullable<MailSendProvider['status']>>>; try { status = await provider.status(claim.approval.idempotencyKey); } catch { return this.detail(scope, claim.draft.id); }
-    if (status.state === 'verified' && status.providerMessageId === report.providerMessageId) return this.repository.completeSend(scope, claim, 'sent', status.providerMessageId);
-    if (status.state === 'verified') return this.detail(scope, claim.draft.id);
-    if (status.state === 'rejected') return this.repository.completeSend(scope, claim, 'failed');
-    return this.detail(scope, claim.draft.id);
+    const result=await provider.submit({ approvalId: claim.approval.id, accountId: claim.draft.accountId, draftId: claim.draft.id, draftVersion: claim.draft.version, idempotencyKey: claim.approval.idempotencyKey, recipients: claim.draft.recipients, subject: claim.draft.subject, body: claim.draft.body, bodyFormat: claim.draft.bodyFormat,sourceMessageId:claim.draft.sourceMessageId });
+    if(result.state==='rejected')return this.repository.completeSend(scope,claim,'failed');
+    return this.readback(scope,claim);
+  }
+  private async readback(scope:DraftScope,claim:ApprovalClaim):Promise<DraftRecord>{
+    const provider='providerForUser' in this.provider?this.provider.providerForUser(scope.subjectId):this.provider;
+    const status=await provider.status(claim.approval.id);
+    if(status.state==='verified')return this.repository.completeSend(scope,claim,'sent',status.providerMessageId);
+    if(status.state==='rejected')return this.repository.completeSend(scope,claim,'failed');
+    return this.detail(scope,claim.draft.id);
   }
   private htmlReply(body: string, source: Pick<DraftSource, 'sentAt' | 'from' | 'body'>): string {
     const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');

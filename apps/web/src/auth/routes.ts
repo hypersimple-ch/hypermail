@@ -16,7 +16,8 @@ export interface AuthRouteService {
   signOut(token: string, correlationId: string): Promise<void>;
   rotatePassword(token: string, currentPassword: string, newPassword: string, subject: string, correlationId: string): Promise<LoginResult>;
   requestRecovery(email: string, subject: string, correlationId: string): Promise<void>;
-  resetPassword(token: string, password: string, correlationId: string): Promise<LoginResult>;
+  resetPassword(token: string, password: string, correlationId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+  reauthenticate(token: string, password: string, subject: string, correlationId: string): Promise<LoginResult>;
 }
 export interface AuthCookieContract { session(token: string): string; expired(): string; read(cookie: string | null): string | null; }
 
@@ -36,7 +37,8 @@ export function createAuthRoutes(service: AuthRouteService, cookies: AuthCookieC
     },
     async login(request: RouteRequest): Promise<RouteResponse> {
       const denied = protectedMutation(request); if (denied) return denied;
-      const result = await service.signIn(text(request.body, 'email'), text(request.body, 'password'), request.remoteAddress, request.correlationId);
+      const email = text(request.body, 'email');
+      const result = await service.signIn(email, text(request.body, 'password'), JSON.stringify([request.remoteAddress, email.trim().toLowerCase()]), request.correlationId);
       return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.session(result.token) } : { status: result.reason === 'throttled' ? 429 : 401, body: { error: 'invalid_credentials' } };
     },
     async logout(request: RouteRequest): Promise<RouteResponse> {
@@ -51,15 +53,23 @@ export function createAuthRoutes(service: AuthRouteService, cookies: AuthCookieC
       const result = await service.rotatePassword(token, text(request.body, 'currentPassword'), text(request.body, 'newPassword'), request.remoteAddress, request.correlationId);
       return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.session(result.token) } : { status: result.reason === 'throttled' ? 429 : 401, body: { error: 'invalid_credentials' } };
     },
+    async reauthenticate(request: RouteRequest): Promise<RouteResponse> {
+      const denied = protectedMutation(request); if (denied) return denied;
+      const token = cookies.read(request.cookie);
+      if (!token) return { status: 401, body: { error: 'invalid_credentials' } };
+      const result = await service.reauthenticate(token, text(request.body, 'password'), request.remoteAddress, request.correlationId);
+      return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.session(result.token) } : { status: result.reason === 'throttled' ? 429 : 401, body: { error: 'invalid_credentials' } };
+    },
     async recovery(request: RouteRequest): Promise<RouteResponse> {
       const denied = protectedMutation(request); if (denied) return denied;
-      await service.requestRecovery(text(request.body, 'email'), request.remoteAddress, request.correlationId);
+      const email = text(request.body, 'email');
+      await service.requestRecovery(email, JSON.stringify([request.remoteAddress, email.trim().toLowerCase()]), request.correlationId);
       return { status: 202, body: { status: 'if_an_account_exists_a_message_was_sent' } };
     },
     async reset(request: RouteRequest): Promise<RouteResponse> {
       const denied = protectedMutation(request); if (denied) return denied;
       const result = await service.resetPassword(text(request.body, 'token'), text(request.body, 'password'), request.correlationId);
-      return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.session(result.token) } : { status: 400, body: { error: 'invalid_or_expired_recovery' } };
+      return result.ok ? { status: 200, body: { status: 'ok' }, setCookie: cookies.expired() } : { status: 400, body: { error: 'invalid_or_expired_recovery' } };
     },
   };
 }

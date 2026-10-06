@@ -1,5 +1,6 @@
 import type { SqlClient } from '../activity/postgres-repository.js';
 import type { DraftRecord, DraftScope } from './contracts.js';
+import { submissionView } from '@hypermail/send';
 
 const text = (value: unknown): string => typeof value === 'string' ? value : '';
 const stamp = (value: unknown): string => value instanceof Date ? value.toISOString() : text(value);
@@ -18,7 +19,7 @@ const recipients = (value: unknown): DraftRecord['recipients'] => {
 export class PostgresDraftList {
   constructor(private readonly sql: SqlClient) {}
   async list(scope: DraftScope): Promise<readonly DraftRecord[]> {
-    const result = await this.sql.query(`SELECT id, account_id, source_message_id, created_by, state, recipients, subject, body, body_format, version, created_at, updated_at FROM app.drafts WHERE account_id = ANY($1::uuid[]) ORDER BY updated_at DESC, id DESC`, [scope.accountIds]);
-    return result.rows.map((row) => ({ id: text(row['id']), accountId: text(row['account_id']), sourceMessageId: row['source_message_id'] == null ? null : text(row['source_message_id']), createdBy: text(row['created_by']) as DraftRecord['createdBy'], state: text(row['state']) as DraftRecord['state'], recipients: recipients(row['recipients']), subject: text(row['subject']), body: text(row['body']), bodyFormat: row['body_format'] === 'html' ? 'html' : 'markdown', version: Number(row['version']), createdAt: stamp(row['created_at']), updatedAt: stamp(row['updated_at']) }));
+    const result = await this.sql.query(`SELECT d.* FROM app.drafts d JOIN app.user_accounts ua ON ua.account_id=d.account_id WHERE d.account_id = ANY($1::uuid[]) AND ua.user_id=$2::uuid ORDER BY d.updated_at DESC,d.id DESC`, [scope.accountIds,scope.subjectId]);
+    return Promise.all(result.rows.map(async(row):Promise<DraftRecord> => ({ id: text(row['id']), accountId: text(row['account_id']), sourceMessageId: row['source_message_id'] == null ? null : text(row['source_message_id']), createdBy: text(row['created_by']) as DraftRecord['createdBy'], state: text(row['state']) as DraftRecord['state'], recipients: recipients(row['recipients']), subject: text(row['subject']), body: text(row['body']), bodyFormat: row['body_format'] === 'html' ? 'html' : 'markdown', version: Number(row['version']), createdAt: stamp(row['created_at']), updatedAt: stamp(row['updated_at']),submission:await submissionView(this.sql,scope.subjectId,text(row['id'])) })));
   }
 }

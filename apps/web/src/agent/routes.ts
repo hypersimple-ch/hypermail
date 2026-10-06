@@ -1,5 +1,5 @@
 import {
-  AgentAuthorizationError, AgentBlockedError, AgentConflictError, AgentInputError, AgentNotFoundError,
+  AgentAuthorizationError, AgentBlockedError, AgentConflictError, AgentInputError, AgentNotFoundError, AgentReviewForbiddenError,
   type AgentScope, type AutonomyScope,
 } from './contracts.js';
 import type { AgentService } from './service.js';
@@ -10,6 +10,7 @@ export type AgentRouteRequest = Readonly<{
   origin: string | null;
   apiVersion: string | null;
   body: Readonly<Record<string, unknown>>;
+  query?: Readonly<Record<string, string | undefined>>;
 }>;
 export type AgentRouteResponse = Readonly<{ status: number; body: Readonly<Record<string, unknown>> }>;
 export type AgentRouteOptions = Readonly<{ expectedOrigin: string; apiVersion: string }>;
@@ -22,6 +23,7 @@ const errorResponse = (error: unknown): AgentRouteResponse => {
   if (error instanceof AgentConflictError) return { status: 409, body: { error: { code: 'CONFLICT', message: error.message } } };
   if (error instanceof AgentBlockedError) return { status: 409, body: { error: { code: 'BLOCKED', message: error.message } } };
   if (error instanceof AgentNotFoundError) return { status: 404, body: { error: { code: 'NOT_FOUND', message: error.message } } };
+  if (error instanceof AgentReviewForbiddenError) return { status: 422, body: { error: { code: 'FORBIDDEN_REVIEW', message: error.message } } };
   throw error;
 };
 
@@ -40,6 +42,24 @@ export function createAgentRoutes(service: AgentService, options: AgentRouteOpti
     return kind === 'account' && accountId ? { kind, accountId } : null;
   };
   return {
+    async folders(request: AgentRouteRequest): Promise<AgentRouteResponse> {
+      if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
+      const denied = gate(request, false); if (denied) return denied;
+      const auth = request.auth; if (!auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
+      try { return { status: 200, body: { folders: await service.listProposalFolders(auth, request.query?.['accountId']) } }; } catch (error) { return errorResponse(error); }
+    },
+    async proposals(request: AgentRouteRequest): Promise<AgentRouteResponse> {
+      if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
+      const denied = gate(request, false); if (denied) return denied;
+      const auth = request.auth; if (!auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
+      try { return { status: 200, body: { proposals: await service.listProposals(auth, request.query?.['activityId']) } }; } catch (error) { return errorResponse(error); }
+    },
+    async review(request: AgentRouteRequest, proposalId: string): Promise<AgentRouteResponse> {
+      if (request.method !== 'POST') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
+      const denied = gate(request); if (denied) return denied;
+      const auth = request.auth; if (!auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } };
+      try { return { status: 200, body: { review: await service.reviewProposal(auth, proposalId, request.body) } }; } catch (error) { return errorResponse(error); }
+    },
     async dashboard(request: AgentRouteRequest): Promise<AgentRouteResponse> {
       if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } };
       const denied = gate(request, false); if (denied) return denied;

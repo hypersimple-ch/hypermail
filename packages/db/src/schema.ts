@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -60,6 +61,7 @@ export const users = app.table('users', {
   id: uuid('id').defaultRandom().primaryKey(),
   email: text('email').notNull(),
   passwordHash: text('password_hash').notNull(),
+  autonomyPausedAt: timestamp('autonomy_paused_at', { withTimezone: true }),
   createdAt,
   updatedAt,
 }, (table) => [uniqueIndex('users_email_unique').on(table.email)]);
@@ -84,7 +86,7 @@ export const recoveryTokens = app.table('recovery_tokens', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt,
-}, (table) => [uniqueIndex('recovery_tokens_hash_unique').on(table.tokenHash)]);
+}, (table) => [uniqueIndex('recovery_tokens_hash_unique').on(table.tokenHash), uniqueIndex('recovery_tokens_owner_identity').on(table.id, table.userId)]);
 
 export const rateLimits = app.table('rate_limits', {
   bucket: text('bucket').notNull(),
@@ -443,7 +445,7 @@ export const agentRuns = app.table('agent_runs', {
   assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
   mode: agentInvocationMode('mode').notNull(), trigger: jsonb('trigger').$type<Record<string, unknown>>().notNull(), inputDigest: text('input_digest').notNull(), correlationId: text('correlation_id').notNull(), causationId: uuid('causation_id'),
   state: agentRunState('state').notNull().default('created'), outcome: agentRunOutcome('outcome'), errorCode: text('error_code'), createdAt, startedAt: timestamp('started_at', { withTimezone: true }), completedAt: timestamp('completed_at', { withTimezone: true }),
-}, table => [uniqueIndex('agent_runs_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_runs_activity_sequence_unique').on(table.activityId, table.sequence)]);
+}, table => [uniqueIndex('agent_runs_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_runs_activity_sequence_unique').on(table.activityId, table.sequence), uniqueIndex('agent_runs_scope_unique').on(table.id, table.userId, table.accountId, table.activityId)]);
 export const agentTasks = app.table('agent_tasks', {
   id: uuid('id').primaryKey(), enqueueKey: text('enqueue_key').notNull(), activityId: uuid('activity_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
   managerKind: mailboxManagerKind('manager_kind').notNull(), managerConnectionId: uuid('manager_connection_id'), managerLifecycleRevision: integer('manager_lifecycle_revision'), assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
@@ -501,7 +503,14 @@ export const agentAuthorizedActions = app.table('agent_authorized_actions', {
   assignmentId: uuid('assignment_id').notNull(), assignmentRevision: integer('assignment_revision').notNull(), grantId: uuid('grant_id').notNull(), grantRevision: integer('grant_revision').notNull(), safetyRevision: integer('safety_revision').notNull(),
   kind: agentActionKind('kind').notNull(), target: jsonb('target').$type<Record<string, string>>().notNull(), authorizationRevision: integer('authorization_revision').notNull(), idempotencyKey: text('idempotency_key').notNull(), attempt: integer('attempt').notNull(), retryOfActionId: uuid('retry_of_action_id'),
   state: agentActionState('state').notNull().default('authorized'), errorCode: text('error_code'), authorizedAt: timestamp('authorized_at', { withTimezone: true }).notNull().defaultNow(), startedAt: timestamp('started_at', { withTimezone: true }), providerReportedAt: timestamp('provider_reported_at', { withTimezone: true }), completedAt: timestamp('completed_at', { withTimezone: true }),
-}, table => [uniqueIndex('agent_authorized_actions_identity_unique').on(table.id, table.userId, table.accountId), uniqueIndex('agent_authorized_actions_idempotency_unique').on(table.userId, table.accountId, table.idempotencyKey)]);
+  verificationCursor: jsonb('verification_cursor').$type<Record<string, unknown>>(),
+  verificationDeadlineAt: timestamp('verification_deadline_at', { withTimezone: true }),
+}, table => [
+  uniqueIndex('agent_authorized_actions_identity_unique').on(table.id, table.userId, table.accountId),
+  uniqueIndex('agent_authorized_actions_idempotency_unique').on(table.userId, table.accountId, table.idempotencyKey),
+  check('agent_actions_target_contract', sql`(${table.kind} in ('archive','recoverable_trash','move','mark_read','mark_unread') and ${table.target} ? 'messageId') or (${table.kind}='draft_create' and (${table.target} ? 'draftId' or ${table.target} ? 'requestId')) or (${table.kind} in ('draft_edit','send') and ${table.target} ? 'draftId')`),
+  check('agent_actions_error_contract', sql`(${table.state}='failed' and ${table.errorCode} is not null) or ${table.state}='cancelled' or (${table.state} not in ('failed','cancelled') and ${table.errorCode} is null)`),
+]);
 export const agentActionVerifications = app.table('agent_action_verifications', {
   actionId: uuid('action_id').primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), verifier: text('verifier').notNull(), providerMutationId: text('provider_mutation_id'), evidenceDigest: text('evidence_digest').notNull(), observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
 });
@@ -544,6 +553,7 @@ export const messages = app.table('messages', {
   updatedAt,
 }, (table) => [
   uniqueIndex('messages_provider_identity_unique').on(table.accountId, table.providerMessageId),
+  uniqueIndex('messages_account_id_unique').on(table.accountId, table.id),
   index('messages_inbox_page_idx').on(table.accountId, table.receivedAt, table.id),
   index('messages_internet_message_idx').on(table.accountId, table.internetMessageId),
 ]);
@@ -607,6 +617,11 @@ export const agentJobs = app.table('agent_jobs', {
 
 export const decisions = app.table('decisions', {
   id: uuid('id').defaultRandom().primaryKey(),
+  schemaVersion: integer('schema_version').notNull().default(2),
+  runId: uuid('run_id'),
+  userId: uuid('user_id').notNull(),
+  accountId: uuid('account_id').notNull(),
+  evidenceSnapshot: jsonb('evidence_snapshot').$type<readonly Record<string, unknown>[]>().notNull().default([]),
   activityId: uuid('activity_id').notNull().references(() => activities.id, { onDelete: 'restrict' }),
   attempt: integer('attempt').notNull(),
   state: decisionState('state').notNull(),
@@ -619,6 +634,12 @@ export const decisions = app.table('decisions', {
 }, (table) => [
   uniqueIndex('decisions_activity_attempt_unique').on(table.activityId, table.attempt),
   check('decisions_attempt_positive', sql`${table.attempt} > 0`),
+  uniqueIndex('decisions_scope_unique').on(table.id, table.userId, table.accountId, table.activityId, table.runId),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId], name: 'decisions_owned_mailbox_fk' }),
+  foreignKey({ columns: [table.runId, table.userId, table.accountId, table.activityId], foreignColumns: [agentRuns.id, agentRuns.userId, agentRuns.accountId, agentRuns.activityId], name: 'decisions_run_scope_fk' }),
+  check('decisions_version', sql`${table.schemaVersion} in (1,2) and (${table.schemaVersion}=1 or (${table.runId} is not null and ${table.output}->>'schemaVersion'='2'))`),
+  check('decisions_v2_output_required', sql`${table.schemaVersion}=1 or coalesce(${table.output}->>'schemaVersion','')='2'`),
+  check('decisions_evidence_shape', sql`jsonb_typeof(${table.evidenceSnapshot})='array' and jsonb_array_length(${table.evidenceSnapshot})<=41`),
 ]);
 
 export const questions = app.table('questions', {
@@ -716,6 +737,7 @@ export const sendApprovals = app.table('send_approvals', {
   uniqueIndex('send_approvals_public_request_unique').on(table.publicSendRequestId),
   uniqueIndex('send_approvals_confirmation_unique').on(table.confirmationHash),
   uniqueIndex('send_approvals_idempotency_unique').on(table.idempotencyKey),
+  uniqueIndex('send_approvals_owner_identity').on(table.id, table.userId),
 ]);
 
 export const publicMcpSendRequests = app.table('public_mcp_send_requests', {
@@ -740,8 +762,12 @@ export const logicalNotifications = app.table('logical_notifications', {
   subject: text('subject').notNull(),
   statusLabel: text('status_label').notNull(),
   createdAt,
+  targetsInitializedAt: timestamp('targets_initialized_at', { withTimezone: true }),
+  deliveredCount: integer('delivered_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  pendingCount: integer('pending_count').notNull().default(0),
   updatedAt,
-}, (table) => [uniqueIndex('logical_notifications_activity_unique').on(table.activityId)]);
+}, (table) => [uniqueIndex('logical_notifications_activity_unique').on(table.activityId), check('logical_notifications_counts', sql`${table.deliveredCount}>=0 and ${table.failedCount}>=0 and ${table.pendingCount}>=0`)]);
 
 export const pushSubscriptions = app.table('push_subscriptions', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -768,11 +794,15 @@ export const notificationDeliveries = app.table('notification_deliveries', {
   state: deliveryState('state').notNull().default('pending'),
   responseCode: integer('response_code'),
   errorCode: text('error_code'),
+  claimToken: uuid('claim_token'),
+  claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
   createdAt,
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (table) => [
   uniqueIndex('notification_deliveries_attempt_unique').on(table.notificationId, table.subscriptionId, table.attempt),
   check('notification_deliveries_attempt_positive', sql`${table.attempt} > 0`),
+  check('delivery_claim_shape', sql`(${table.state}='pending' and ${table.claimToken} is not null and ${table.claimExpiresAt} is not null) or (${table.state}<>'pending' and ${table.claimExpiresAt} is null)`),
+  index('notification_deliveries_expired').on(table.claimExpiresAt).where(sql`${table.state}='pending'`),
 ]);
 
 export const pollStates = app.table('poll_states', {
@@ -829,4 +859,197 @@ export const audits = app.table('audits', {
 }, (table) => [
   index('audits_occurred_idx').on(table.occurredAt, table.id),
   index('audits_activity_idx').on(table.activityId, table.occurredAt),
+]);
+
+export const agentActionProposals = app.table('agent_action_proposals', {
+  id: uuid('id').defaultRandom().primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  activityId: uuid('activity_id').notNull(), runId: uuid('run_id').notNull(), decisionId: uuid('decision_id').notNull(),
+  actionKey: text('action_key').notNull(), origin: text('origin').notNull(), kind: text('kind').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(), confidence: doublePrecision('confidence'),
+  threshold: doublePrecision('threshold').notNull(), evidenceSnapshot: jsonb('evidence_snapshot').$type<readonly Record<string, unknown>[]>().notNull(),
+  revision: integer('revision').notNull().default(1), state: text('state').notNull(), supersedesProposalId: uuid('supersedes_proposal_id'),
+  authorizedActionId: uuid('authorized_action_id').unique(), errorCode: text('error_code'), createdAt, updatedAt,
+}, table => [
+  uniqueIndex('agent_action_proposals_decision_key').on(table.decisionId, table.actionKey),
+  uniqueIndex('agent_action_proposals_owned_identity').on(table.id, table.userId, table.accountId),
+  uniqueIndex('agent_action_proposals_activity_identity').on(table.id, table.userId, table.accountId, table.activityId),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId] }),
+  foreignKey({ columns: [table.activityId, table.userId, table.accountId], foreignColumns: [agentActivities.id, agentActivities.userId, agentActivities.accountId] }),
+  foreignKey({ columns: [table.runId, table.userId, table.accountId, table.activityId], foreignColumns: [agentRuns.id, agentRuns.userId, agentRuns.accountId, agentRuns.activityId] }),
+  foreignKey({ columns: [table.decisionId, table.userId, table.accountId, table.activityId, table.runId], foreignColumns: [decisions.id, decisions.userId, decisions.accountId, decisions.activityId, decisions.runId] }),
+  foreignKey({ columns: [table.supersedesProposalId, table.userId, table.accountId, table.activityId], foreignColumns: [table.id, table.userId, table.accountId, table.activityId] }),
+  foreignKey({ columns: [table.authorizedActionId, table.userId, table.accountId], foreignColumns: [agentAuthorizedActions.id, agentAuthorizedActions.userId, agentAuthorizedActions.accountId] }),
+  check('proposal_key', sql`${table.actionKey} ~ '^[a-z][a-z0-9_]{0,63}$'`),
+  check('proposal_confidence', sql`(${table.origin}='model' and ${table.confidence} is not null and ${table.confidence}>=0 and ${table.confidence}<=1) or (${table.origin}='owner' and ${table.confidence} is null)`),
+  check('proposal_threshold', sql`${table.threshold}>=0 and ${table.threshold}<=1`),
+  check('proposal_revision', sql`${table.revision}>0`),
+  check('proposal_state', sql`${table.state} in ('waiting_review','ready','authorized','rejected','superseded','blocked')`),
+  check('proposal_payload', sql`app.valid_action_payload(${table.payload},${table.kind}) and ${table.payload}->'target'->>'accountId'=${table.accountId}::text`),
+  check('proposal_evidence', sql`jsonb_typeof(${table.evidenceSnapshot})='array' and jsonb_array_length(${table.evidenceSnapshot})<=41`),
+  check('proposal_authorized', sql`(${table.state}='authorized')=(${table.authorizedActionId} is not null)`),
+  check('proposal_origin', sql`(${table.origin}='model' and ${table.supersedesProposalId} is null) or (${table.origin}='owner' and ${table.supersedesProposalId} is not null)`),
+  check('proposal_model_snapshot', sql`${table.origin}<>'model' or (${table.payload}->>'key'=${table.actionKey} and jsonb_typeof(${table.payload}->'reason')='string' and app.utf16_length(${table.payload}->>'reason') between 1 and 2000 and jsonb_typeof(${table.payload}->'evidenceIds')='array' and jsonb_array_length(${table.payload}->'evidenceIds')<=20 and jsonb_typeof(${table.payload}->'dependsOn')='array' and jsonb_array_length(${table.payload}->'dependsOn')<=4 and (${table.kind} not in ('draft_create','draft_edit') or ${table.payload}->'draft'->>'bodyFormat'='markdown')) is true`),
+  index('agent_action_proposals_ready_idx').on(table.createdAt, table.id).where(sql`${table.state}='ready'`),
+]);
+
+export const agentProposalDependencies = app.table('agent_proposal_dependencies', {
+  proposalId: uuid('proposal_id').notNull(), dependsOnId: uuid('depends_on_id').notNull(),
+  userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), activityId: uuid('activity_id').notNull(),
+}, table => [
+  primaryKey({ columns: [table.proposalId, table.dependsOnId] }),
+  check('proposal_dependency_not_self', sql`${table.proposalId}<>${table.dependsOnId}`),
+  foreignKey({ columns: [table.proposalId, table.userId, table.accountId, table.activityId], foreignColumns: [agentActionProposals.id, agentActionProposals.userId, agentActionProposals.accountId, agentActionProposals.activityId] }),
+  foreignKey({ columns: [table.dependsOnId, table.userId, table.accountId, table.activityId], foreignColumns: [agentActionProposals.id, agentActionProposals.userId, agentActionProposals.accountId, agentActionProposals.activityId] }),
+]);
+
+export const agentActionReviews = app.table('agent_action_reviews', {
+  id: uuid('id').defaultRandom().primaryKey(), proposalId: uuid('proposal_id').notNull().unique(),
+  userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(), decision: text('decision').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(), requestDigest: text('request_digest').notNull(),
+  reason: text('reason'), correction: jsonb('correction').$type<Record<string, unknown>>(),
+  successorProposalId: uuid('successor_proposal_id'), createdAt,
+}, table => [
+  uniqueIndex('agent_action_reviews_idempotency').on(table.userId, table.idempotencyKey),
+  foreignKey({ columns: [table.proposalId, table.userId, table.accountId], foreignColumns: [agentActionProposals.id, agentActionProposals.userId, agentActionProposals.accountId] }),
+  foreignKey({ columns: [table.successorProposalId, table.userId, table.accountId], foreignColumns: [agentActionProposals.id, agentActionProposals.userId, agentActionProposals.accountId] }),
+  check('review_decision', sql`${table.decision} in ('approve','reject','correct')`),
+  check('review_key', sql`length(${table.idempotencyKey}) between 1 and 200`),
+  check('review_digest', sql`${table.requestDigest} ~ '^[a-f0-9]{64}$'`),
+  check('review_reason', sql`${table.reason} is null or length(${table.reason})<=2000`),
+  check('review_correction', sql`(${table.decision}='correct' and ${table.correction} is not null and ${table.successorProposalId} is not null and app.valid_action_payload(${table.correction},${table.correction}->>'kind')) or (${table.decision}<>'correct' and ${table.correction} is null and ${table.successorProposalId} is null)`),
+]);
+
+export const agentConversations = app.table('agent_conversations', {
+  id: uuid('id').defaultRandom().primaryKey(), userId: uuid('user_id').notNull().references(() => users.id),
+  accountId: uuid('account_id'), scope: text('scope').notNull(), contextMessageId: uuid('context_message_id'),
+  version: integer('version').notNull().default(1), createdAt, updatedAt,
+}, table => [
+  uniqueIndex('agent_conversations_owned_identity').on(table.id, table.userId),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId] }),
+  foreignKey({ columns: [table.accountId, table.contextMessageId], foreignColumns: [messages.accountId, messages.id] }),
+  check('conversation_scope', sql`(${table.scope}='mailbox' and ${table.accountId} is not null) or (${table.scope}='global' and ${table.accountId} is null and ${table.contextMessageId} is null)`),
+  check('conversation_version', sql`${table.version}>0`),
+  index('agent_conversations_owner_page').on(table.userId, table.createdAt, table.id),
+]);
+
+export const agentConversationMessages = app.table('agent_conversation_messages', {
+  id: uuid('id').defaultRandom().primaryKey(), conversationId: uuid('conversation_id').notNull(), userId: uuid('user_id').notNull(),
+  sequence: integer('sequence').notNull(), role: text('role').notNull(), content: text('content').notNull(),
+  requestId: uuid('request_id'), requestDigest: text('request_digest'), replyTo: uuid('reply_to').unique(), createdAt,
+}, table => [
+  uniqueIndex('conversation_messages_sequence').on(table.conversationId, table.sequence),
+  uniqueIndex('conversation_messages_request').on(table.userId, table.requestId),
+  uniqueIndex('conversation_messages_owned_identity').on(table.id, table.userId),
+  uniqueIndex('conversation_messages_conversation_identity').on(table.id, table.conversationId, table.userId),
+  foreignKey({ columns: [table.conversationId, table.userId], foreignColumns: [agentConversations.id, agentConversations.userId] }),
+  foreignKey({ columns: [table.replyTo, table.conversationId, table.userId], foreignColumns: [table.id, table.conversationId, table.userId] }),
+  check('conversation_message_sequence', sql`${table.sequence}>0`),
+  check('conversation_message_content', sql`length(btrim(${table.content}))>0 and length(${table.content})<=16000`),
+  check('conversation_message_role', sql`(${table.role}='user' and ${table.requestId} is not null and ${table.requestDigest} ~ '^[a-f0-9]{64}$' and ${table.replyTo} is null) or (${table.role}='assistant' and ${table.requestId} is null and ${table.requestDigest} is null and ${table.replyTo} is not null)`),
+  check('conversation_content_utf16', sql`app.utf16_length(${table.content})<=16000`),
+  check('conversation_request_digest_required', sql`${table.role}<>'user' or ${table.requestDigest} is not null`),
+]);
+
+export const agentConversationTurns = app.table('agent_conversation_turns', {
+  id: uuid('id').defaultRandom().primaryKey(), userMessageId: uuid('user_message_id').notNull().unique().references(() => agentConversationMessages.id),
+  state: text('state').notNull().default('pending'), attempt: integer('attempt').notNull().default(0),
+  modelFailureCount: integer('model_failure_count').notNull().default(0),
+  availableAt: timestamp('available_at', { withTimezone: true }).notNull().defaultNow(),
+  claimToken: uuid('claim_token'), claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }), errorCode: text('error_code'), createdAt, updatedAt,
+}, table => [
+  check('conversation_turn_state', sql`${table.state} in ('pending','running','completed','failed')`),
+  check('conversation_turn_attempt', sql`${table.attempt}>=0`),
+  check('conversation_turn_model_failures', sql`${table.modelFailureCount} between 0 and 3`),
+  check('conversation_turn_claim', sql`(${table.state}='running' and ${table.claimToken} is not null and ${table.claimExpiresAt} is not null) or (${table.state}<>'running' and ${table.claimExpiresAt} is null)`),
+  index('conversation_turns_pending').on(table.availableAt, table.id).where(sql`${table.state}='pending'`),
+  index('conversation_turns_expired').on(table.claimExpiresAt, table.id).where(sql`${table.state}='running'`),
+]);
+
+export const agentGlobalMemoryBackfills = app.table('agent_global_memory_backfills', {
+  userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  lastMessageCreatedAt: timestamp('last_message_created_at', { withTimezone: true }), lastMessageId: uuid('last_message_id'),
+  completedAt: timestamp('completed_at', { withTimezone: true }), updatedAt,
+}, table => [
+  primaryKey({ columns: [table.userId, table.accountId] }),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId] }),
+  foreignKey({ columns: [table.lastMessageId, table.userId], foreignColumns: [agentConversationMessages.id, agentConversationMessages.userId] }),
+  check('global_backfill_watermark', sql`(${table.lastMessageId} is null)=(${table.lastMessageCreatedAt} is null)`),
+]);
+
+export const policySafetySamples = app.table('policy_safety_samples', {
+  actionId: uuid('action_id').primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  outcome: text('outcome').notNull(), observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+}, table => [
+  foreignKey({ columns: [table.actionId, table.userId, table.accountId], foreignColumns: [agentAuthorizedActions.id, agentAuthorizedActions.userId, agentAuthorizedActions.accountId] }),
+  check('safety_sample_outcome', sql`${table.outcome} in ('succeeded','incorrect')`),
+  index('policy_safety_samples_window').on(table.accountId, table.observedAt),
+]);
+
+export const notificationTargets = app.table('notification_targets', {
+  notificationId: uuid('notification_id').notNull().references(() => logicalNotifications.id),
+  subscriptionId: uuid('subscription_id').notNull().references(() => pushSubscriptions.id),
+  state: text('state').notNull().default('pending'), createdAt, updatedAt,
+}, table => [
+  primaryKey({ columns: [table.notificationId, table.subscriptionId] }),
+  check('notification_target_state', sql`${table.state} in ('pending','delivered','failed','suppressed')`),
+]);
+
+export const approvedSendSubmissions = app.table('approved_send_submissions', {
+  approvalId: uuid('approval_id').primaryKey(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  sourceKind: text('source_kind').notNull(), sourceId: uuid('source_id').notNull(), sourceVersion: integer('source_version').notNull(),
+  idempotencyKey: text('idempotency_key').notNull().unique(), requestDigest: text('request_digest').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>(), state: text('state').notNull().default('pending'),
+  providerMessageId: text('provider_message_id'), providerReferenceType: text('provider_reference_type').notNull().default('none'),
+  providerType: provider('provider_type').notNull(), startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }), lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  errorCode: text('error_code'), version: integer('version').notNull().default(1), createdAt, updatedAt,
+}, table => [
+  uniqueIndex('approved_send_submissions_owned_identity').on(table.approvalId, table.userId, table.accountId),
+  foreignKey({ columns: [table.approvalId, table.userId], foreignColumns: [sendApprovals.id, sendApprovals.userId] }),
+  foreignKey({ columns: [table.userId, table.accountId], foreignColumns: [userAccounts.userId, userAccounts.accountId] }),
+  check('send_submission_source', sql`${table.sourceKind} in ('draft','send_request')`),
+  check('send_submission_version', sql`${table.sourceVersion}>0 and ${table.version}>0`),
+  check('send_submission_key', sql`length(${table.idempotencyKey}) between 1 and 200`),
+  check('send_submission_digest', sql`${table.requestDigest} ~ '^[a-f0-9]{64}$'`),
+  check('send_submission_state', sql`${table.state} in ('pending','dispatching','reported','verified','rejected','unknown')`),
+  check('send_submission_reference', sql`(${table.providerReferenceType}='none' and ${table.providerMessageId} is null) or (${table.providerReferenceType} in ('native_id','internet_message_id') and ${table.providerMessageId} is not null and length(${table.providerMessageId})>0)`),
+  check('send_submission_payload', sql`${table.payload} is null or ((jsonb_typeof(${table.payload})='object' and jsonb_typeof(${table.payload}->'body')='string' and app.utf16_length(${table.payload}->>'body')<=2000000 and jsonb_typeof(${table.payload}->'subject')='string' and app.utf16_length(${table.payload}->>'subject')<=998 and ${table.payload}->>'bodyFormat' in ('markdown','html') and jsonb_typeof(${table.payload}->'recipients')='array' and jsonb_array_length(${table.payload}->'recipients') between 1 and 100) is true)`),
+  check('send_submission_start', sql`(${table.state}='pending' and ${table.startedAt} is null) or (${table.state}='rejected' and ${table.startedAt} is null and ${table.errorCode} is not distinct from 'APPROVAL_EXPIRED_UNDISPATCHED' and ${table.finishedAt} is not null) or (${table.state}<>'pending' and ${table.startedAt} is not null)`),
+  index('approved_send_submissions_reconcile').on(table.state, table.lastCheckedAt).where(sql`${table.state} in ('dispatching','reported','unknown')`),
+]);
+
+export const approvedSendManualReviews = app.table('approved_send_manual_reviews', {
+  id: uuid('id').defaultRandom().primaryKey(), approvalId: uuid('approval_id').notNull(), userId: uuid('user_id').notNull(), accountId: uuid('account_id').notNull(),
+  outcome: text('outcome').notNull(), note: text('note').notNull(), createdAt,
+}, table => [
+  foreignKey({ columns: [table.approvalId, table.userId, table.accountId], foreignColumns: [approvedSendSubmissions.approvalId, approvedSendSubmissions.userId, approvedSendSubmissions.accountId] }),
+  check('manual_review_outcome', sql`${table.outcome} in ('observed_sent','not_observed')`),
+  check('manual_review_note', sql`length(${table.note})<=2000`),
+]);
+
+export const recoveryMailDeliveries = app.table('recovery_mail_deliveries', {
+  id: uuid('id').defaultRandom().primaryKey(), ownerId: uuid('owner_id').notNull().references(() => users.id),
+  recoveryId: uuid('recovery_id').notNull().unique(), recipient: text('recipient').notNull(),
+  encryptedPayload: text('encrypted_payload'), nonce: text('nonce'), state: text('state').notNull().default('pending'),
+  attempt: integer('attempt').notNull().default(0), nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
+  claimToken: uuid('claim_token'), claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
+  providerMessageId: text('provider_message_id').notNull().unique(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt, updatedAt,
+}, table => [
+  foreignKey({ columns: [table.recoveryId, table.ownerId], foreignColumns: [recoveryTokens.id, recoveryTokens.userId] }),
+  check('recovery_delivery_state', sql`${table.state} in ('pending','processing','delivered','failed')`),
+  check('recovery_delivery_attempt', sql`${table.attempt} between 0 and 3`),
+  check('recovery_delivery_ciphertext', sql`(${table.encryptedPayload} is null)=(${table.nonce} is null)`),
+  check('recovery_delivery_claim', sql`(${table.state}='processing' and ${table.claimToken} is not null and ${table.claimExpiresAt} is not null) or (${table.state}<>'processing' and ${table.claimExpiresAt} is null)`),
+  check('recovery_delivery_minimized', sql`${table.state}<>'delivered' or ${table.encryptedPayload} is null`),
+  index('recovery_mail_deliveries_pending').on(table.nextAttemptAt, table.id).where(sql`${table.state}='pending'`),
+  index('recovery_mail_deliveries_expired_claim').on(table.claimExpiresAt, table.id).where(sql`${table.state}='processing'`),
+]);
+
+export const recoveryMailIdentifiers = app.table('recovery_mail_identifiers', {
+  recoveryId: uuid('recovery_id').primaryKey().references(() => recoveryTokens.id), ownerId: uuid('owner_id').notNull(),
+  tokenHash: text('token_hash').notNull().unique(), providerMessageId: text('provider_message_id').notNull().unique(), createdAt,
+  canonicalOrigin: text('canonical_origin').notNull(),
+}, table => [
+  foreignKey({ columns: [table.recoveryId, table.ownerId], foreignColumns: [recoveryTokens.id, recoveryTokens.userId] }),
+  check('recovery_identifier_hash', sql`length(${table.tokenHash})>0`),
 ]);

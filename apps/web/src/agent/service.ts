@@ -1,5 +1,6 @@
+import { z } from 'zod';
 import {
-  AgentAuthorizationError, AgentBlockedError, AgentConflictError, AgentInputError, AgentNotFoundError,
+  AgentAuthorizationError, AgentBlockedError, AgentConflictError, AgentInputError, AgentNotFoundError, AgentReviewForbiddenError, proposalReviewSchema,
   type AgentAction, type AgentDashboard, type AgentRepository, type AgentScope, type AutonomyScope, type AutonomyState,
 } from './contracts.js';
 
@@ -8,8 +9,37 @@ export class AgentService {
 
   async dashboard(scope: AgentScope): Promise<AgentDashboard> {
     if (!scope.subjectId) throw new AgentAuthorizationError();
-    if (scope.accountIds.length === 0) return { actions: [], questions: [], alerts: [], autonomy: { global: { state: 'running', version: 1 }, accounts: {} } };
+    if (scope.accountIds.length === 0) return { actions: [], proposals: [], questions: [], alerts: [], autonomy: { global: { state: 'running', version: 1 }, accounts: {} } };
     return this.repository.dashboard(scope);
+  }
+
+  async listProposals(scope: AgentScope, activityId?: string) {
+    if (!scope.subjectId) throw new AgentAuthorizationError();
+    if (activityId !== undefined && !z.uuid().safeParse(activityId).success) throw new AgentInputError('A valid activity ID is required.');
+    const proposals = await this.repository.listProposals(scope, activityId);
+    if (proposals === null) throw new AgentNotFoundError();
+    return proposals;
+  }
+
+  async listProposalFolders(scope: AgentScope, accountId?: string) {
+    if (!scope.subjectId) throw new AgentAuthorizationError();
+    if (accountId !== undefined && !z.uuid().safeParse(accountId).success) throw new AgentInputError('A valid account ID is required.');
+    if (accountId !== undefined && !scope.accountIds.includes(accountId)) throw new AgentNotFoundError();
+    const folders = await this.repository.listProposalFolders(scope, accountId);
+    if (folders === null) throw new AgentNotFoundError();
+    return folders;
+  }
+
+  async reviewProposal(scope: AgentScope, proposalId: string, input: unknown) {
+    if (!scope.subjectId) throw new AgentAuthorizationError();
+    if (!z.uuid().safeParse(proposalId).success) throw new AgentInputError('A valid proposal ID is required.');
+    const parsed = proposalReviewSchema.safeParse(input);
+    if (!parsed.success) throw new AgentInputError('Invalid proposal review.');
+    const result = await this.repository.reviewProposal(scope, proposalId, parsed.data);
+    if (result.kind === 'reviewed') return result;
+    if (result.kind === 'conflict') throw new AgentConflictError();
+    if (result.kind === 'blocked') throw new AgentReviewForbiddenError(result.reasonCode);
+    throw new AgentNotFoundError();
   }
 
   async answer(scope: AgentScope, questionId: string, answer: string, expectedVersion: number, idempotencyKey: string) {

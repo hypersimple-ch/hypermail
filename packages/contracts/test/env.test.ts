@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { backupEnvSchema, parseEnvironment, redactEnvironment, webEnvSchema, workerEnvSchema } from '../src/env.js';
-import { approvedSendCapability } from '../src/runtime.js';
 
 const validWorker = {
   NODE_ENV: 'test',
@@ -30,26 +29,21 @@ describe('environment contracts', () => {
     expect(configured.HYPERMAIL_TENANT_ROUTES).toBe('{"tenant":"configuration"}');
     expect(redactEnvironment(configured).HYPERMAIL_TENANT_ROUTES).toBe('[REDACTED]');
   });
-  it('requires a private attachment directory and HTTPS approved-send endpoint', () => {
+  it('requires a private attachment directory', () => {
     const base = {
       NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32), OAUTH_TOKEN_HASH_KEY: 'o'.repeat(32),
-      RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
+      HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
       HYPERMAIL_PROTOCOL_VERSION: validWorker.HYPERMAIL_PROTOCOL_VERSION, VAPID_SUBJECT: 'mailto:owner@example.test', VAPID_PUBLIC_KEY: 'public-key-value-123', VAPID_PRIVATE_KEY: 'private-key-value-123',
-      PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY, ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments', APPROVED_SEND_URL: 'https://approved-send.private.test', APPROVED_SEND_TOKEN: 'approved-send-token-value',
+      PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY, ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments',
     };
     expect(parseEnvironment(webEnvSchema, base).ATTACHMENT_MAX_BYTES).toBe(25 * 1024 * 1024);
-    expect(approvedSendCapability(parseEnvironment(webEnvSchema, base))).toBe('configured');
-    const withoutSend = Object.fromEntries(Object.entries(base).filter(([name]) => !name.startsWith('APPROVED_SEND_')));
-    expect(approvedSendCapability(parseEnvironment(webEnvSchema, withoutSend))).toBe('disabled');
-    expect(() => parseEnvironment(webEnvSchema, { ...withoutSend, APPROVED_SEND_TOKEN: base.APPROVED_SEND_TOKEN })).toThrow(/APPROVED_SEND_URL/);
     expect(() => parseEnvironment(webEnvSchema, { ...base, ATTACHMENT_TEMP_DIRECTORY: '/tmp/hypermail' })).toThrow(/ATTACHMENT_TEMP_DIRECTORY/);
-    expect(() => parseEnvironment(webEnvSchema, { ...base, APPROVED_SEND_URL: 'http://approved-send:3000' })).toThrow(/APPROVED_SEND_URL/);
   });
 
   it('allows HTTPS APP_ORIGIN everywhere and HTTP only for development loopback URLs', () => {
     const base = {
       NODE_ENV: 'test', DATABASE_URL: validWorker.DATABASE_URL, APP_ORIGIN: 'https://mail.example.test', AUTH_SECRET: 'a'.repeat(32), OAUTH_TOKEN_HASH_KEY: 'o'.repeat(32),
-      RECOVERY_RECIPIENT: 'owner@example.test', HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
+      HYPERMAIL_URL: validWorker.HYPERMAIL_URL, HYPERMAIL_KEY: validWorker.HYPERMAIL_KEY,
       HYPERMAIL_PROTOCOL_VERSION: validWorker.HYPERMAIL_PROTOCOL_VERSION, VAPID_SUBJECT: validWorker.VAPID_SUBJECT, VAPID_PUBLIC_KEY: validWorker.VAPID_PUBLIC_KEY,
       VAPID_PRIVATE_KEY: validWorker.VAPID_PRIVATE_KEY, PUSH_SUBSCRIPTION_ENCRYPTION_KEY: validWorker.PUSH_SUBSCRIPTION_ENCRYPTION_KEY,
       ATTACHMENT_TEMP_DIRECTORY: '/var/lib/hypermail-attachments',

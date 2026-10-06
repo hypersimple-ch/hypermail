@@ -2,34 +2,37 @@ import * as React from 'react';
 import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
 import { Button } from '@/components/heroui/button.js';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/heroui/card.js';
-import { Field, FieldLabel } from '@/components/heroui/field.js';
-import { Input } from '@/components/heroui/input.js';
-import { toast } from '@/components/heroui/toast.js';
+import { SendApprovalFlow, SendSnapshot, type SendApprovalApi } from '../drafts/send-approval.js';
+import type { DraftRecord } from '../drafts/contracts.js';
 import type { OwnerSendRequest } from './contracts.js';
 
-const actionable = (request: OwnerSendRequest): boolean => request.state === 'pending_owner_approval';
-
-export function PendingSendReview({ requests, onRefresh }: Readonly<{ requests: readonly OwnerSendRequest[]; onRefresh: () => Promise<void> }>): React.JSX.Element {
-  const [busy, setBusy] = React.useState('');
-  const mutate = async (path: string, body: Record<string, unknown>) => {
-    if (!navigator.onLine) { toast.warning('You are offline. The send request remains pending; nothing was sent.'); return; }
-    setBusy(path);
+function SendRequestReview({ request, onRefresh, api }: Readonly<{ request: OwnerSendRequest; onRefresh: () => Promise<void>; api?: SendApprovalApi }>): React.JSX.Element {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const reject = async () => {
+    if (busy) return;
+    setBusy(true); setError('');
     try {
-      const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!response.ok) throw new Error();
+      const response = await fetch(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      if (!response.ok) throw new Error('Rejected request');
       await onRefresh();
-      toast.success('Send review updated.');
-    } catch {
-      toast.danger('Could not update this send request. It remains pending; nothing was sent.');
-    } finally { setBusy(''); }
+    } catch { setError('Could not reject this request. Reload to check its current state.'); }
+    finally { setBusy(false); }
   };
+  return <Card><CardHeader><CardTitle>Draft {request.draftId}</CardTitle><CardDescription>Mailbox {request.accountId} · draft revision {request.draftVersion} · {request.state}</CardDescription></CardHeader><CardContent className="grid gap-4">
+    {error && <p role="alert">{error}</p>}
+    {request.snapshot && <SendSnapshot snapshot={request.snapshot} />}
+    <SendApprovalFlow target={{ kind: 'send_request', id: request.id, version: request.draftVersion }} submission={request.submission ?? null} disabled={busy || request.state !== 'pending_owner_approval'} onRefresh={onRefresh} {...(api ? { api } : {})} />
+    {request.state === 'pending_owner_approval' && <Button variant="destructive" disabled={busy} onClick={() => { void reject(); }}>Reject send request</Button>}
+  </CardContent></Card>;
+}
+
+/** Both agent requests and owner-composed ambiguous submissions remain visible. */
+export function PendingSendReview({ requests, drafts = [], onRefresh, api }: Readonly<{ requests: readonly OwnerSendRequest[]; drafts?: readonly DraftRecord[]; onRefresh: () => Promise<void>; api?: SendApprovalApi }>): React.JSX.Element {
   return <AppPage aria-label="Pending send review"><PageContainer measure="reading" className="grid gap-4">
-    <PageHeader title="Pending send review" description="Review every recipient and draft before approval. Agents can request a send, but cannot bypass owner approval." />
-    {requests.length ? requests.map((request) => <Card key={request.id}><CardHeader><CardTitle>Draft {request.draftId}</CardTitle><CardDescription>Mailbox {request.accountId} · draft revision {request.draftVersion} · {request.state}</CardDescription></CardHeader><CardContent>
-      {actionable(request) ? <form className="grid gap-3" onSubmit={(event) => { event.preventDefault(); const confirmation = new FormData(event.currentTarget).get('confirmation'); if (typeof confirmation !== 'string') return; void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/approval`, { expectedDraftVersion: request.draftVersion, confirmation }); }}><Field><FieldLabel htmlFor={`send-confirmation-${request.id}`}>Type a confirmation (at least 16 characters)</FieldLabel><Input id={`send-confirmation-${request.id}`} name="confirmation" required minLength={16} autoComplete="off" /></Field><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!!busy}>Begin approval</Button><Button type="button" variant="destructive" disabled={!!busy} onClick={() => { void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`, {}); }}>Reject</Button></div></form>
-        : request.approvalId && request.state === 'approved' ? <p>Approved.</p>
-          : request.state === 'sending' || request.state === 'unverifiable' ? <Button disabled={!!busy} onClick={() => { void mutate(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reconcile`, {}); }}>Check provider outcome</Button>
-            : <p>This request is no longer actionable.</p>}
-    </CardContent></Card>) : <p>No send requests are waiting.</p>}
+    <PageHeader title="Pending send review" description="Review the exact recipient, subject and body snapshot. Unknown outcomes are never automatically resent; verification is read-only." />
+    {requests.map(request => <SendRequestReview key={request.id} request={request} onRefresh={onRefresh} {...(api ? { api } : {})} />)}
+    {drafts.filter(draft => !requests.some(request => request.draftId === draft.id)).map(draft => <Card key={draft.id}><CardHeader><CardTitle>{draft.subject || '(No subject)'}</CardTitle><CardDescription>Mailbox {draft.accountId} · draft revision {draft.version}</CardDescription></CardHeader><CardContent><SendApprovalFlow target={{ kind: 'draft', id: draft.id, version: draft.version }} submission={draft.submission ?? null} disabled onRefresh={onRefresh} {...(api ? { api } : {})} /></CardContent></Card>)}
+    {!requests.length && !drafts.length && <p>No send requests are waiting.</p>}
   </PageContainer></AppPage>;
 }

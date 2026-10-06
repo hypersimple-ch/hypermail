@@ -6,17 +6,17 @@ function required<T>(value: T | undefined): T { if (value === undefined) throw n
 
 class Store implements AuthStore {
   users: User[] = []; sessions: Session[] = []; recovery: RecoveryToken[] = []; audits: string[] = []; limits = new Map<string, number>();
+  deliveries: string[] = [];
   countUsers() { return Promise.resolve(this.users.length); }
   createFirstUser(email: string, passwordHash: string) { if (this.users.length) return Promise.resolve(null); const user = { id: 'user', email, passwordHash }; this.users.push(user); return Promise.resolve(user); }
   findUserByEmail(email: string) { return Promise.resolve(this.users.find((user) => user.email === email) ?? null); }
   findUserById(id: string) { return Promise.resolve(this.users.find((user) => user.id === id) ?? null); }
-  createSession(input: Omit<Session, 'id' | 'revokedAt'>) { const value = { ...input, id: `s${String(this.sessions.length)}`, revokedAt: null }; this.sessions.push(value); return Promise.resolve(value); }
+  createSession(input: Parameters<AuthStore['createSession']>[0]) { if (this.users.find(user => user.id === input.userId)?.passwordHash !== input.expectedPasswordHash) return Promise.resolve(null); const value: Session = { userId: input.userId, tokenHash: input.tokenHash, expiresAt: input.expiresAt, createdAt: new Date('2025-01-01T00:00:00Z'), id: `s${String(this.sessions.length)}`, revokedAt: null }; this.sessions.push(value); return Promise.resolve(value); }
   findSessionByTokenHash(hash: string) { return Promise.resolve(this.sessions.find((session) => session.tokenHash === hash) ?? null); }
   revokeSession(id: string) { const session = this.sessions.find((value) => value.id === id); if (session) Object.assign(session, { revokedAt: new Date() }); return Promise.resolve(); }
-  revokeSessionsForUser(userId: string) { for (const session of this.sessions.filter((value) => value.userId === userId)) Object.assign(session, { revokedAt: new Date() }); return Promise.resolve(); }
-  createRecoveryToken(input: Omit<RecoveryToken, 'id' | 'consumedAt'>) { const value = { ...input, id: `r${String(this.recovery.length)}`, consumedAt: null }; this.recovery.push(value); return Promise.resolve(value); }
-  consumeRecoveryToken(hash: string, now: Date) { const token = this.recovery.find((value) => value.tokenHash === hash && !value.consumedAt && value.expiresAt > now) ?? null; if (token) Object.assign(token, { consumedAt: now }); return Promise.resolve(token); }
-  async updatePassword(id: string, passwordHash: string) { const user = await this.findUserById(id); if (user) Object.assign(user, { passwordHash }); }
+  issueRecovery(input: { userId: string; tokenHash: string; expiresAt: Date; resetUrl: string }) { this.recovery.push({ ...input, id: `r${String(this.recovery.length)}`, consumedAt: null }); this.deliveries.push(input.resetUrl); return Promise.resolve(); }
+  resetRecovery(hash: string, passwordHash: string, now: Date) { const token = this.recovery.find(value => value.tokenHash === hash && !value.consumedAt && value.expiresAt > now); const user = this.users.find(value => value.id === token?.userId); if (!token || !user) return Promise.resolve(null); Object.assign(token, { consumedAt: now }); Object.assign(user, { passwordHash }); for (const session of this.sessions.filter(value => value.userId === user.id)) Object.assign(session, { revokedAt: now }); return Promise.resolve(user.id); }
+  rotatePassword(input: Parameters<AuthStore['rotatePassword']>[0]) { const user = this.users.find(value => value.id === input.userId); const session = this.sessions.find(value => value.id === input.sessionId && value.userId === input.userId); const now = new Date('2025-01-01T00:00:00Z'); if (!user || user.passwordHash !== input.expectedPasswordHash || !session || session.revokedAt || session.expiresAt <= now) return Promise.resolve(false); Object.assign(user, { passwordHash: input.passwordHash }); for (const value of this.sessions.filter(value => value.userId === user.id)) Object.assign(value, { revokedAt: now }); return Promise.resolve(true); }
   takeRateLimit({ bucket, subjectHash, limit }: { bucket: string; subjectHash: string; limit: number }) { const key = `${bucket}:${subjectHash}`; const count = this.limits.get(key) ?? 0; this.limits.set(key, count + 1); return Promise.resolve(count < limit); }
   audit(event: { event: string }) { this.audits.push(event.event); return Promise.resolve(); }
 }
@@ -106,19 +106,20 @@ describe('AuthService', () => {
     expect((await service.bootstrap('other@example.com', 'correct horse battery staple', 'c2')).reason).toBe('bootstrap_locked');
     expect((await service.signIn('owner@example.com', 'wrong password xx', 'ip', 'c3')).reason).toBe('invalid_credentials');
   });
-  it('delivers a tagged recovery message once and revokes existing sessions when consumed', async () => {
-    const store = new Store(); const delivered: string[] = []; const service = createService(store, delivered);
+  it('enqueues a fragment recovery link once and revokes sessions without creating a new session', async () => {
+    const store = new Store(); const service = createService(store);
     await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
     const oldSession = await service.signIn('owner@example.com', 'correct horse battery staple', 'ip', 'c2');
     await service.requestRecovery('owner@example.com', 'ip', 'c3');
-    expect(delivered[0]).toMatch(/exclude-autonomous-ingestion/);
+    expect(store.deliveries[0]).toBe('https://app.example.test/auth/recovery/confirm#token=fixed-token');
     const reset = await service.resetPassword('fixed-token', 'new correct horse battery staple', 'c4');
     expect(reset.ok).toBe(true); expect(oldSession.ok && await service.getSession(oldSession.token)).toBeNull();
+    expect(store.sessions.every(session => session.revokedAt !== null)).toBe(true);
     expect((await service.resetPassword('fixed-token', 'new correct horse battery staple', 'c5')).reason).toBe('invalid_recovery');
   });
   it('does not disclose an unknown recovery recipient and throttles login', async () => {
-    const store = new Store(); const delivered: string[] = []; const service = createService(store, delivered);
-    await service.requestRecovery('nobody@example.com', 'ip', 'c1'); expect(delivered).toEqual([]);
+    const store = new Store(); const service = createService(store);
+    await service.requestRecovery('nobody@example.com', 'ip', 'c1'); expect(store.recovery).toEqual([]);
     await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c2');
     for (let index = 0; index < 5; index++) await service.signIn('owner@example.com', 'nope-nope-nope', 'ip', `c${String(index)}`);
     expect((await service.signIn('owner@example.com', 'nope-nope-nope', 'ip', 'late')).reason).toBe('throttled');
@@ -154,7 +155,7 @@ describe('AuthService', () => {
   });
 
   it('replaces the hash and all prior sessions with one fresh session when rotating a password', async () => {
-    const store = new Store(); const tokens = ['bootstrap-token', 'second-token', 'fresh-token', 'post-rotation-sign-in-token']; const service = createService(store, [], () => required(tokens.shift()));
+    const store = new Store(); const tokens = ['bootstrap-token', 'second-token', 'fresh-token', 'post-rotation-sign-in-token']; const service = createService(store, () => required(tokens.shift()));
     const bootstrap = await service.bootstrap('owner@example.com', 'correct horse battery staple', 'c1');
     const second = await service.signIn('owner@example.com', 'correct horse battery staple', 'other-ip', 'c2');
     expect(bootstrap.ok && second.ok).toBe(true);
@@ -186,7 +187,6 @@ describe('AuthService', () => {
     expect(store.audits).toContain('auth.password_rotation_throttled');
   });
 });
-function createService(store: Store, delivered: string[] = [], tokens: () => string = () => 'fixed-token') {
-  const mail: RecoveryMailAdapter = { deliver(message) { delivered.push(`${message.tags.join(',')}:${message.resetUrl}`); return Promise.resolve(); } };
-  return new AuthService({ store, mail, appOrigin: 'https://app.example.test', now: () => new Date('2025-01-01T00:00:00Z'), tokens });
+function createService(store: Store, tokens: () => string = () => 'fixed-token') {
+  return new AuthService({ store, appOrigin: 'https://app.example.test', now: () => new Date('2025-01-01T00:00:00Z'), tokens, recoveryResponseFloorMs: 0 });
 }

@@ -166,30 +166,32 @@ describe('hardened Mailbox memory lifecycle PostgreSQL acceptance', () => {
         };
         const modelCalls: string[] = [];
         const sourceHistory: SourceHistory = { append: (input) => { sourceAppends.push(input); return Promise.resolve(); } };
-        const triage = new TriageService({ model: { generate: (input) => { modelCalls.push(`model:${input.userResourceId}`); triageOrder.push('model'); return Promise.resolve({ state: 'no_action', rationale: 'accepted' }); } },
+        const triage = new TriageService({ model: { generate: (input) => { modelCalls.push(`model:${input.userResourceId}`); triageOrder.push('model'); return Promise.resolve({ schemaVersion: 2, state: 'no_action', rationale: 'accepted' }); } },
           persistence, mailboxMemory: memory, sourceHistory, modelProvider: 'fake', modelName: 'bounded' });
         const triageInput: TriageInput = { activityId: randomUUID(), userId: ids.user, accountId: ids.primary, attempt: 1,
+          availableFolders: [], availableDrafts: [],
           email: { messageId: randomUUID(), from: 'sender@example.test', subject: 'Question', receivedAt: at(2), bodyText: 'Current body', attachments: [] },
           globalConstraints: 'Do not mutate without authorization.' };
         const orderStart = triageOrder.length;
         await triage.triage(triageInput);
         expect(triageOrder.slice(orderStart).map((call) => call.split(':')[0])).toEqual(['retain', 'recall', 'model']);
-        expect(modelCalls).toEqual([`model:${userResourceId(ids.user)}`]);
+        expect(modelCalls).toEqual([`model:${userResourceId(ids.user, { scope: 'mailbox', accountId: ids.primary })}`]);
         const answer = 'Always keep invoices for this customer.'; const questionId = randomUUID(); const questionDecisionId = randomUUID();
         const primaryActivity = (await sql<{id:string;version:number}[]>`select a.id,a.version from app.activities a join app.messages m on m.id=a.message_id
           where m.account_id=${ids.primary} and m.provider_message_id='provider-primary'`)[0];
         if (!primaryActivity) throw new Error('canonical primary activity missing before question');
         const questionActivityId = primaryActivity.id;
         await sql`update app.activities set state='waiting_question' where id=${questionActivityId}`;
-        await sql`insert into app.decisions(id,activity_id,attempt,state,rationale,model_provider,model_name,input_digest,output)
-          values(${questionDecisionId},${questionActivityId},1,'question','Need owner input','fake','bounded','digest','{}'::jsonb)`;
+        await sql`insert into app.decisions(id,activity_id,user_id,account_id,schema_version,attempt,state,rationale,model_provider,model_name,input_digest,output)
+          values(${questionDecisionId},${questionActivityId},${ids.user},${ids.primary},1,1,'question','Need owner input','fake','bounded','digest','{}'::jsonb)`;
         await sql`insert into app.questions(id,activity_id,decision_id,prompt,state) values(${questionId},${questionActivityId},${questionDecisionId},'How should invoices be handled?','open')`;
         const agentRepository = new PostgresAgentRepository(ingestionClient(sql));
         await expect(agentRepository.answerQuestion({ subjectId: ids.user, accountIds: [ids.primary] }, questionId, answer, primaryActivity.version, 'acceptance-answer'))
           .resolves.toMatchObject({ kind: 'answered', question: { state: 'answered', version: primaryActivity.version + 1 } });
-        await triage.rememberUserInstruction({ userId: ids.user, activityId: questionActivityId, instruction: answer });
-        expect(sourceAppends).toEqual([{ resourceId: userResourceId(ids.user), threadId: activityThreadId(ids.user, questionActivityId),
-          text: JSON.stringify({ userInstruction: answer }) }]);
+        await triage.rememberUserInstruction({ userId: ids.user, accountId: ids.primary, activityId: questionActivityId, instruction: answer });
+        expect(sourceAppends).toEqual([{ resourceId: userResourceId(ids.user, { scope: 'mailbox', accountId: ids.primary }),
+          threadId: activityThreadId(ids.user, ids.primary, questionActivityId),
+          text: JSON.stringify({ provenance: 'user', scope: 'mailbox', userInstruction: answer }) }]);
         expect(await sql`select kind,state from app.mailbox_memory_events where source_id=${questionId}`)
           .toEqual([{ kind: 'question_answered', state: 'pending' }]);
         await drain(worker());

@@ -6,3 +6,7 @@ export * from './agent-manager-store.js';
 export * from './postgres-client.js';
 export * from './schema.js';
 export * from './user-account-scope.js';
+export * from './agent-proposal-store.js';
+export * from './draft-operations.js';
+export * from './draft-memory-projection.js';
+export * from './conversation-store.js';

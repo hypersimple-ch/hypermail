@@ -8,11 +8,14 @@ export const agentEvaluateJobSchema = z.union([
 export type AgentEvaluateJob = z.infer<typeof agentEvaluateJobSchema>;
 export const notificationDeliverJobSchema = z.strictObject({ notificationId: idSchema });
 export const policyExecuteJobSchema = z.strictObject({ actionId: idSchema });
+export const conversationRespondJobSchema = z.strictObject({ turnId: idSchema, userId: idSchema });
+export type ConversationRespondJob = z.infer<typeof conversationRespondJobSchema>;
 
 export const queueJobSchema = z.discriminatedUnion('name', [
   z.strictObject({ name: z.literal('agent.evaluate'), payload: agentEvaluateJobSchema }),
   z.strictObject({ name: z.literal('notification.deliver'), payload: notificationDeliverJobSchema }),
   z.strictObject({ name: z.literal('policy.execute'), payload: policyExecuteJobSchema }),
+  z.strictObject({ name: z.literal('conversation.respond'), payload: conversationRespondJobSchema }),
 ]);
 
 export const dependencyStateSchema = z.enum(['ready', 'degraded', 'unavailable', 'disabled']);
@@ -46,9 +49,3 @@ export interface RuntimeStopSignal {
   onAbort(listener: () => void): () => void;
 }
 
-export function approvedSendCapability(environment: {
-  readonly APPROVED_SEND_URL?: string;
-  readonly APPROVED_SEND_TOKEN?: string;
-}): 'disabled' | 'configured' {
-  return environment.APPROVED_SEND_URL && environment.APPROVED_SEND_TOKEN ? 'configured' : 'disabled';
-}

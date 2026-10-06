@@ -1,3 +1,5 @@
+import type { AgentProposal } from '../agent/contracts.js';
+
 /** Framework-neutral activity contracts. State names mirror @hypermail/contracts. */
 export type DomainActivityState = 'new' | 'waiting_question' | 'failed' | 'handled' | 'acknowledged';
 export type ActivityFilter = 'new' | 'questions' | 'failed' | 'history';
@@ -32,6 +34,7 @@ export type ActivityRecord = Readonly<{
   timeline: readonly ActivityTimelineEvent[];
   runs?: readonly ActivityRunRecord[];
   actions?: readonly ActivityActionRecord[];
+  proposals?: readonly AgentProposal[];
 }>;
 
 export type ActivityListInput = Readonly<{
@@ -73,8 +76,10 @@ export function matchesActivityFilter(activity: ActivityRecord, filter: Activity
 }
 
 export function acknowledgementBlockReason(activity: ActivityRecord): string | null {
+  if (activity.proposals?.some(proposal => proposal.state === 'waiting_review' || proposal.state === 'ready' || proposal.state === 'blocked' || (proposal.state === 'authorized' && proposal.action?.state !== 'verified'))) return 'Finish reviewing and verifying the proposed actions before acknowledging.';
+  if (activity.actions?.some(action => action.state !== 'verified') || activity.runs?.some(run => run.state !== 'completed')) return 'Wait for the actions and runs to finish before acknowledging.';
   if (activity.state === 'waiting_question' || activity.question?.state === 'open') return 'Answer the open question before acknowledging.';
-  if (activity.state === 'failed' || activity.failure?.retrying || activity.jobState === 'pending' || activity.jobState === 'running') return 'Wait for the failed or retrying work to finish before acknowledging.';
+  if (activity.state === 'failed' || activity.failure?.retrying || activity.jobState === 'pending' || activity.jobState === 'running' || activity.jobState === 'suspended') return 'Wait for the failed or retrying work to finish before acknowledging.';
   if (activity.state !== 'handled') return 'Only handled work can be acknowledged.';
   return null;
 }

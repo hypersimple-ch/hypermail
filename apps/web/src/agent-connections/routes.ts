@@ -13,6 +13,7 @@ export function createAgentConnectionRoutes(service:AgentConnectionsService,expe
   lifecycle:(r:ManagerRouteRequest,id:string)=>run(r,userId=>service.setLifecycle(userId,id,String(r.body['state']) as ConnectionState,Number(r.body['expectedRevision']))),
   securityRevoke:(r:ManagerRouteRequest,id:string)=>run(r,userId=>service.securityRevoke(userId,id,Number(r.body['expectedRevision']))),
   assignment:(r:ManagerRouteRequest,mailboxId:string)=>run(r,userId=>service.setAssignment(userId,mailboxId,choice(r.body['manager']),r.body['automaticProcessingEnabled']===true,Number(r.body['expectedAssignmentRevision']),r.body['expectedGrantRevision']===undefined?undefined:Number(r.body['expectedGrantRevision']))),
+  activateAssistant:(r:ManagerRouteRequest,mailboxId:string)=>run(r,userId=>service.activateAssistant(userId,mailboxId,r.body['confirmed']===true,Number(r.body['expectedAssignmentRevision']),r.body['expectedGrantRevision']===null?null:Number(r.body['expectedGrantRevision']))),
   reapprove:(r:ManagerRouteRequest,mailboxId:string)=>run(r,userId=>service.reapprove(userId,mailboxId,Number(r.body['expectedGrantRevision']),typeof r.body['idempotencyKey']==='string'?r.body['idempotencyKey']:'')),
  };
 }

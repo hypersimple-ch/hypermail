@@ -8,9 +8,10 @@ for tool in age aws pg_restore tar sha256sum cmp python3 stat; do command -v "$t
 : "${BACKUP_ENCRYPTION_KEY_FILE:?BACKUP_ENCRYPTION_KEY_FILE is required}"
 : "${BACKUP_STATE_ENCRYPTION_KEY_FILE:?BACKUP_STATE_ENCRYPTION_KEY_FILE is required}"
 [ "${RESTORE_ISOLATED:-}" = 1 ] || fail 'set RESTORE_ISOLATED=1 after creating an isolated target'
-[ "$#" -eq 6 ] || fail 'usage: restore-run --generation ID --target-db-url-file /run/secrets/file --state-directory EMPTY_DIRECTORY'
-[ "$1" = --generation ] && [ "$3" = --target-db-url-file ] && [ "$5" = --state-directory ] || fail 'invalid arguments'
-generation=$2; target_db_file=$4; state_dir=$6
+[ "$#" -eq 8 ] || fail 'usage: restore-run --generation ID --target-db-url-file /run/secrets/file --state-directory EMPTY_DIRECTORY --hindsight-directory EMPTY_DIRECTORY'
+[ "$1" = --generation ] && [ "$3" = --target-db-url-file ] && [ "$5" = --state-directory ] && [ "$7" = --hindsight-directory ] || fail 'invalid arguments'
+generation=$2; target_db_file=$4; state_dir=$6; hindsight_dir=$8
+: "${RESTORE_HINDSIGHT_IMAGE:?pin RESTORE_HINDSIGHT_IMAGE to the backed-up image digest}"
 [[ "$target_db_file" == /run/secrets/* && -r "$target_db_file" ]] || fail 'target DB URL must be a readable /run/secrets file'
 target_db=$(<"$target_db_file")
 export TARGET_DB_URL="$target_db"
@@ -23,25 +24,57 @@ for key in "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE"; do
   (( (8#$mode & 077) == 0 )) || fail 'encryption key file permissions are too broad'
 done
 cmp -s "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE" && fail 'database and state encryption keys must differ'
-[ ! -e "$state_dir" ] || [ -d "$state_dir" ] && [ -z "$(find "$state_dir" -mindepth 1 -print -quit)" ] || fail 'state directory must be absent or empty'
-mkdir -p "$state_dir"
+[ "$state_dir" != "$hindsight_dir" ] || fail 'restore directories must differ'
+for directory in "$state_dir" "$hindsight_dir"; do
+  [ ! -L "$directory" ] || fail 'restore directory must not be a symlink'
+  [ ! -e "$directory" ] || { [ -d "$directory" ] && [ -z "$(find "$directory" -mindepth 1 -print -quit)" ]; } || fail 'restore directories must be absent or empty'
+done
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 base="${BACKUP_TARGET%/}/generations/$generation"
-for artifact in database.dump.age state.tar.age manifest.age; do aws s3 cp --only-show-errors "$base/$artifact" "$tmp/$artifact" >/dev/null; done
+aws s3 cp --only-show-errors "$base/manifest.age" "$tmp/manifest.age" >/dev/null
 age --decrypt --identity "$BACKUP_ENCRYPTION_KEY_FILE" --output "$tmp/manifest.json" "$tmp/manifest.age" || fail 'manifest decryption failed'
+python3 - "$tmp/manifest.json" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+if manifest.get('schemaVersion') != 2:
+    raise SystemExit('legacy backup incomplete: Hindsight memory absent; full restore refused')
+PY
+for artifact in database.dump.age state.tar.age hindsight.tar.age; do aws s3 cp --only-show-errors "$base/$artifact" "$tmp/$artifact" >/dev/null; done
 python3 - "$tmp/manifest.json" "$generation" "$tmp" <<'PY'
-import hashlib, json, pathlib, sys
+import hashlib, json, os, pathlib, re, sys
 manifest = json.load(open(sys.argv[1]))
 if manifest.get('generation') != sys.argv[2]: raise SystemExit('manifest generation mismatch')
-for name in ('database.dump.age', 'state.tar.age'):
+memory = manifest.get('hindsight', {})
+if memory.get('version') != '0.9.1' or memory.get('snapshot') != 'clean_shutdown' or not re.search(r'@sha256:[0-9a-f]{64}$', memory.get('image', '')):
+    raise SystemExit('invalid Hindsight snapshot metadata')
+if memory['image'] != os.environ['RESTORE_HINDSIGHT_IMAGE']: raise SystemExit('restore Hindsight image mismatch')
+for name in ('database.dump.age', 'state.tar.age', 'hindsight.tar.age'):
     item = manifest.get('artifacts', {}).get(name, {})
-    data = pathlib.Path(sys.argv[3], name).read_bytes()
-    if item.get('sha256') != hashlib.sha256(data).hexdigest() or item.get('bytes') != len(data):
+    path = pathlib.Path(sys.argv[3], name)
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''): digest.update(block)
+    if item.get('sha256') != digest.hexdigest() or item.get('bytes') != path.stat().st_size:
         raise SystemExit(f'integrity check failed for {name}')
 PY
 age --decrypt --identity "$BACKUP_ENCRYPTION_KEY_FILE" --output "$tmp/database.dump" "$tmp/database.dump.age" || fail 'database artifact decryption failed'
 age --decrypt --identity "$BACKUP_STATE_ENCRYPTION_KEY_FILE" --output "$tmp/state.tar" "$tmp/state.tar.age" || fail 'state artifact decryption failed'
+age --decrypt --identity "$BACKUP_STATE_ENCRYPTION_KEY_FILE" --output "$tmp/hindsight.tar" "$tmp/hindsight.tar.age" || fail 'Hindsight artifact decryption failed'
+# Validate both archives and the dump before making any target write.
+python3 - "$tmp/state.tar" "$tmp/hindsight.tar" "$state_dir" "$hindsight_dir" <<'PY'
+import pathlib, sys, tarfile
+targets = [pathlib.Path(p).resolve() for p in sys.argv[3:]]
+if targets[0] == targets[1] or targets[0] in targets[1].parents or targets[1] in targets[0].parents:
+    raise SystemExit('restore directories must be disjoint')
+for path in sys.argv[1:3]:
+    with tarfile.open(path) as archive:
+        for item in archive:
+            name = pathlib.PurePosixPath(item.name)
+            if name.is_absolute() or '..' in name.parts or not (item.isdir() or item.isfile()):
+                raise SystemExit('unsafe state archive entry')
+PY
+pg_restore --list "$tmp/database.dump" >/dev/null
 connection_parts=()
 while IFS= read -r -d '' value; do connection_parts+=("$value"); done < <(python3 - <<'PY'
 import os, sys
@@ -54,5 +87,7 @@ PY
 [ "${#connection_parts[@]}" -eq 5 ] || fail 'target DB URL cannot be parsed'
 export PGHOST="${connection_parts[0]}" PGPORT="${connection_parts[1]}" PGUSER="${connection_parts[2]}" PGPASSWORD="${connection_parts[3]}" PGDATABASE="${connection_parts[4]}"
 pg_restore --clean --if-exists --no-owner --no-privileges --dbname="$PGDATABASE" "$tmp/database.dump"
+mkdir -p "$state_dir" "$hindsight_dir"
 tar --extract --file "$tmp/state.tar" --directory "$state_dir" --no-same-owner --no-same-permissions
+tar --extract --file "$tmp/hindsight.tar" --directory "$hindsight_dir" --no-same-owner --no-same-permissions
 printf '{"timestamp":"%s","level":"info","event":"restore.succeeded","fields":{"generation":"%s"}}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$generation"

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./approved-send": "./dist/approved-send.js"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
@@ -13,6 +14,7 @@
     "test": "vitest run --root ../.. packages/hypermail/test"
   },
   "dependencies": {
+    "@hypermail/send": "workspace:*",
     "marked": "18.0.7"
   }
 }

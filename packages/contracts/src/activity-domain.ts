@@ -162,7 +162,7 @@ export const agentActionSchema = z.strictObject({
   }
   const needsMessage = ['archive', 'recoverable_trash', 'move', 'mark_read', 'mark_unread'].includes(action.kind);
   const needsDraft = action.kind === 'draft_edit' || action.kind === 'send';
-  if (action.kind === 'draft_create' && !action.target.requestId) context.addIssue({ code: 'custom', path: ['target', 'requestId'], message: 'Draft creation requires a request.' });
+  if (action.kind === 'draft_create' && !action.target.draftId && !action.target.requestId) context.addIssue({ code: 'custom', path: ['target'], message: 'Draft creation requires a real draft or an interactive request.' });
   if (needsMessage && !action.target.messageId) context.addIssue({ code: 'custom', path: ['target', 'messageId'], message: 'This mutation requires a message.' });
   if (needsDraft && !action.target.draftId) context.addIssue({ code: 'custom', path: ['target', 'draftId'], message: 'This mutation requires a draft.' });
   if (action.kind === 'move' && !action.target.destinationFolderId) context.addIssue({ code: 'custom', path: ['target', 'destinationFolderId'], message: 'Move requires a destination folder.' });
@@ -184,7 +184,7 @@ export const agentActionSchema = z.strictObject({
   if (action.verification && (action.verification.actionId !== action.id || action.verification.mailboxId !== action.mailboxId)) {
     context.addIssue({ code: 'custom', path: ['verification'], message: 'Verification evidence must identify this Action and Mailbox.' });
   }
-  if (action.state === 'failed' ? action.errorCode === null : action.errorCode !== null) context.addIssue({ code: 'custom', path: ['errorCode'], message: 'errorCode is required only for failed Actions.' });
+  if (action.state === 'failed' ? action.errorCode === null : action.state !== 'cancelled' && action.errorCode !== null) context.addIssue({ code: 'custom', path: ['errorCode'], message: 'An error code is required for failed Actions and allowed for cancelled Actions.' });
   if (action.startedAt && !atOrAfter(action.startedAt, action.authorizedAt)) context.addIssue({ code: 'custom', path: ['startedAt'], message: 'startedAt must not precede authorization.' });
   if (action.providerReportedAt && action.startedAt && !atOrAfter(action.providerReportedAt, action.startedAt)) context.addIssue({ code: 'custom', path: ['providerReportedAt'], message: 'Provider report must not precede execution.' });
   if (action.completedAt && !atOrAfter(action.completedAt, action.startedAt ?? action.authorizedAt)) context.addIssue({ code: 'custom', path: ['completedAt'], message: 'Completion must not precede the Action.' });
@@ -198,6 +198,9 @@ const eventDetailSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('question_answered'), runId: idSchema, answerDigest: digestSchema }),
   z.strictObject({ type: z.literal('sensitive_read_summary'), runId: idSchema, capability: z.enum(['mail.read', 'attachment.read']), itemCount: z.number().int().nonnegative() }),
   z.strictObject({ type: z.literal('authorization_denied'), runId: idSchema, reasonCode: z.string().trim().min(1).max(100) }),
+  z.strictObject({ type: z.literal('action_proposed'), runId: idSchema, proposalId: idSchema }),
+  z.strictObject({ type: z.literal('action_reviewed'), runId: idSchema, proposalId: idSchema, reviewId: idSchema, decision: z.enum(['approve', 'reject', 'correct']) }),
+  z.strictObject({ type: z.literal('action_blocked'), runId: idSchema, proposalId: idSchema, reasonCode: z.string().trim().min(1).max(100) }),
   z.strictObject({ type: z.literal('action_authorized'), runId: idSchema, actionId: idSchema }),
   z.strictObject({ type: z.literal('action_started'), runId: idSchema, actionId: idSchema }),
   z.strictObject({ type: z.literal('action_provider_reported'), runId: idSchema, actionId: idSchema }),
@@ -246,7 +249,7 @@ export class IllegalAgentWorkTransitionError extends Error {
 
 const activityTransitions: Readonly<Record<AgentActivityState, readonly AgentActivityState[]>> = {
   open: ['waiting_for_answer', 'resolved', 'attention_required'],
-  waiting_for_answer: ['open', 'attention_required'],
+  waiting_for_answer: ['open', 'resolved', 'attention_required'],
   resolved: ['acknowledged'],
   attention_required: ['open', 'resolved', 'acknowledged'],
   acknowledged: [],

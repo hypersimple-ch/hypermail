@@ -17,7 +17,7 @@ services:
         condition: service_healthy
       hypermail:
         condition: service_healthy
-    networks: [dokploy-edge, private]
+    networks: [dokploy-edge, private, egress]
     labels:
       - traefik.enable=true
       - traefik.docker.network=${DOKPLOY_NETWORK:-dokploy-network}
@@ -42,15 +42,21 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
-    networks: [private]
+    # Private ingress; configured LLM/Codex calls require outbound provider access.
+    networks: [private, egress]
 
   backup:
     image: ${BACKUP_IMAGE:?set BACKUP_IMAGE to an immutable backup image reference}
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
     profiles: [backup]
     restart: "no"
     env_file: ["${BACKUP_ENV_FILE:?configure this in Dokploy as a mounted backup configuration file}"]
     environment:
       HYPERMAIL_STATE_DIRECTORY: /var/lib/hypermail
+      HINDSIGHT_STATE_DIRECTORY: /var/lib/hindsight
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/backup_aws_credentials
     secrets:
       - source: backup_database_key
@@ -75,12 +81,11 @@ services:
         mode: 0400
     volumes:
       - hypermail-data:/var/lib/hypermail:ro
+      - hindsight-data:/var/lib/hindsight:ro
     depends_on:
       postgres:
         condition: service_healthy
-      hypermail:
-        condition: service_healthy
-    networks: [private]
+    networks: [private, egress]
 
   postgres:
     image: postgres:16.10-alpine
@@ -125,7 +130,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    networks: [private]
+    networks: [private, egress]
 
   hindsight:
     image: ${HINDSIGHT_IMAGE:?set HINDSIGHT_IMAGE to an immutable Hindsight 0.9.1 digest}

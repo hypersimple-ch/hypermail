@@ -6,7 +6,7 @@ Run only in isolated acceptance accounts and infrastructure. Use the exact propo
 
 ## Preconditions
 
-- Web, worker, PostgreSQL, pg-boss, approved Hypermail image, private approved-send endpoint, model stub, push stub, and TLS proxy are running with production network boundaries.
+- Web with integrated approved-send journal, worker, PostgreSQL, pg-boss, approved Hypermail image, acceptance-only model/push fixtures and TLS proxy are running with production network boundaries.
 - One isolated account per Outlook/M365, Gmail, and IMAP is baselined.
 - Toxiproxy (or equivalent) can interrupt worker→PostgreSQL, worker→Hypermail, worker→model, and worker→push paths without exposing them publicly.
 - A read-only acceptance SQL role can inspect counts/states by opaque test correlation IDs.
@@ -68,4 +68,4 @@ Run only in isolated acceptance accounts and infrastructure. Use the exact propo
 
 Record immutable image digests, UTC timestamps, opaque correlations, sanitized fixed metrics, row-count/state assertions, fault timing, Android-visible fallback state, and operator/result. Never record account addresses, sender/subject/body, endpoints, tokens, provider payloads, attachment names, or keys.
 
-Execution cannot begin until the web/worker compositions, queue consumers, provider mutation adapter, approved-send endpoint, approved Hypermail image, acceptance accounts, and fault-control infrastructure exist.
+Execution cannot begin until the integrated web/worker compositions, queue consumers, provider mutation and restricted owner-send adapters, approved Hypermail image, explicitly authorized acceptance accounts and fault-control infrastructure exist.

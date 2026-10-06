@@ -1,9 +1,32 @@
+import { reviseMailboxManagerAssignment, type MailboxManager } from '@hypermail/contracts';
 import type { SqlClient } from '@hypermail/db';
 import type { AgentConnectionsRepository, ConnectionState, ManagerChoice, ManagerSettingsView } from './contracts.js';
 const columns=(m:ManagerChoice):[string,string|null]=>m.kind==='agent_connection'?[m.kind,m.connectionId]:[m.kind,null];
 const date=(v:unknown)=>v instanceof Date?v.toISOString():String(v);
 export class PostgresAgentConnectionsRepository implements AgentConnectionsRepository {
  constructor(private readonly sql:SqlClient){}
+ async activateAssistant(userId:string,mailboxId:string,expectedAssignmentRevision:number,expectedGrantRevision:number|null):Promise<void>{
+  await this.sql.transaction(async sql=>{
+   await sql.query(`select id from app.accounts where id=$1::uuid and user_id=$2::uuid for update`,[mailboxId,userId]);
+   const assignments=await sql.query(`select * from app.mailbox_manager_assignments where user_id=$1::uuid and account_id=$2::uuid for update`,[userId,mailboxId]);
+   const assignment=assignments.rows[0];if(!assignment||Number(assignment['revision'])!==expectedAssignmentRevision)throw new Error('stale');
+   const grants=await sql.query(`select * from app.agent_capability_grants where user_id=$1::uuid and account_id=$2::uuid for update`,[userId,mailboxId]);
+   const grant=grants.rows[0];if((grant?Number(grant['revision']):null)!==expectedGrantRevision)throw new Error('stale');
+   if(grant&&grant['manager_kind']!=='mastra')await sql.query(`update app.agent_capability_grants set state='revoked',revision=revision+1,updated_at=now() where id=$1::uuid and state<>'revoked'`,[grant['id']]);
+   if(assignment['manager_kind']!=='mastra'||assignment['automatic_processing_enabled']!==true){
+    const manager:MailboxManager=assignment['manager_kind']==='agent_connection'?{kind:'agent_connection',connectionId:String(assignment['agent_connection_id'])}:assignment['manager_kind']==='none'?{kind:'none'}:{kind:'mastra'};
+    const next=reviseMailboxManagerAssignment({id:String(assignment['id']),userId,mailboxId,manager,automaticProcessingEnabled:assignment['automatic_processing_enabled']===true,revision:expectedAssignmentRevision,createdAt:date(assignment['created_at']),updatedAt:date(assignment['updated_at'])},{manager:{kind:'mastra'},automaticProcessingEnabled:true},new Date().toISOString()).assignment;
+    await sql.query(`update app.mailbox_manager_assignments set manager_kind='mastra',agent_connection_id=null,automatic_processing_enabled=true,revision=$2,updated_at=$3::timestamptz where id=$1::uuid`,[assignment['id'],next.revision,next.updatedAt]);
+   }
+   const capabilities=['mail.list','mail.search','mail.read','attachment.read','folder.list','mail.archive','mail.move','mail.trash_recoverable','draft.create','draft.edit'];
+   const updated=await sql.query<{id:string;revision:number}>(`insert into app.agent_capability_grants(user_id,account_id,manager_kind,agent_connection_id,capabilities,invocation_modes,state,revision,approved_at)
+    values($1::uuid,$2::uuid,'mastra',null,$3::text[],ARRAY['automatic','interactive'],'active',1,clock_timestamp())
+    on conflict(user_id,account_id) do update set manager_kind='mastra',agent_connection_id=null,capabilities=excluded.capabilities,invocation_modes=excluded.invocation_modes,state='active',revision=app.agent_capability_grants.revision+1,approved_at=excluded.approved_at,updated_at=clock_timestamp() returning id,revision`,[userId,mailboxId,capabilities]);
+   const approved=updated.rows[0];if(!approved)throw new Error('stale');
+   await sql.query(`insert into app.capability_grant_reapproval_events(event_id,grant_id,grant_revision,approver_user_id,approved_at) values($1,$2::uuid,$3,$4::uuid,clock_timestamp())`,[`assistant-activation:${approved.id}:${String(approved.revision)}`,approved.id,approved.revision,userId]);
+   await sql.query(`insert into app.audits(actor_type,actor_id,account_id,event,correlation_id,metadata) values('user',$1,$2::uuid,'agent.assistant_activated',$3,$4::jsonb)`,[userId,mailboxId,`assistant-activation:${approved.id}:${String(approved.revision)}`,{capabilities,ownerConfirmed:true}]);
+  });
+ }
  async read(userId:string):Promise<ManagerSettingsView>{
   const [p,c,m]=await Promise.all([
    this.sql.query(`select default_manager_kind,default_agent_connection_id,revision from app.user_agent_preferences where user_id=$1::uuid`,[userId]),

@@ -8,6 +8,8 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { PostgresOAuthService, AccessPrincipal } from '../oauth/service.js';
 import { PublicMcpError, type PublicMcpFacadeCore, type VerifiedInvocationBinding } from './core.js';
 import { PUBLIC_MCP_PROTECTED_RESOURCE_METADATA_PATH, publicToolRegistry } from './registry.js';
+import { createClientIpResolver } from '../security/client-ip.js';
+import { closeRejectedBody, readRequestBytes, RequestBodyError } from '../security/request-body.js';
 
 const MAX_BODY_BYTES = 512 * 1024;
 const DEFAULT_TTL_MS = 15 * 60_000;
@@ -20,6 +22,7 @@ export type PublicMcpHttpOptions = Readonly<{
   audit?: (event: PublicMcpAuditEvent) => Promise<void>; now?: () => number; sessionTtlMs?: number;
   maxSessions?: number; maxInflightPerSession?: number; maxInflight?: number;
   preAuthLimit?: number; preAuthWindowMs?: number; preAuthMaxSubjects?: number;
+  trustedProxyCidrs?: readonly string[];
   connectSession?: (server:McpServer,transport:StreamableHTTPServerTransport)=>Promise<void>;
 }>;
 export interface PublicMcpHttpHandler { handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>; close(): Promise<void>; readonly sessionCount: number }
@@ -37,15 +40,14 @@ const bearer = (req: IncomingMessage): string | null => {
 };
 const sameIdentity = (a: SessionIdentity, b: SessionIdentity): boolean => a.familyId === b.familyId && a.clientId === b.clientId && a.userId === b.userId && a.connectionId === b.connectionId && a.mailboxId === b.mailboxId;
 const readJson = async (req: IncomingMessage): Promise<unknown> => {
-  const chunks: Uint8Array[] = []; let size = 0;
-  for await (const part of req) { const chunk = Buffer.from(part); size += chunk.length; if (size > MAX_BODY_BYTES) throw new RangeError('oversize'); chunks.push(chunk); }
-  if (chunks.length === 0) throw new SyntaxError('empty');
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const raw = await readRequestBytes(req, MAX_BODY_BYTES);
+  return JSON.parse(raw.toString('utf8'));
 };
 
 /** Raw Node transport. It must be mounted before the generic web/API body parser. */
 export function createPublicMcpHttpHandler(options: PublicMcpHttpOptions): PublicMcpHttpHandler {
   const sessions = new Map<string, Session>(); const managedSessions = new Set<Session>(); const context = new AsyncLocalStorage<VerifiedInvocationBinding>();
+  const clientIp = createClientIpResolver(options.trustedProxyCidrs);
   const now = options.now ?? Date.now; const ttl = options.sessionTtlMs ?? DEFAULT_TTL_MS;
   const maxSessions = options.maxSessions ?? 100; const maxPerSession = options.maxInflightPerSession ?? 8; const maxInflight = options.maxInflight ?? 64;
   const preAuthLimit=options.preAuthLimit??60,preAuthWindow=options.preAuthWindowMs??60_000,preAuthMaximum=options.preAuthMaxSubjects??2_048;
@@ -94,7 +96,7 @@ export function createPublicMcpHttpHandler(options: PublicMcpHttpOptions): Publi
     const origin = req.headers.origin; if (origin !== undefined && origin !== options.origin) { jsonRpcError(res, 403, -32003, 'Forbidden.'); return true; }
     if (origin === options.origin) res.setHeader('Access-Control-Allow-Origin', origin);
     const expectedHost = new URL(options.origin).host; if (req.headers.host !== expectedHost) { jsonRpcError(res, 400, -32600, 'Invalid request.'); return true; }
-    if(!takePreAuth(req.socket.remoteAddress??'unknown')){res.setHeader('Retry-After',String(Math.max(1,Math.ceil(preAuthWindow/1000))));jsonRpcError(res,429,-32002,'Too many requests.');return true}
+    if(!takePreAuth(clientIp(req))){res.setHeader('Retry-After',String(Math.max(1,Math.ceil(preAuthWindow/1000))));jsonRpcError(res,429,-32002,'Too many requests.');return true}
     const token = bearer(req); if (!token) { challenge(res); return true; }
     const principal = await options.oauth.verifyAccess(token); if (!principal || principal.audience !== new URL('/mcp', options.origin).toString() || !principal.scopes.includes('agent:mailbox')) { challenge(res); return true; }
     await reap(); if (shuttingDown) { jsonRpcError(res, 503, -32002, 'Service unavailable.'); return true; }
@@ -108,7 +110,11 @@ export function createPublicMcpHttpHandler(options: PublicMcpHttpOptions): Publi
     }
     if (method === 'POST') {
       if (req.headers['content-type']?.split(';')[0]?.trim() !== 'application/json') { jsonRpcError(res, 415, -32600, 'Content-Type must be application/json.'); return true; }
-      try { parsed = await readJson(req); } catch (error) { jsonRpcError(res, error instanceof RangeError ? 413 : 400, -32700, error instanceof RangeError ? 'Request body too large.' : 'Parse error.'); return true; }
+      try { parsed = await readJson(req); } catch (error) {
+        closeRejectedBody(req, res);
+        const status = error instanceof RequestBodyError ? error.status : 400;
+        jsonRpcError(res, status, -32700, status === 413 ? 'Request body too large.' : 'Parse error.'); return true;
+      }
       if (!session) {
         if (sessionId || !isInitializeRequest(parsed)) { jsonRpcError(res, 400, -32000, 'A valid session is required.'); return true; }
         if (sessions.size + pendingSessions >= maxSessions) { jsonRpcError(res, 503, -32002, 'Service unavailable.'); return true; }

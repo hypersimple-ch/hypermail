@@ -112,7 +112,7 @@ export class PostgresIngestionStore implements IngestionStore {
         userId: row.user_id, mailboxId: arrival.accountId, sourceType: 'message', sourceId: row.source_id,
         sourceVersion: 1, kind: 'email_received', occurredAt: arrival.observedAt.toISOString(), contentPayload: {},
       });
-      return { jobId: row.job_id, idempotencyKey: row.idempotency_key, created: row.created };
+      return { jobId: row.job_id, idempotencyKey: row.idempotency_key, created: row.activity_created };
     });
   }
   async markPollSucceeded(accountId: string, at: Date, reconciled: boolean): Promise<void> {

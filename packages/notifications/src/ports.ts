@@ -4,15 +4,17 @@ import type { DeliveryAttempt, DeliveryState, LogicalNotification, NotificationI
 export interface NotificationPersistence {
   /** Upserts by activity ID, so an activity has exactly one logical notification. */
   ensureLogicalNotification(input: NotificationInput): Promise<LogicalNotification>;
+  /** Freezes the enabled recipient set exactly once under the logical notification lock. */
+  initializeTargets(notificationId: string, userId: string): Promise<void>;
   listEnabledSubscriptions(userId: string): Promise<readonly PushSubscription[]>;
   /** Atomically reserves the next attempt, returning null when already terminal or in progress. */
   claimDelivery(notificationId: string, subscriptionId: string, maxAttempts: number): Promise<DeliveryAttempt | null>;
-  finishDelivery(attempt: DeliveryAttempt, state: DeliveryState, detail?: Readonly<{ responseCode?: number; errorCode?: string }>): Promise<void>;
+  finishDelivery(attempt: DeliveryAttempt, state: DeliveryState, detail?: Readonly<{ responseCode?: number; errorCode?: string }>): Promise<boolean>;
   /** Persists last-success metadata after a provider acknowledgement. */
   markSubscriptionSucceeded(subscriptionId: string): Promise<void>;
   /** Stale 404/410 endpoints are durably disabled and excluded from future fan-out. */
   disableSubscription(subscriptionId: string): Promise<void>;
-  updateNotificationState(notificationId: string, state: NotificationState): Promise<void>;
+  finalizeNotification(notificationId: string): Promise<NotificationState>;
 }
 
 export type PushProviderFailure = Readonly<{ statusCode?: number; code?: string; message?: string }>;

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Host-only: Docker access never enters the backup container.
+set -euo pipefail
+umask 077
+compose() { docker compose "$@"; }
+options=("$@")
+command -v flock >/dev/null
+exec 9>"${BACKUP_LOCK_FILE:-/run/lock/hypermail-backup.lock}"
+flock -n 9 || { printf 'backup already running\n' >&2; exit 1; }
+services=(proxy web worker hypermail hindsight)
+running=()
+for service in "${services[@]}"; do
+  id=$(compose "${options[@]}" ps -q "$service")
+  [ -n "$id" ] || { printf 'required service unavailable: %s\n' "$service" >&2; exit 1; }
+  [ "$(docker inspect --format '{{.State.Running}}' "$id")" = true ] && running+=("$service")
+done
+# All four writers must be running/known before taking this consistent generation.
+[ "${#running[@]}" -eq 5 ] || { printf 'start the complete stack before quiesced backup\n' >&2; exit 1; }
+hindsight_id=$(compose "${options[@]}" ps -q hindsight)
+image=$(docker inspect --format '{{.Config.Image}}' "$hindsight_id")
+[[ "$image" =~ @sha256:[0-9a-f]{64}$ ]] || { printf 'Hindsight image must be pinned by digest\n' >&2; exit 1; }
+stopped=()
+resume() {
+  status=$?
+  trap - EXIT INT TERM
+  restart_failed=0
+  # Restart only services whose stop was attempted, in the inverse order.
+  for ((index=${#stopped[@]}-1; index>=0; index--)); do
+    compose "${options[@]}" start --wait "${stopped[index]}" || { restart_failed=1; break; }
+  done
+  [ "$restart_failed" -eq 0 ] || { printf 'backup restart failed; operator intervention required\n' >&2; status=1; }
+  exit "$status"
+}
+trap resume EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Stopping the public proxy is maintenance: no incoming request can race shutdown.
+for service in "${services[@]}"; do
+  stopped+=("$service")
+  compose "${options[@]}" stop --timeout 45 "$service"
+  id=$(compose "${options[@]}" ps --all -q "$service")
+  [ -n "$id" ] && [ "$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$id")" = 'exited 0' ] || {
+    printf 'clean shutdown not confirmed: %s\n' "$service" >&2; exit 1;
+  }
+done
+compose "${options[@]}" --profile backup run --rm --no-deps \
+  -e "BACKUP_QUIESCENCE_AT=$(date -u +%s)" \
+  -e "BACKUP_HINDSIGHT_IMAGE=$image" backup

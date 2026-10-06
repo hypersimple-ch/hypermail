@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { agentDraftFieldsSchema, draftFieldsSchema, recipientProblem } from './draft-fields.js';
 
 export const idSchema = z.uuid();
 export const isoDateTimeSchema = z.iso.datetime({ offset: true });
@@ -57,27 +58,87 @@ const targetSchema = z.strictObject({
   destinationFolderId: idSchema.optional(),
 });
 
-export const plannedActionSchema = z.strictObject({
-  kind: actionKindSchema,
-  target: targetSchema,
-  reason: z.string().min(1).max(2_000),
-}).superRefine((action, context) => {
-  if (action.kind === 'move' && !action.target.destinationFolderId) {
-    context.addIssue({ code: 'custom', path: ['target', 'destinationFolderId'], message: 'move requires destinationFolderId' });
+const messageTargetSchema = z.strictObject({ accountId: idSchema, messageId: idSchema });
+const moveTargetSchema = messageTargetSchema.extend({ destinationFolderId: idSchema });
+const draftTargetSchema = z.strictObject({ accountId: idSchema, draftId: idSchema });
+export const actionKeySchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+export const actionConfidenceSchema = z.number().min(0).max(1);
+const actionReasonSchema = z.string().min(1).max(2_000).refine((reason) => reason.trim().length > 0, 'A reason is required.');
+const plannedActionFields = {
+  key: actionKeySchema,
+  confidence: actionConfidenceSchema,
+  reason: actionReasonSchema,
+  evidenceIds: z.array(z.string().min(1).max(200)).max(20),
+  dependsOn: z.array(actionKeySchema).max(4),
+};
+
+/** Model proposals contain inline content, never an invented new draft identity. */
+export const plannedActionSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ ...plannedActionFields, kind: z.literal('archive'), target: messageTargetSchema }),
+  z.strictObject({ ...plannedActionFields, kind: z.literal('recoverable_trash'), target: messageTargetSchema }),
+  z.strictObject({ ...plannedActionFields, kind: z.literal('move'), target: moveTargetSchema }),
+  z.strictObject({ ...plannedActionFields, kind: z.literal('draft_create'), target: messageTargetSchema, draft: agentDraftFieldsSchema }),
+  z.strictObject({ ...plannedActionFields, kind: z.literal('draft_edit'), target: draftTargetSchema, expectedVersion: z.number().int().positive(), draft: agentDraftFieldsSchema }),
+]);
+export type PlannedAction = z.infer<typeof plannedActionSchema>;
+
+/** Owner corrections have no fabricated model confidence or model evidence. */
+export const ownerActionCorrectionSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('archive'), target: messageTargetSchema, reason: actionReasonSchema }),
+  z.strictObject({ kind: z.literal('recoverable_trash'), target: messageTargetSchema, reason: actionReasonSchema }),
+  z.strictObject({ kind: z.literal('move'), target: moveTargetSchema, reason: actionReasonSchema }),
+  z.strictObject({ kind: z.literal('draft_create'), target: messageTargetSchema, reason: actionReasonSchema, draft: draftFieldsSchema }),
+  z.strictObject({ kind: z.literal('draft_edit'), target: draftTargetSchema, reason: actionReasonSchema, expectedVersion: z.number().int().positive(), draft: draftFieldsSchema }),
+]).superRefine((action, context) => {
+  if (action.kind !== 'draft_create' && action.kind !== 'draft_edit') return;
+  const problem = recipientProblem(action.draft.recipients);
+  if (problem) context.addIssue({ code: 'custom', path: ['draft', 'recipients'], message: problem });
+});
+export type OwnerActionCorrection = z.infer<typeof ownerActionCorrectionSchema>;
+
+export const actionPlanSchema = z.array(plannedActionSchema).min(1).max(5).superRefine((actions, context) => {
+  const byKey = new Map<string, PlannedAction>();
+  const classifiedMessages = new Set<string>();
+  for (const [index, action] of actions.entries()) {
+    if (byKey.has(action.key)) context.addIssue({ code: 'custom', path: [index, 'key'], message: 'Action keys must be unique.' });
+    byKey.set(action.key, action);
+    if (action.kind === 'archive' || action.kind === 'move' || action.kind === 'recoverable_trash') {
+      const identity = `${action.target.accountId}:${action.target.messageId}`;
+      if (classifiedMessages.has(identity)) context.addIssue({ code: 'custom', path: [index, 'target'], message: 'A message may have only one classification action.' });
+      classifiedMessages.add(identity);
+    }
   }
-  if (action.kind.startsWith('draft_') && !action.target.draftId) {
-    context.addIssue({ code: 'custom', path: ['target', 'draftId'], message: 'draft action requires draftId' });
+  for (const [index, action] of actions.entries()) {
+    const seen = new Set<string>();
+    for (const [dependencyIndex, key] of action.dependsOn.entries()) {
+      if (key === action.key || !byKey.has(key) || seen.has(key)) {
+        context.addIssue({ code: 'custom', path: [index, 'dependsOn', dependencyIndex], message: 'Dependencies must be distinct existing other action keys.' });
+      }
+      seen.add(key);
+    }
   }
-  if (!action.kind.startsWith('draft_') && !action.target.messageId) {
-    context.addIssue({ code: 'custom', path: ['target', 'messageId'], message: 'mailbox action requires messageId' });
-  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const hasCycle = (key: string): boolean => {
+    if (visiting.has(key)) return true;
+    if (visited.has(key)) return false;
+    visiting.add(key);
+    for (const dependency of byKey.get(key)?.dependsOn ?? []) {
+      if (byKey.has(dependency) && hasCycle(dependency)) return true;
+    }
+    visiting.delete(key);
+    visited.add(key);
+    return false;
+  };
+  if (actions.some((action) => hasCycle(action.key))) context.addIssue({ code: 'custom', message: 'Action dependencies must be acyclic.' });
 });
 
+/** Version one is historical only and must never be parsed as an executable plan. */
 export const agentDecisionSchema = z.discriminatedUnion('state', [
-  z.strictObject({ state: z.literal('question'), rationale: z.string().min(1), question: z.string().min(1).max(4_000) }),
-  z.strictObject({ state: z.literal('actionable'), rationale: z.string().min(1), actions: z.array(plannedActionSchema).min(1).max(5) }),
-  z.strictObject({ state: z.literal('no_action'), rationale: z.string().min(1) }),
-  z.strictObject({ state: z.literal('failed'), rationale: z.string().min(1), errorCode: z.string().min(1) }),
+  z.strictObject({ schemaVersion: z.literal(2), state: z.literal('question'), rationale: z.string().min(1), question: z.string().min(1).max(4_000) }),
+  z.strictObject({ schemaVersion: z.literal(2), state: z.literal('actionable'), rationale: z.string().min(1), actions: actionPlanSchema }),
+  z.strictObject({ schemaVersion: z.literal(2), state: z.literal('no_action'), rationale: z.string().min(1) }),
+  z.strictObject({ schemaVersion: z.literal(2), state: z.literal('failed'), rationale: z.string().min(1), errorCode: z.string().min(1) }),
 ]);
 
 export const actionSchema = z.strictObject({
@@ -96,9 +157,9 @@ export const draftSchema = z.strictObject({
   state: draftStateSchema,
   version: z.number().int().positive(),
   createdBy: z.enum(['user', 'agent']),
-  recipients: z.array(z.strictObject({ kind: z.enum(['to', 'cc', 'bcc']), address: z.email() })).max(100),
-  subject: z.string().max(998),
-  body: z.string().max(2_000_000),
+  recipients: draftFieldsSchema.shape.recipients,
+  subject: draftFieldsSchema.shape.subject,
+  body: draftFieldsSchema.shape.body,
 });
 
 export const logicalNotificationSchema = z.strictObject({

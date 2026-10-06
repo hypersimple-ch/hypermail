@@ -2,6 +2,8 @@ export { HypermailReadClient, HypermailPolicyClient, HypermailMcpHttpClient, Mcp
 export { AttachmentStream, cleanupAttachmentOrphans, contentDisposition } from "./attachments.js";
 export type { AttachmentOrphanCleanupOptions } from "./attachments.js";
 export type {
+  Json,
+  FolderLookupPage,
   Account, AccountVerification, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions,
   CompleteAddAccountInput, CompleteAddAccountResult, DraftBodyFormat, DraftCreateInput, DraftEditInput, DraftMutationResult, PolicyMutationResult, EmailAddress, Folder, HypermailReadClientOptions,
   ImapAddAccountConfig, InboxPage, Message, MessagePage, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, Provider, RetryClassification, SearchOptions

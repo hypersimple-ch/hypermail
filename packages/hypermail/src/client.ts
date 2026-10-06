@@ -1,5 +1,6 @@
 import { marked } from "marked";
 import { AttachmentStream } from "./attachments.js";
+import type { FolderLookupPage } from "./types.js";
 import type { Account, AddAccountInput, AddAccountResult, AttachmentMetadata, AttachmentStreamOptions, CompleteAddAccountInput, CompleteAddAccountResult, DraftCreateInput, DraftEditInput, DraftMutationResult, Folder, HypermailReadClientOptions, InboxPage, Json, Message, MessagePage, OnboardingAccount, OnboardingDiagnostic, OnboardingErrorReason, PolicyMutationResult, Provider, RetryClassification, SearchOptions } from "./types.js";
 
 const retryableRpcCodes = new Set([-32001, -32002, -32003]);
@@ -9,6 +10,7 @@ const toolFailure = (result: Record<string, unknown>): McpTransportError => {
   // Tool content can contain provider secrets. Use it only to select a bounded,
   // stable classification and never include it in the thrown error.
   if (/invalid_grant|invalid[_ -]?token|token (?:has )?expired|reauth|authentication/i.test(diagnostic)) return new McpTransportError("Provider authentication failed", 401, false, "http");
+  if (/not found|does not exist|no such (?:message|email)|\b404\b/i.test(diagnostic)) return new McpTransportError("Provider message not found", 404, false, "http");
   if (/rate.?limit|too many requests|\b429\b/i.test(diagnostic)) return new McpTransportError("Provider rate limited", 429, true, "http");
   if (/timeout|temporar|unavailable|network|\b5\d\d\b/i.test(diagnostic)) return new McpTransportError("Provider unavailable", 503, true, "http");
   return new McpTransportError("MCP tool failed");
@@ -158,8 +160,9 @@ function message(value: unknown, expectedAccount?: string, includeBody = false):
   const mapAddresses = (raw: unknown, field: string) => raw === undefined ? undefined : Array.isArray(raw) ? raw.map((entry) => address(entry, field)) : (() => { throw new McpTransportError(`Malformed ${field}`); })();
   const attachments = v.attachments === undefined ? undefined : Array.isArray(v.attachments) ? v.attachments.map(attachment) : (() => { throw new McpTransportError("Malformed message.attachments"); })();
   const bodyFormat = optionalText(v.bodyFormat, "message.bodyFormat");
+  if (includeBody && v.body !== undefined && typeof v.body !== "string") throw new McpTransportError("Malformed message.body");
   if (bodyFormat !== undefined && bodyFormat !== "markdown" && bodyFormat !== "html" && bodyFormat !== "text") throw new McpTransportError("Malformed message.bodyFormat");
-  return { id: text(v.id, "message.id"), account, ...(optionalText(v.subject, "message.subject") !== undefined ? { subject: optionalText(v.subject, "message.subject") } : {}), ...(v.from !== undefined ? { from: address(v.from, "message.from") } : {}), ...(mapAddresses(v.to, "message.to") ? { to: mapAddresses(v.to, "message.to") } : {}), ...(mapAddresses(v.cc, "message.cc") ? { cc: mapAddresses(v.cc, "message.cc") } : {}), ...(mapAddresses(v.bcc, "message.bcc") ? { bcc: mapAddresses(v.bcc, "message.bcc") } : {}), ...(mapAddresses(v.replyTo, "message.replyTo") ? { replyTo: mapAddresses(v.replyTo, "message.replyTo") } : {}), ...(optionalText(v.internetMessageId, "message.internetMessageId") !== undefined ? { internetMessageId: optionalText(v.internetMessageId, "message.internetMessageId") } : {}), ...(optionalText(v.receivedAt, "message.receivedAt") !== undefined ? { receivedAt: optionalText(v.receivedAt, "message.receivedAt") } : {}), ...(bool(v.isRead, "message.isRead") !== undefined ? { isRead: bool(v.isRead, "message.isRead") } : {}), ...(optionalText(v.folder, "message.folder") !== undefined ? { folder: optionalText(v.folder, "message.folder") } : {}), ...(includeBody && optionalText(v.body, "message.body") !== undefined ? { body: optionalText(v.body, "message.body") } : {}), ...(includeBody && bodyFormat !== undefined ? { bodyFormat } : {}), ...(attachments ? { attachments } : {}) };
+  return { id: text(v.id, "message.id"), account, ...(optionalText(v.subject, "message.subject") !== undefined ? { subject: optionalText(v.subject, "message.subject") } : {}), ...(v.from !== undefined ? { from: address(v.from, "message.from") } : {}), ...(mapAddresses(v.to, "message.to") ? { to: mapAddresses(v.to, "message.to") } : {}), ...(mapAddresses(v.cc, "message.cc") ? { cc: mapAddresses(v.cc, "message.cc") } : {}), ...(mapAddresses(v.bcc, "message.bcc") ? { bcc: mapAddresses(v.bcc, "message.bcc") } : {}), ...(mapAddresses(v.replyTo, "message.replyTo") ? { replyTo: mapAddresses(v.replyTo, "message.replyTo") } : {}), ...(optionalText(v.internetMessageId, "message.internetMessageId") !== undefined ? { internetMessageId: optionalText(v.internetMessageId, "message.internetMessageId") } : {}), ...(optionalText(v.receivedAt, "message.receivedAt") !== undefined ? { receivedAt: optionalText(v.receivedAt, "message.receivedAt") } : {}), ...(bool(v.isRead, "message.isRead") !== undefined ? { isRead: bool(v.isRead, "message.isRead") } : {}), ...(optionalText(v.folder, "message.folder") !== undefined ? { folder: optionalText(v.folder, "message.folder") } : {}), ...(includeBody && typeof v.body === "string" ? { body: v.body } : {}), ...(includeBody && bodyFormat !== undefined ? { bodyFormat } : {}), ...(attachments ? { attachments } : {}) };
 }
 
 /** Mirrors the pinned runtime's Markdown draft composition for safe exact-text selection. */
@@ -184,13 +187,30 @@ export class HypermailPolicyClient {
   async trash(account: string, id: string): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call("trash_email", { account, id }), "trashed"); }
   async move(account: string, id: string, destination: string): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call("move_email", { account, id, destination }), "moved", { destination }); }
   async mark(account: string, id: string, isRead: boolean): Promise<PolicyMutationResult> { return policyMutationResult(await this.transport.call(isRead ? "mark_read" : "mark_unread", { account, id }), "marked", { isRead }); }
-  async containsMessageInFolder(account: string, id: string, folder: string, maximumPages = 5): Promise<boolean> {
+  async locateMessageInFolder(account: string, id: string, folder: string, options: { cursor?: string; maxPages?: number; timeoutMs?: number } = {}): Promise<"present" | "absent" | "incomplete"> {
+    return (await this.locateMessageInFolderPage(account, id, folder, options)).state;
+  }
+  async locateMessageInFolderPage(account: string, id: string, folder: string, options: { cursor?: string; maxPages?: number; timeoutMs?: number } = {}): Promise<FolderLookupPage> {
+    const maximumPages = positive(options.maxPages ?? 50, "maxPages", 50);
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new RangeError("Invalid verification timeout");
+    let skip = options.cursor === undefined ? 0 : Number(options.cursor);
+    if (!Number.isSafeInteger(skip) || skip < 0 || (options.cursor !== undefined && String(skip) !== options.cursor)) throw new RangeError("Invalid verification cursor");
+    const deadline = Date.now() + timeoutMs;
     for (let page = 0; page < maximumPages; page += 1) {
-      const result = record(await this.transport.call("list_emails", { account, folder, skip: page * 100, limit: 100 }), "list_emails");
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { state: "incomplete", nextCursor: String(skip) };
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = Symbol("timeout");
+      const response = await Promise.race([this.transport.call("list_emails", { account, folder, skip, limit: 100 }), new Promise<typeof timeout>(resolve => { timer = setTimeout(() => { resolve(timeout); }, remaining); })]).finally(() => { clearTimeout(timer); });
+      if (response === timeout) return { state: "incomplete", nextCursor: String(skip) };
+      const result = record(response, "list_emails");
       if (!Array.isArray(result.items) || typeof result.hasMore !== "boolean") throw new McpTransportError("Malformed list_emails response");
-      if (result.items.some((raw) => record(raw, "message").id === id)) return true; if (!result.hasMore) return false;
+      if (result.items.some((raw) => record(raw, "message").id === id)) return { state: "present", nextCursor: null };
+      if (!result.hasMore) return { state: "absent", nextCursor: null };
+      skip += 100;
     }
-    return false;
+    return { state: "incomplete", nextCursor: String(skip) };
   }
   async createDraft(input: DraftCreateInput): Promise<DraftMutationResult> {
     return draftMutationResult(await this.transport.call("draft_email", {

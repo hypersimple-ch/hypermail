@@ -29,10 +29,25 @@ describe("Hypermail restricted policy contract", () => {
     } });
     await expect(client.move("owner@example.test", "old-id", "folder-id")).resolves.toEqual({ id: "moved-id" });
     await expect(client.mark("owner@example.test", "moved-id", true)).resolves.toEqual({ id: "moved-id" });
-    await expect(client.containsMessageInFolder("owner@example.test", "moved-id", "folder-id")).resolves.toBe(true);
+    await expect(client.locateMessageInFolder("owner@example.test", "moved-id", "folder-id")).resolves.toBe("present");
     await expect(new HypermailPolicyClient({ call: async () => ({ moved: true, id: "x", destination: "wrong" }) }).move("owner@example.test", "old", "wanted")).rejects.toBeInstanceOf(McpTransportError);
   });
 
+  it("resumes a bounded scan beyond 5000 messages without declaring absence", async () => {
+    const client = new HypermailPolicyClient({ call: async (_name, args) => {
+      const skip = args["skip"];
+      if (typeof skip !== "number") throw new Error("Expected numeric provider cursor");
+      return {
+        items: skip === 5100 ? [{ id: "target" }] : [{ id: `other-${String(skip)}` }],
+        hasMore: skip < 5200,
+      };
+    } });
+    const first = await client.locateMessageInFolderPage("owner@example.test", "target", "folder");
+    expect(first).toEqual({ state: "incomplete", nextCursor: "5000" });
+    if (first.nextCursor === null) throw new Error("Missing continuation cursor");
+    expect(await client.locateMessageInFolderPage("owner@example.test", "target", "folder", { cursor: first.nextCursor })).toEqual({ state: "present", nextCursor: null });
+    expect(await client.locateMessageInFolder("owner@example.test", "missing", "folder", { cursor: "5200" })).toBe("absent");
+  });
 
   it("probes the complete restricted tool surface and rejects missing schemas", async () => {
     const inputs: Record<string, string[]> = { list_emails: ["account", "folder", "limit", "skip"], read_email: ["account", "id", "format"], archive_email: ["account", "id"], trash_email: ["account", "id"], move_email: ["account", "id", "destination"], mark_read: ["account", "id"], mark_unread: ["account", "id"], draft_email: ["account", "to", "subject", "body", "format", "include_signature", "inReplyTo"], edit_draft: ["account", "id", "old_text", "new_text"] };

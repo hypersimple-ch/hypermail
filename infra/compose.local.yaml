@@ -10,7 +10,9 @@ services:
     depends_on:
       web:
         condition: service_healthy
-    networks: [edge]
+    networks:
+      edge:
+        ipv4_address: 172.30.81.2
 
   web:
     build:
@@ -20,6 +22,7 @@ services:
     env_file: ["${WEB_ENV_FILE:-../.env}"]
     environment:
       ATTACHMENT_TEMP_DIRECTORY: /var/lib/hypermail-attachments
+      TRUSTED_PROXY_CIDRS: 172.30.81.2/32
       # Prevent the shared local env_file from delivering Gmail OAuth config here.
       HYPERMAIL_GMAIL_CLIENT_ID: ""
       HYPERMAIL_GMAIL_CLIENT_SECRET: ""
@@ -67,6 +70,11 @@ services:
       HYPERMAIL_GMAIL_CLIENT_ID: ""
       HYPERMAIL_GMAIL_CLIENT_SECRET: ""
       HYPERMAIL_GMAIL_REDIRECT_URI: ""
+      # Recovery credentials are web-only even when local development shares .env.
+      RECOVERY_SMTP_HOST: ""
+      RECOVERY_SMTP_USER: ""
+      RECOVERY_SMTP_PASSWORD: ""
+      RECOVERY_FROM: ""
     volumes:
       - codex-home:/var/lib/codex
       - attachment-temp:/var/lib/hypermail-attachments
@@ -160,7 +168,10 @@ services:
     networks: [private, egress]
 
 networks:
-  edge: {}
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.81.0/24
   egress: {}
   private:
     internal: true

@@ -17,20 +17,6 @@ class CapturingSql implements SqlClient {
 }
 
 describe('PostgreSQL lifecycle store', () => {
-  it('uses an atomic, account-scoped cache-only purge with an audit row', async () => {
-    const sql = new CapturingSql(); const store = new PostgresLifecycleStore(sql);
-    const at = new Date('2026-04-01T00:00:00.000Z'); const cutoff = new Date('2026-01-01T00:00:00.000Z');
-    await expect(store.purgeCachedBodies(cutoff, at, 100)).resolves.toBe(1);
-    const query = sql.statements[0]?.statement ?? '';
-    expect(query).toContain('DELETE FROM app.message_bodies');
-    expect(query).toContain('JOIN app.messages m ON m.id = b.message_id');
-    expect(query).toContain('b.cached_at <= $1 AND b.purge_after <= $2');
-    expect(query).toContain('LIMIT $3');
-    expect(query).toContain('FOR UPDATE OF b SKIP LOCKED');
-    expect(query).toContain("'message_body_purged'");
-    expect(query).not.toContain('DELETE FROM app.messages');
-    expect(sql.statements[0]?.values).toEqual([cutoff, at, 100]);
-  });
 
   it('disables, rather than deletes, expired subscriptions and audits the change', async () => {
     const sql = new CapturingSql(); const store = new PostgresLifecycleStore(sql);

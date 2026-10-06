@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hypermail/contracts": "workspace:*",
+    "@hypermail/db": "workspace:*",
     "@mastra/core": "1.61.0",
     "@mastra/memory": "1.27.0",
     "@mastra/pg": "1.21.1",
