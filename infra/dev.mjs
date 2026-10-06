@@ -25,6 +25,12 @@ const digest = createHash('sha256');
 for (const file of inputs) digest.update(file).update('\0').update(readFileSync(resolve(root, file))).update('\0');
 const inputHash = digest.digest('hex');
 const environment = { ...process.env, DEV_INPUT_HASH: inputHash };
+const run = (args) => {
+  const result = spawnSync(compose[0], [...compose.slice(1), ...args], { cwd: root, env: environment, stdio: 'inherit' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+};
+if (!planOnly) run(['config', '--quiet']);
 const images = ['hypermail-local-dev-web', 'hypermail-local-dev-worker', 'hypermail-local-dev-migrate'];
 const imageHash = (image) => {
   const result = spawnSync('docker', ['image', 'inspect', '--format', '{{ index .Config.Labels "org.hypermail.dev-input-hash" }}', image], { cwd: root, env: environment, encoding: 'utf8' });
@@ -35,11 +41,6 @@ if (planOnly) {
   process.stdout.write(`${JSON.stringify({ inputHash, rebuild: forced || staleImages.length > 0, staleImages })}\n`);
   process.exit(0);
 }
-const run = (args) => {
-  const result = spawnSync(compose[0], [...compose.slice(1), ...args], { cwd: root, env: environment, stdio: 'inherit' });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
-};
 if (forced || staleImages.length > 0) {
   process.stdout.write(`Preparing development images (${forced ? 'forced rebuild' : 'dependencies changed or images missing'})…\n`);
   run(['build', 'web', 'worker', 'migrate']);

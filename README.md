@@ -48,6 +48,8 @@ pnpm dev
 
 Open <http://localhost:8080>. Local Compose applies migrations automatically and seeds a separate `codex-home` volume from the host's Codex login. Mastra can use that host login, but Hindsight requires its separately configured supported LLM provider in `.env.hindsight`; those credentials never reach web or worker. Press Ctrl-C to stop the containers. Never commit either env file or use the fixed development secrets in deployment.
 
+`pnpm dev` validates Compose configuration before inspecting or building development images, so missing env files fail immediately. If `.env.hindsight` is missing, copy `.env.hindsight.example` and replace the placeholder API key before retrying; the host Codex login is not a Hindsight provider credential.
+
 `pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
 
 Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
