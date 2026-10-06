@@ -73,7 +73,7 @@ references are recorded in this
 [private Lazyweb collection](https://www.lazyweb.com/agentic-search/7e65437f-7831-4322-8e05-e507bd0e1f0e);
 competitor privacy claims and branding are not reused.
 
-Dokploy publishes only `/website` from `feat/public-website` in
+Dokploy publishes only `/website` from `prod` in
 `hypersimple-ch/hypermail`, using the Static build type, publish directory `.`,
 and SPA fallback disabled. Automatic deployments are disabled. The application
 is **Hypermail — site vitrine**, in the **Hypermail** project of **Hypersimple**.
@@ -86,3 +86,18 @@ or OAuth callback. Use the public homepage, `/privacy.html` and `/terms.html`
 URLs in Google Cloud branding; domain ownership and restricted-scope approval
 remain separate Google requirements. Review the layout at 375px and 1440px
 before changing the visual design.
+
+## Development and production branches
+
+`main` is the ongoing development branch. `prod` is the sole deployment source
+for this repository; never point a production service at `main` or a feature
+branch. Promotion does not authorize deploying services that remain NO-GO.
+
+Merge development PRs into `main`. For a release, review the changes in a PR
+from `main` to `prod`, verify the intended release surface, then merge it.
+Deploy the resulting `prod` commit through Dokploy and record its SHA and smoke
+results. The website application currently requires an explicit deployment;
+automatic deployments remain disabled. Reverting a release must also go
+through `prod`, not an ad-hoc deployment from a different branch.
+
+See the [deployment runbook](docs/runbooks/deployment.md) for release boundaries.
