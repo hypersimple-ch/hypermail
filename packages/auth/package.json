@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "better-auth": "1.6.23",
-    "nodemailer": "7.0.10",
+    "nodemailer": "10.0.6",
     "pg": "8.16.3",
     "postgres": "3.4.9"
   },
@@ -20,6 +20,6 @@
     "@types/nodemailer": "7.0.4",
     "@types/pg": "8.15.5",
     "@types/smtp-server": "3.5.12",
-    "smtp-server": "3.16.1"
+    "smtp-server": "3.18.3"
   }
 }

@@ -19,6 +19,12 @@ The application-service procedures below retain their release preconditions.
 Creating `prod` or publishing the website does not clear the application's
 NO-GO status or its dependency-security findings.
 
+Before promotion, run `pnpm check` and `pnpm security:scan` from the locked
+checkout. The dependency gate rejects high and critical production advisories;
+passing it does not mean zero advisories or clear the other NO-GO criteria.
+Security overrides live in `pnpm-workspace.yaml`; update the lockfile alongside
+them and verify SMTP delivery when upgrading Nodemailer.
+
 ## Preconditions
 
 1. Build and pin immutable `WEB_IMAGE`, `WORKER_IMAGE`, and `BACKUP_IMAGE` digests. Set `HINDSIGHT_IMAGE` to the approved full Hindsight 0.9.1 `ghcr.io/vectorize-io/hindsight@sha256:…` digest. Worker startup refuses unavailable/incompatible Hindsight before creating consumers or its health listener; it checks exact `/version`, `/health/ready`, required features and bounded OpenAPI methods. After that mandatory gate, private readiness still requires DB/queue/model/Hypermail/policy checks. Web liveness alone does not prove backend readiness or a production deployment.
