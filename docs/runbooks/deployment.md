@@ -24,6 +24,10 @@ checkout. The dependency gate rejects high and critical production advisories;
 passing it does not mean zero advisories or clear the other NO-GO criteria.
 Security overrides live in `pnpm-workspace.yaml`; update the lockfile alongside
 them and verify SMTP delivery when upgrading Nodemailer.
+The esbuild override also covers Drizzle's transitive legacy loaders: their old
+native binaries embed vulnerable Go runtimes even when `pnpm audit` passes.
+After changing it, build and scan the worker image as well as running the normal
+application checks; keep HIGH/CRITICAL container findings blocking.
 
 ## Preconditions
 

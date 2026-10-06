@@ -8,6 +8,8 @@ syncInjectedDepsAfterScripts:
 
 overrides:
   deepmerge-ts: 8.0.2
+  # Drizzle's legacy loaders ship esbuild binaries built with vulnerable Go runtimes.
+  esbuild: 0.28.2
   fast-uri: 3.1.8
   js-yaml@3: 3.15.2
   nanoid@3: 3.3.20
