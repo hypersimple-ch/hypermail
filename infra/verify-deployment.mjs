@@ -44,7 +44,8 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   for (const service of ['worker', 'postgres', 'hypermail']) {
     const section = compose.match(new RegExp(`^  ${service}:\\n([\\s\\S]*?)(?=\\n  [a-z]|\\nnetworks:)`, 'm'))?.[1] ?? '';
     if (/^    ports:/m.test(section)) fail(`${name} ${service} must not publish host ports`);
-    if (!/networks: \[private\]/.test(section)) fail(`${name} ${service} must be private-only`);
+    const expectedNetworks = service === 'postgres' ? /networks: \[private\]/ : /networks: \[private, egress\]/;
+    if (!expectedNetworks.test(section)) fail(`${name} ${service} must use private ingress and only its required egress`);
   }
   if (!/postgres-data:\s*\{\}/.test(compose) || !/hypermail-data:\s*\{\}/.test(compose) || !/hindsight-data:\s*\{\}/.test(compose)) {
     fail(`${name} compose must declare PostgreSQL, Hypermail, and Hindsight persistent volumes`);
@@ -54,8 +55,8 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   }
   if (!/healthcheck:/.test(compose)) fail(`${name} compose must define dependency health checks`);
   const backup = compose.match(/^  backup:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
-  if (!/profiles: \[backup\]/.test(backup) || !/hypermail-data:\/var\/lib\/hypermail:ro/.test(backup) || !/networks: \[private\]/.test(backup)) {
-    fail(`${name} backup must be an opt-in private job with read-only Hypermail state`);
+  if (!/profiles: \[backup\]/.test(backup) || !/hypermail-data:\/var\/lib\/hypermail:ro/.test(backup) || !/hindsight-data:\/var\/lib\/hindsight:ro/.test(backup) || !/networks: \[private, egress\]/.test(backup) || /docker\.sock/.test(backup)) {
+    fail(`${name} backup must be an opt-in job with read-only Hypermail/Hindsight state, object-store egress, and no Docker socket`);
   }
   const hindsight = compose.match(/^  hindsight:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
   if (!/image: \$\{HINDSIGHT_IMAGE:\?set HINDSIGHT_IMAGE to an immutable Hindsight 0\.9\.1 digest\}/.test(hindsight)
@@ -76,6 +77,9 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
   }
   const web = compose.match(/^  web:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
   if (/HINDSIGHT_ENV_FILE|HINDSIGHT_API_LLM|hindsight-data/.test(web)) fail(`${name} web must not receive Hindsight secrets or state`);
+  const webNetworks = name === 'VPS' ? /networks: \[edge, private, egress\]/ : /networks: \[dokploy-edge, private, egress\]/;
+  if (!webNetworks.test(web) || /^    ports:/m.test(web)) fail(`${name} web must allow private SMTP egress without a published backend port`);
+  if (/RECOVERY_SMTP|RECOVERY_FROM/.test(worker)) fail(`${name} worker must not receive SMTP credentials`);
   if (!/backup_database_key/.test(compose) || !/backup_state_key/.test(compose) || !/backup_alert_webhook/.test(compose)) {
     fail(`${name} compose must mount distinct backup keys and a failure-alert secret`);
   }

@@ -12,6 +12,7 @@ const error = (value: unknown): DraftRouteResponse => {
   if (value instanceof DraftConflictError) return { status: 409, body: { error: { code: 'CONFLICT', message: value.message } } };
   if (value instanceof DraftBlockedError || value instanceof SendRejectedError) return { status: 409, body: { error: { code: 'REJECTED', message: value.message } } };
   if (value instanceof DraftNotFoundError) return { status: 404, body: { error: { code: 'NOT_FOUND', message: value.message } } };
+  if(value instanceof Error && ['HYPERMAIL_TENANT_ROUTE_REQUIRED','HYPERMAIL_TENANT_ROUTE_MISSING'].includes(value.message))return {status:503,body:{error:{code:'SEND_UNAVAILABLE',message:'The mailbox send connection is unavailable.'}}};
   throw value;
 };
 /** Framework-neutral CSRF-safe mutation contract. Browser adapters must supply verified auth/fresh-auth timestamps. */
@@ -24,6 +25,9 @@ export function createDraftRoutes(service: DraftService, options: DraftRouteOpti
     save: (request: DraftRouteRequest, draftId: string) => mutation(request, (body) => editDraftSchema.parse(body), async (scope, input) => ({ draft: await service.editUser(scope, idSchema.parse(draftId), input.expectedVersion, input) })),
     beginApproval: (request: DraftRouteRequest, draftId: string) => mutation(request, (body) => approvalSchema.parse(body), async (scope, input) => ({ approval: await service.beginApproval(scope, idSchema.parse(draftId), input.expectedVersion, input.confirmation) })),
     confirmSend: (request: DraftRouteRequest, approvalId: string) => mutation(request, (body) => z.strictObject({ confirmation: z.string().min(16).max(500) }).parse(body), async (scope, input) => ({ draft: await service.confirmSend(scope, idSchema.parse(approvalId), input.confirmation) })),
+    reconcile:(request:DraftRouteRequest,draftId:string)=>mutation(request,body=>z.strictObject({approvalId:z.uuid(),expectedVersion:z.number().int().positive()}).parse(body),async(scope,input)=>({draft:await service.reconcile(scope,idSchema.parse(draftId),input.approvalId,input.expectedVersion)})),
+    manualReview:(request:DraftRouteRequest,draftId:string)=>mutation(request,body=>z.strictObject({approvalId:z.uuid(),expectedVersion:z.number().int().positive(),outcome:z.enum(['observed_sent','not_observed']),note:z.string().max(2000)}).parse(body),async(scope,input)=>({draft:await service.manualReview(scope,idSchema.parse(draftId),input.approvalId,input.expectedVersion,input.outcome,input.note)})),
+    async detail(request:DraftRouteRequest,draftId:string):Promise<DraftRouteResponse>{if(request.method!=='GET')return {status:405,body:{error:{code:'METHOD_NOT_ALLOWED'}}};if(!request.auth)return {status:401,body:{error:{code:'UNAUTHENTICATED'}}};try{return {status:200,body:{draft:await service.detail(request.auth,idSchema.parse(draftId))}};}catch(value){return error(value);}},
     async history(request: DraftRouteRequest, draftId: string): Promise<DraftRouteResponse> { if (request.method !== 'GET') return { status: 405, body: { error: { code: 'METHOD_NOT_ALLOWED' } } }; if (!request.auth) return { status: 401, body: { error: { code: 'UNAUTHENTICATED' } } }; try { return { status: 200, body: { revisions: await service.history(request.auth, idSchema.parse(draftId)) } }; } catch (value) { return error(value); } },
   };
 }

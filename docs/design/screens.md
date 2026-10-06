@@ -31,10 +31,12 @@
 **Purpose:** read mail and approve, modify, or reject automation in the same context.
 
 - Back control returns to Inbox; title, sender block, and message body precede automation.
-- Inline agent card presents one recommendation, not a stack of opaque activity. It shows agent identity, proposed result, state, and supported revise/reject/approval controls.
+- Proposal cards present each action independently, with immutable target/content, estimated confidence and threshold, reason, inspectable evidence, dependencies and written execution state. Approve, Reject and structured Correct operate on one proposal, never the entire mail plan. Only the submitted card becomes pending; a conflict preserves edits and requires explicit reload and inspection.
 - Agent suggestions never send casually. A send requires explicit user approval at the point of sending.
 - “Agent details,” when available, opens an accessible bottom sheet with rationale and affected actions; it has visible close control, focus containment, and Escape/back dismissal.
 - Do not show archive, reply, or other message actions unless the API supports them. Unsupported actions are absent or honestly disabled, never enabled no-ops.
+- “Discuss this mail” opens durable mailbox chat with explicitly attached, immutable email context. The email remains an untrusted document, not an owner message. Chat is available from More and the desktop rail without adding a fifth mobile tab.
+- Chat labels mailbox versus explicitly global scope, distinguishes owner and assistant messages, and shows pending/failed turns with retry of the original message. Conflict preserves typed text and requires reload; no automatic resubmission. Global chat never implicitly reads mailbox email.
 
 ## Mobile: Compose and authentication
 
@@ -44,6 +46,11 @@
 - Fields are labeled To, Subject, and message editor. The message editor provides font family and size, bold, italic, underline, strikethrough, lists, quotes, alignment, and undo/redo. Its toolbar scrolls within the editor on narrow screens instead of widening the document. Show only supported attachment or agent affordances.
 - Footer shows saved, pending, error, or conflict state clearly. Do not imply background/offline delivery; report online failure plainly.
 - Unsaved close asks for confirmation; saved drafts remain reachable from Drafts.
+- Compose preserves unsaved To/Cc/Bcc, subject and body through save failures and version conflicts; sending stays disabled until the saved snapshot matches the editor. Reloading for comparison must not silently overwrite the owner’s edits.
+- Send preparation displays the server’s exact mailbox, every recipient (including Bcc), subject, body and format. HTML snapshots are shown as literal text, not executable markup. Confirmation is a separate explicit action bound to that snapshot and approval expiry.
+- A fresh-auth challenge preserves the send intention, asks for the current password, then prepares a new approval and displays the new snapshot. Authentication never automatically confirms either the old or new approval.
+- Pending sends include owner drafts and agent send requests. Reported submissions, unknown outcomes and technical reasons remain visible; an unreadable confirmation response must not claim that nothing was sent. “Verify provider outcome” is read-only, never a retry send.
+- Manual observations are separate append-only reviews: “verified by you” is not provider proof, and “not observed” is not evidence of non-submission. No resend control is offered for an ambiguous submission.
 - Authentication is compact and viewport-stable, with clear loading, error, and retry/next-step feedback.
 
 ## Settings and Account

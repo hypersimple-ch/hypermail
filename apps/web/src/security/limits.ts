@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 
-export type LimitResult = Readonly<{ status: 413 | 429; message: 'Payload too large' | 'Too many requests' }> | null;
+export type LimitResult = Readonly<{ status: 400 | 413 | 429; message: 'Invalid request' | 'Payload too large' | 'Too many requests' }> | null;
 
 /** Bounded in-memory edge throttle for this static host. API/auth throttles remain authoritative in their packages. */
 export class RequestThrottle {
@@ -19,10 +19,22 @@ export class RequestThrottle {
   }
 }
 
-export function requestLimit(request: IncomingMessage, throttle: RequestThrottle): LimitResult {
+export function requestBodyLimit(request: Pick<IncomingMessage, 'method' | 'url'>): number {
+  const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+  if (pathname === '/mcp') return 512 * 1024;
+  if (request.method === 'POST' && /^\/api\/v1\/conversations(?:\/[^/]+\/messages)?$/.test(pathname)) return 65_536;
+  if (['POST', 'PATCH', 'PUT'].includes(request.method ?? '') && (
+    /^\/api\/v1\/drafts(?:\/[^/]+(?:\/approval)?|\/approvals\/[^/]+\/send)?$/.test(pathname) ||
+    /^\/api\/v1\/send-requests(?:\/[^/]+(?:\/approval|\/approvals\/[^/]+\/confirm)?)?$/.test(pathname) ||
+    /^\/api\/v1\/agent\/proposals\/[^/]+\/review$/.test(pathname)
+  )) return 12_100_000;
+  return 8_192;
+}
+
+export function requestLimit(request: IncomingMessage, throttle: RequestThrottle, clientIp = request.socket.remoteAddress ?? 'unknown'): LimitResult {
   const length = request.headers['content-length'];
-  const contentLength = typeof length === 'string' ? Number(length) : 0;
-  if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > 8_192 || request.headers['transfer-encoding']) return { status: 413, message: 'Payload too large' };
-  if (!throttle.take(request.socket.remoteAddress ?? 'unknown')) return { status: 429, message: 'Too many requests' };
+  if (length !== undefined && (typeof length !== 'string' || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)))) return { status: 400, message: 'Invalid request' };
+  if (length !== undefined && Number(length) > requestBodyLimit(request)) return { status: 413, message: 'Payload too large' };
+  if (!throttle.take(clientIp)) return { status: 429, message: 'Too many requests' };
   return null;
 }

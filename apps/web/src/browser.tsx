@@ -11,7 +11,10 @@ import { Input } from '@/components/heroui/input.js';
 import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
 import { initialPwaState } from './pwa/state.js';
-import { HypermailShell, type Draft, type DraftSaveInput, type Screen, type ShellData } from './ui/index.js';
+import { HypermailShell, type DraftSaveInput, type Screen, type ShellData } from './ui/index.js';
+import type { DraftRecord, DraftRevision } from './drafts/contracts.js';
+import type { OwnerSendRequest } from './send-requests/contracts.js';
+import { ForgotPasswordSurface, ResetPasswordSurface, consumeRecoveryFragment, type RecoveryApi } from './auth/recovery-ui.js';
 import type { ActivityPage } from './activity/contracts.js';
 import type { ManagerChoice, ManagerSettingsView, MailboxManagerView } from './agent-connections/contracts.js';
 import type { ManagerMutations } from './mailbox-managers/index.js';
@@ -20,7 +23,6 @@ import type { CompleteMailboxConnectionInput, MailboxConnectionResult, PendingMa
 
 const emptyActivity: ActivityPage = { items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } };
 const empty: ShellData = { accounts: [], messages: [], activity: emptyActivity };
-type BrowserDraft = Draft;
 type AppState = 'loading' | 'ready' | 'empty' | 'error' | 'unauthenticated' | 'bootstrap';
 type SessionResponse = { user: { id: string; email: string }; accounts: SettingsMailbox[] };
 type MailboxApiResult =
@@ -28,6 +30,12 @@ type MailboxApiResult =
   | { status: 'ready' | 'expired' }
   | { status: 'error'; reason?: 'authorization_expired' | 'authorization_rejected' | 'provider_configuration' | 'token_exchange_failed' | 'gmail_profile_failed' | 'provider_unavailable' };
 interface BeforeInstallPromptEvent extends Event { prompt(): Promise<void>; }
+const recoveryEntry = location.pathname === '/auth/recovery/confirm';
+const recoveryToken = recoveryEntry ? consumeRecoveryFragment() : null;
+const recoveryApi: RecoveryApi = {
+  async request(email) { const response = await fetch('/api/v1/auth/recovery', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) }); if (!response.ok) throw new Error('Recovery is unavailable.'); },
+  async reset(token, password) { const response = await fetch('/api/v1/auth/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token, password }) }); if (response.ok) return true; if (response.status === 400 || response.status === 409) return false; throw new Error('Reset is unavailable.'); },
+};
 
 const pendingMailboxStorageKey = 'hypermail.pending-mailbox.v1';
 const readPendingMailbox = (): PendingMailboxConnection | undefined => {
@@ -59,11 +67,11 @@ function AuthCard({ title, description, children }: { title: string; description
   return <main className="grid min-h-dvh place-items-center bg-background p-4" aria-labelledby="auth-title"><Card className="w-full max-w-md"><CardHeader><h1 id="auth-title" className="text-2xl font-semibold tracking-tight">{title}</h1>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent>{children}</CardContent></Card></main>;
 }
 
-function Login({ onComplete, notice }: { onComplete: () => void; notice?: string }): React.JSX.Element {
+function Login({ onComplete, onForgot, notice }: { onComplete: () => void; onForgot: () => void; notice?: string }): React.JSX.Element {
   const [pending, setPending] = React.useState(false);
   React.useEffect(() => { if (notice) toast(notice); }, [notice]);
   const submit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (pending) return; const form = new FormData(event.currentTarget); setPending(true); void fetch('/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }).then((response) => { if (response.ok) onComplete(); else toast.danger('Sign-in failed. Check your email and password.'); }).catch(() => { toast.danger('Sign-in is unavailable. Reconnect and try again.'); }).finally(() => { setPending(false); }); };
-  return <AuthCard title="Hypermail"><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="login-password">Password</FieldLabel><Input id="login-password" name="password" type="password" autoComplete="current-password" required /></Field><Button type="submit">{pending ? <><Spinner />Signing in…</> : 'Sign in'}</Button></FieldSet></form></AuthCard>;
+  return <AuthCard title="Hypermail"><form onSubmit={submit}><FieldSet disabled={pending}><Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" type="email" autoComplete="email" required /></Field><Field><FieldLabel htmlFor="login-password">Password</FieldLabel><Input id="login-password" name="password" type="password" autoComplete="current-password" required /></Field><Button type="submit">{pending ? <><Spinner />Signing in…</> : 'Sign in'}</Button></FieldSet></form><Button type="button" variant="ghost" onClick={onForgot}>Forgot password?</Button></AuthCard>;
 }
 
 function Bootstrap({ onComplete, onSetupCompleted }: { onComplete: () => void; onSetupCompleted: () => void }): React.JSX.Element {
@@ -91,28 +99,92 @@ function PwaPresentation(): React.JSX.Element {
 
 function App(): React.JSX.Element {
   const online = useOnlineStatus();
-  const [data, setData] = React.useState<ShellData>(empty); const [drafts, setDrafts] = React.useState<readonly BrowserDraft[]>([]);
+  const [data, setData] = React.useState<ShellData>(empty); const [drafts, setDrafts] = React.useState<readonly DraftRecord[]>([]);
+  const [sendRequests, setSendRequests] = React.useState<readonly OwnerSendRequest[]>([]);
+  const [draftHistories, setDraftHistories] = React.useState<Readonly<Record<string, readonly DraftRevision[]>>>({});
+  const [recoveryMode, setRecoveryMode] = React.useState<'forgot' | 'reset' | undefined>(recoveryEntry ? 'reset' : undefined);
+  const inboxEpoch = React.useRef(0); const selectedAccount = React.useRef<string | undefined>(undefined); const inboxCursor = React.useRef<string | null>(null); const loadingMoreEpoch = React.useRef<number | undefined>(undefined); const loadEpoch = React.useRef(0);
   const [dashboard, setDashboard] = React.useState<AgentDashboard | undefined>(); const [agentError, setAgentError] = React.useState('');
+  const [proposalFolders, setProposalFolders] = React.useState<readonly { id: string; name: string; accountId: string }[]>([]);
   const [state, setState] = React.useState<AppState>('loading'); const [loginNotice, setLoginNotice] = React.useState('');
   const [managerSettings, setManagerSettings] = React.useState<ManagerSettingsView>();
   const [ownerEmail, setOwnerEmail] = React.useState(''); const [settingsMailboxes, setSettingsMailboxes] = React.useState<readonly SettingsMailbox[]>([]);
   const [pendingMailbox, setPendingMailbox] = React.useState<PendingMailboxConnection | undefined>(readPendingMailbox);
-  const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : 'inbox'); const callbackHandled = React.useRef(false);
+  const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : /^\/chat(?:\/|$)/.test(location.pathname) ? 'chat' : 'inbox'); const callbackHandled = React.useRef(false);
+  const loadInbox = React.useCallback(async (accountId: string, more = false): Promise<void> => {
+    if (more && (!inboxCursor.current || loadingMoreEpoch.current === inboxEpoch.current)) return;
+    const generation = more ? inboxEpoch.current : ++inboxEpoch.current;
+    const cursor = more ? inboxCursor.current : null;
+    selectedAccount.current = accountId;
+    if (more) loadingMoreEpoch.current = generation; else inboxCursor.current = null;
+    setData(current => ({ ...current, selectedAccountId: accountId, messages: current.selectedAccountId === accountId ? current.messages : [], inboxState: more ? current.inboxState ?? 'ready' : 'loading', inboxNextCursor: more ? current.inboxNextCursor ?? null : null, inboxLoadingMore: more, inboxError: '' }));
+    try {
+      const response = await fetch(`/api/v1/inbox?accountId=${encodeURIComponent(accountId)}&limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      if (!response.ok) throw new Error(response.status === 404 ? 'This mailbox is unavailable.' : 'The mail provider is unavailable. Retry to refresh this mailbox.');
+      const page = await response.json() as { messages: Array<{ id: string; account_id: string; sender: string; subject: string; preview: string; received_at: string; is_read?: boolean }>; nextCursor: string | null };
+      if (generation !== inboxEpoch.current || selectedAccount.current !== accountId) return;
+      const incoming = page.messages.map(message => ({ id: message.id, accountId: message.account_id, sender: message.sender || 'Unknown sender', initials: (message.sender || '?').slice(0, 1).toUpperCase(), subject: message.subject || '(no subject)', preview: message.preview, received: new Date(message.received_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), receivedAt: message.received_at, ...(message.is_read !== undefined ? { unread: !message.is_read } : {}) }));
+      inboxCursor.current = page.nextCursor;
+      setData(current => {
+        const byId = new Map((more ? current.messages : []).map(message => [message.id, message]));
+        for (const message of incoming) byId.set(message.id, message);
+        const messages = [...byId.values()];
+        return { ...current, messages, inboxState: messages.length ? 'ready' : 'empty', inboxNextCursor: page.nextCursor, inboxLoadingMore: false, inboxError: '' };
+      });
+    } catch (error) {
+      if (generation === inboxEpoch.current && selectedAccount.current === accountId) setData(current => ({ ...current, inboxState: current.messages.length ? 'ready' : 'error', inboxLoadingMore: false, inboxError: error instanceof Error ? error.message : 'Could not load mail.' }));
+    } finally { if (loadingMoreEpoch.current === generation) loadingMoreEpoch.current = undefined; }
+  }, []);
+  const refreshDraftsAndSendRequests = React.useCallback(async (): Promise<void> => {
+    const [draftResponse, requestResponse] = await Promise.all([fetch('/api/v1/drafts'), fetch('/api/v1/send-requests')]);
+    if (!draftResponse.ok || !requestResponse.ok) throw new Error('Could not refresh sending state.');
+    const [draftResult, requestResult] = await Promise.all([draftResponse.json() as Promise<{ drafts: DraftRecord[] }>, requestResponse.json() as Promise<{ requests: OwnerSendRequest[] }>]);
+    setDrafts(draftResult.drafts); setSendRequests(requestResult.requests);
+  }, []);
+  const refreshDraft = React.useCallback(async (id: string): Promise<void> => {
+    const [detail, history] = await Promise.all([fetch(`/api/v1/drafts/${encodeURIComponent(id)}`), fetch(`/api/v1/drafts/${encodeURIComponent(id)}/history`)]);
+    if (!detail.ok || !history.ok) throw new Error('Could not load the saved draft and its history.');
+    const record = (await detail.json() as { draft: DraftRecord }).draft;
+    const revisions = (await history.json() as { revisions: DraftRevision[] }).revisions;
+    await refreshDraftsAndSendRequests();
+    setDrafts(current => [...current.filter(draft => draft.id !== id), record]); setDraftHistories(current => ({ ...current, [id]: revisions }));
+  }, [refreshDraftsAndSendRequests]);
+  const reloadProposals = React.useCallback(async (refreshDrafts = false): Promise<void> => {
+    const response = await fetch('/api/v1/agent', { headers: { 'x-api-version': 'v1' } });
+    if (!response.ok) throw new Error('Could not refresh proposals. Your input has been kept.');
+    const result = await response.json() as { dashboard: AgentDashboard };
+    if (refreshDrafts) {
+      const draftResponse = await fetch('/api/v1/drafts');
+      if (!draftResponse.ok) throw new Error('Could not refresh prepared drafts.');
+      setDrafts((await draftResponse.json() as { drafts: DraftRecord[] }).drafts);
+    }
+    setDashboard(result.dashboard);
+    setAgentError('');
+  }, []);
   const load = React.useCallback(async (activityFilter: 'new' | 'questions' | 'failed' | 'history' = 'new') => {
+    const generation = ++loadEpoch.current;
     const session = await fetch('/api/v1/session');
+    if (generation !== loadEpoch.current) return;
     if (session.status === 401) { let bootstrapAvailable = false; try { bootstrapAvailable = (await session.json() as { bootstrapAvailable?: unknown }).bootstrapAvailable === true; } catch { /* Invalid bodies are not bootstrap capabilities. */ } setState(bootstrapAvailable ? 'bootstrap' : 'unauthenticated'); return; }
     if (!session.ok) throw new Error('load failed');
     const sessionBody = await session.json() as SessionResponse;
-    const [inbox, activity, draftResponse] = await Promise.all([fetch('/api/v1/inbox'), fetch(`/api/v1/activities?filter=${encodeURIComponent(activityFilter)}`), fetch('/api/v1/drafts')]);
-    if (!inbox.ok || !activity.ok || !draftResponse.ok) throw new Error('load failed');
-    const accounts = sessionBody.accounts.map((account) => ({ id: account.id, label: account.displayName ?? account.email, address: account.email, unread: 0 }));
-    const messages = (await inbox.json() as { messages: Array<{ id: string; account_id: string; sender: string; subject: string; preview: string; received_at: string }> }).messages.map((message) => ({ id: message.id, accountId: message.account_id, sender: message.sender || 'Unknown sender', initials: (message.sender || '?').slice(0, 1).toUpperCase(), subject: message.subject || '(no subject)', preview: message.preview, received: new Date(message.received_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), body: message.preview }));
+    const activity = await fetch(`/api/v1/activities?filter=${encodeURIComponent(activityFilter)}`);
+    if (!activity.ok) throw new Error('load failed');
     const activityPage = await activity.json() as ActivityPage;
+    await refreshDraftsAndSendRequests();
+    if (generation !== loadEpoch.current) return;
+    const accounts = sessionBody.accounts.map(account => ({ id: account.id, label: account.displayName ?? account.email, address: account.email }));
     setOwnerEmail(sessionBody.user.email); setSettingsMailboxes(sessionBody.accounts);
-    setDrafts((await draftResponse.json() as { drafts: BrowserDraft[] }).drafts); setData({ accounts, messages, activity: activityPage }); setState(messages.length || activityPage.items.length ? 'ready' : 'empty');
+    setData(current => ({ ...current, accounts, activity: activityPage })); setState('ready');
+    const accountId = accounts.find(account => account.id === selectedAccount.current)?.id ?? accounts[0]?.id;
+    if (accountId) await loadInbox(accountId);
+    else { inboxEpoch.current += 1; selectedAccount.current = undefined; inboxCursor.current = null; setData({ accounts, messages: [], activity: activityPage, inboxState: 'empty', inboxNextCursor: null }); }
     void Promise.resolve().then(() => fetch('/api/v1/agent-connections')).then(async response => { if (!response.ok) throw new Error('manager settings unavailable'); const result = await response.json() as { settings: ManagerSettingsView }; setManagerSettings(result.settings); }).catch(() => { setManagerSettings(undefined); });
-    void fetch('/api/v1/agent', { headers: { 'x-api-version': 'v1' } }).then(async (response) => response.ok ? response.json() as Promise<{ dashboard: AgentDashboard }> : Promise.reject(new Error('agent unavailable'))).then((result) => { setAgentError(''); setDashboard(result.dashboard); }).catch(() => { setDashboard(undefined); setAgentError('Could not load agent status. Try again later.'); });
-  }, []);
+    void Promise.all([reloadProposals(), fetch('/api/v1/agent/folders', { headers: { 'x-api-version': 'v1' } })]).then(async ([, response]) => {
+      if (!response.ok) throw new Error('folders unavailable');
+      setProposalFolders((await response.json() as { folders: readonly { id: string; name: string; accountId: string }[] }).folders);
+    }).catch(() => { setAgentError('Could not refresh agent status or folders. Existing input has been kept.'); });
+  }, [reloadProposals, refreshDraftsAndSendRequests, loadInbox]);
   const startMailboxConnection = React.useCallback(async (input: StartMailboxConnectionInput): Promise<MailboxConnectionResult> => {
     const body = input.provider === 'imap'
       ? { provider: 'imap', email: input.imap.email, config: { host: input.imap.imapHost, port: input.imap.imapPort, secure: input.imap.imapTls, user: input.imap.username, password: input.imap.password, ...(input.imap.smtpHost ? { smtpHost: input.imap.smtpHost, smtpPort: input.imap.smtpPort, smtpSecure: input.imap.smtpTls } : {}) } }
@@ -172,7 +244,16 @@ function App(): React.JSX.Element {
     if (!response.ok && response.status !== 204) throw new Error('sign out unavailable');
     clearPendingMailbox(); window.location.reload();
   }, []);
-  React.useEffect(() => { void load().catch(() => { setState('error'); }); }, [load]);
+  React.useEffect(() => { if (recoveryMode) return; void load().catch(() => { setState('error'); }); }, [load, recoveryMode]);
+  const hasActiveProposal = dashboard?.proposals.some(proposal => proposal.state === 'ready' || proposal.state === 'authorized' && (proposal.action?.state === 'authorized' || proposal.action?.state === 'executing' || proposal.action?.state === 'verifying')) ?? false;
+  React.useEffect(() => {
+    if (!online || !hasActiveProposal) return;
+    let active = true;
+    const interval = setInterval(() => {
+      void reloadProposals(true).catch(() => { if (active) setAgentError('Could not refresh agent status. Reconnect to see the latest result.'); });
+    }, 5_000);
+    return () => { active = false; clearInterval(interval); };
+  }, [online, hasActiveProposal, reloadProposals]);
   React.useEffect(() => {
     if (callbackHandled.current || (state !== 'ready' && state !== 'empty') || location.pathname !== '/oauth/gmail/callback') return;
     callbackHandled.current = true;
@@ -183,11 +264,14 @@ function App(): React.JSX.Element {
     if (!pending || pending.provider !== 'gmail' || !code) { toast.danger('Gmail connection details were missing or expired. Start again.'); return; }
     void completeMailboxConnection({ provider: 'gmail', handle: pending.handle, authorizationResponse }).then((result) => { const message = result.message ?? (result.state === 'ready' ? 'Mailbox connected.' : 'Gmail connection is still pending.'); if (result.state === 'ready') toast.success(message); else if (result.state === 'error') toast.danger(message); else toast(message); }).catch(() => { clearPendingMailbox(); setPendingMailbox(undefined); toast.danger('Gmail connection could not be completed. Start again.'); });
   }, [completeMailboxConnection, state]);
+  if (recoveryMode) return <AuthCard title="Account recovery">{recoveryMode === 'forgot' ? <ForgotPasswordSurface api={recoveryApi} onLogin={() => { setRecoveryMode(undefined); setState('unauthenticated'); }} /> : <ResetPasswordSurface api={recoveryApi} token={recoveryToken} onLogin={() => { history.replaceState(null, '', '/'); setRecoveryMode(undefined); setLoginNotice('Sign in with your current password.'); setState('unauthenticated'); }} />}</AuthCard>;
   if (state === 'loading') return <main className="grid min-h-dvh place-items-center bg-background" aria-busy="true"><span className="sr-only" role="status">Checking session…</span><Spinner className="size-6" /></main>;
   if (state === 'bootstrap') return <Bootstrap onComplete={() => { window.location.reload(); }} onSetupCompleted={() => { setLoginNotice('Setup is complete. Sign in to continue.'); setState('unauthenticated'); }} />;
-  if (state === 'unauthenticated') return <Login onComplete={() => { window.location.reload(); }} notice={loginNotice} />;
-  const openMessage = async (message: ShellData['messages'][number]) => { const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error('message unavailable'); const detail = (await response.json() as { message: { body: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; subject: string } }).message; return { ...message, sender: detail.sender || message.sender, subject: detail.subject || message.subject, body: detail.body || '', attachments: detail.attachments.map((attachment) => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) }; };
-  const saveDraft = async (draft: DraftSaveInput) => { const response = await fetch(draft.id ? `/api/v1/drafts/${encodeURIComponent(draft.id)}` : '/api/v1/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: draft.accountId, recipients: [{ kind: 'to', address: draft.recipient }], subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat, ...(draft.id ? { expectedVersion: draft.expectedVersion } : {}) }) }); if (!response.ok) throw new Error('draft unavailable'); await load(); };
+  if (state === 'unauthenticated') return <Login onForgot={() => { setRecoveryMode('forgot'); }} onComplete={() => { window.location.reload(); }} notice={loginNotice} />;
+  const openMessage = async (message: ShellData['messages'][number]) => { const response = await fetch(`/api/v1/messages/${encodeURIComponent(message.id)}`); if (!response.ok) throw new Error(response.status === 404 ? 'This message no longer exists at the provider.' : 'The provider is unavailable. Retry to load the full message.'); const detail = (await response.json() as { message: { body: string; senderAddress?: string; attachments: Array<{ id: string; name: string; sizeBytes: number }>; sender: string; subject: string } }).message; return { ...message, sender: detail.sender || message.sender, ...(detail.senderAddress ? { senderAddress: detail.senderAddress } : {}), subject: detail.subject || message.subject, body: detail.body, attachments: detail.attachments.map(attachment => ({ id: attachment.id, name: attachment.name, size: `${String(attachment.sizeBytes)} bytes` })) }; };
+  const saveDraft = async (input: DraftSaveInput): Promise<DraftRecord> => { const response = await fetch('/api/v1/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: input.accountId, recipients: [{ kind: 'to', address: input.recipient }], subject: input.subject, body: input.body, bodyFormat: input.bodyFormat }) }); if (!response.ok) throw new Error('Draft could not be saved.'); const record = (await response.json() as { draft: DraftRecord }).draft; setDrafts(current => [...current.filter(draft => draft.id !== record.id), record]); void refreshDraft(record.id).catch(() => { toast.warning('Draft saved; history could not be refreshed. Reopen it to retry.'); }); return record; };
+  const updateDraft = async (draft: DraftRecord): Promise<void> => { const response = await fetch(`/api/v1/drafts/${encodeURIComponent(draft.id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedVersion: draft.version, recipients: draft.recipients, subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat }) }); if (!response.ok) throw new Error('Draft changed or is unavailable. Your edits have been kept.'); const record = (await response.json() as { draft: DraftRecord }).draft; setDrafts(current => current.map(item => item.id === record.id ? record : item)); void refreshDraft(record.id).catch(() => { toast.warning('Draft saved; sending state could not be refreshed.'); }); };
+  const reply = async (message: ShellData['messages'][number]): Promise<DraftRecord> => { if (message.body === undefined || !message.senderAddress) throw new Error('A full source message is required.'); const response = await fetch('/api/v1/drafts/reply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: message.accountId, sourceMessageId: message.id, recipients: [{ kind: 'to', address: message.senderAddress }], subject: message.subject, body: '', bodyFormat: 'markdown' }) }); if (!response.ok) throw new Error('Reply unavailable.'); const record = (await response.json() as { draft: DraftRecord }).draft; setDrafts(current => [...current.filter(draft => draft.id !== record.id), record]); void refreshDraft(record.id).catch(() => { toast.warning('Reply saved; history could not be refreshed.'); }); return record; };
   const updateManagerSettings = async (path: string, body: Readonly<Record<string, unknown>>): Promise<void> => {
     if (!navigator.onLine) throw new Error('offline');
     const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -200,13 +284,26 @@ function App(): React.JSX.Element {
     setLifecycle: (id, nextState, revision) => updateManagerSettings(`/api/v1/agent-connections/${encodeURIComponent(id)}/${nextState === 'security_revoked' ? 'security-revoke' : 'lifecycle'}`, { state: nextState, expectedRevision: revision }),
     setAssignment: (mailbox: MailboxManagerView, manager: ManagerChoice, automatic: boolean) => updateManagerSettings(`/api/v1/mailbox-managers/${encodeURIComponent(mailbox.mailboxId)}/assignment`, { manager, automaticProcessingEnabled: automatic, expectedAssignmentRevision: mailbox.assignment.revision, ...(mailbox.grant ? { expectedGrantRevision: mailbox.grant.revision } : {}) }),
     reapprove: (mailbox: MailboxManagerView) => updateManagerSettings(`/api/v1/mailbox-managers/${encodeURIComponent(mailbox.mailboxId)}/reapprove`, { expectedGrantRevision: mailbox.grant?.revision, idempotencyKey: crypto.randomUUID() }),
+    activateAssistant: mailbox => updateManagerSettings(`/api/v1/mailboxes/${encodeURIComponent(mailbox.mailboxId)}/assistant/activate`, { confirmed: true, expectedAssignmentRevision: mailbox.assignment.revision, expectedGrantRevision: mailbox.grant?.revision ?? null }),
   };
   const agentHandlers: AgentUiHandlers = {
+    onReloadProposals: reloadProposals,
+    onReview: async ({ proposalId, ...input }) => {
+      if (!navigator.onLine) throw new Error('Reconnect before reviewing this proposal. Your input has been kept.');
+      const response = await fetch(`/api/v1/agent/proposals/${encodeURIComponent(proposalId)}/review`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify(input),
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+        throw Object.assign(new Error(result?.error?.message ?? 'Could not record this review. Your input has been kept.'), { status: response.status });
+      }
+      await reloadProposals();
+    },
     onAnswer: ({ questionId, answer, expectedVersion, idempotencyKey }) => { void fetch(`/api/v1/agent/questions/${encodeURIComponent(questionId)}/answer`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ answer, expectedVersion, idempotencyKey }) }).then((response) => { if (!response.ok) throw new Error('answer unavailable'); return load(); }).catch(() => { toast.danger('Could not record the agent answer. Try again.'); }); },
     onRetry: (action) => { void fetch(`/api/v1/agent/actions/${encodeURIComponent(action.id)}/retry`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ expectedVersion: action.version }) }).then((response) => { if (!response.ok) throw new Error('retry unavailable'); return load(); }).catch(() => { toast.danger('Could not retry the agent action. Try again.'); }); },
     onAutonomy: (target: AutonomyScope, autonomyState: AutonomyState, expectedVersion: number) => { void fetch('/api/v1/agent/autonomy', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-version': 'v1' }, body: JSON.stringify({ scope: target.kind, ...(target.kind === 'account' ? { accountId: target.accountId } : {}), state: autonomyState, expectedVersion }) }).then((response) => { if (!response.ok) throw new Error('autonomy unavailable'); return load(); }).catch(() => { toast.danger('Could not update agent autonomy. Try again.'); }); },
   };
-  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} online={online} drafts={drafts} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} onActivityFilter={load} onInboxRetry={() => { void load(); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
+  return <HypermailShell data={data} initialState={state} initialScreen={initialScreen} online={online} drafts={drafts} draftHistories={draftHistories} sendRequests={sendRequests} onRefreshSendRequests={refreshDraftsAndSendRequests} onRefreshDraft={refreshDraft} onUpdateDraft={updateDraft} onReply={reply} dashboard={dashboard} agentError={agentError} agentHandlers={agentHandlers} proposalFolders={proposalFolders} ownerEmail={ownerEmail} settingsMailboxes={settingsMailboxes} {...(managerSettings ? { managerSettings, managerMutations } : {})} {...(pendingMailbox ? { pendingMailboxConnection: pendingMailbox } : {})} onActivityFilter={load} onInboxRetry={() => { if (selectedAccount.current) void loadInbox(selectedAccount.current); }} onAccountChange={id => { void loadInbox(id); }} onLoadMore={() => { if (selectedAccount.current) void loadInbox(selectedAccount.current, true); }} onOpenMessage={openMessage} onSaveDraft={saveDraft} onStartMailboxConnection={startMailboxConnection} onCompleteMailboxConnection={completeMailboxConnection} onChangePassword={changePassword} onSignOut={signOut} />;
 }
 
 function RootApp(): React.JSX.Element { return <><App /><PwaPresentation /><ToastProvider /></>; }

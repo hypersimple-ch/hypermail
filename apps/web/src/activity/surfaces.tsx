@@ -8,6 +8,8 @@ import { Textarea } from '@/components/heroui/textarea.js';
 import { toast } from '@/components/heroui/toast.js';
 import { AppPage, FilterGroup, PageContainer, PageHeader, StatePanel, type FilterOption } from '@/components/app/patterns.js';
 import { acknowledgementBlockReason, activityFilters, matchesActivityFilter, type ActivityFilter, type ActivityPage, type ActivityRecord } from './contracts.js';
+import { AgentProposalCard, type AgentUiHandlers } from '../agent/ui.js';
+import type { ProposalFolder } from '../agent/contracts.js';
 
 const labels: Record<ActivityFilter, string> = { new: 'New', questions: 'Questions', failed: 'Failed', history: 'History' };
 const status = (activity: ActivityRecord): string => {
@@ -52,12 +54,16 @@ export type ActivityDetailProps = Readonly<{
   onRetry?: (activity: ActivityRecord) => void;
   onAcknowledge?: (activity: ActivityRecord) => void;
   onOpenMessage?: (messageId: string) => void;
+  onDiscussMessage?: (accountId: string, messageId: string) => void;
   onAnswerQuestion?: (question: NonNullable<ActivityRecord['question']>, answer: string) => Promise<void> | void;
+  onReview?: AgentUiHandlers['onReview'];
+  onReloadProposals?: AgentUiHandlers['onReloadProposals'];
+  proposalFolders?: readonly ProposalFolder[];
   onBack?: () => void;
   pendingAction?: 'retry' | 'acknowledge';
 }>;
 
-export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage, onAnswerQuestion, onBack, pendingAction }: ActivityDetailProps): React.JSX.Element {
+export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage, onDiscussMessage, onAnswerQuestion, onBack, pendingAction, onReview, onReloadProposals, proposalFolders = [] }: ActivityDetailProps): React.JSX.Element {
   const acknowledgementReason = acknowledgementBlockReason(activity);
   return <AppPage><PageContainer measure="reading" className="grid gap-4">{onBack ? <Button type="button" variant="ghost" className="w-fit" onClick={onBack}><ArrowLeft aria-hidden="true" />Activity</Button> : null}<article aria-label={`Activity detail: ${activity.title}`} className="grid min-w-0 gap-4">
     <Card>
@@ -65,9 +71,10 @@ export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage
     </Card>
     {activity.question?.state === 'open' ? <QuestionCard question={activity.question} onAnswer={onAnswerQuestion} /> : null}
     {activity.failure ? <Card aria-label="Failure and retry"><CardHeader><CardTitle>{activity.failure.retrying ? 'Retrying' : 'Failed'}</CardTitle><CardDescription>{activity.failure.code}: {activity.failure.message}</CardDescription></CardHeader><CardFooter><Button type="button" disabled={activity.failure.retrying || pendingAction === 'retry'} onClick={() => onRetry?.(activity)}>{activity.failure.retrying || pendingAction === 'retry' ? 'Retrying…' : 'Retry'}</Button></CardFooter></Card> : null}
-    <AgentCardPlaceholder />
+    {activity.proposals?.length ? <section aria-label="Activity action proposals" className="grid gap-3">{activity.proposals.map((proposal) => <AgentProposalCard key={proposal.id} proposal={proposal} proposalFolders={proposalFolders} onReview={onReview} onReloadProposals={onReloadProposals} />)}</section> : null}
     {activity.runs ? <Card aria-label="Agent work history"><CardHeader><CardTitle>Agent work history</CardTitle><CardDescription>Immutable Runs and authorized mailbox Actions.</CardDescription></CardHeader><CardContent className="min-w-0"><ol className="grid min-w-0 gap-3">{activity.runs.map((run)=><li className="min-w-0 break-words" key={run.id}><strong>Run {run.sequence}</strong> · {run.state}{run.outcome?` · ${run.outcome}`:''}<br/><span className="text-sm text-muted-foreground">{run.managerKind} · {run.mode} · assignment r{run.assignmentRevision} · grant r{run.grantRevision} · safety r{run.safetyRevision}</span><ul className="mt-1 grid gap-1 pl-5">{activity.actions?.filter((item)=>item.runId===run.id).map((item)=><li className="break-words" key={item.id}>{item.kind}: {item.state} · authorization r{item.authorizationRevision}{item.verification?` · verified by ${item.verification.verifier}`:''}</li>)}</ul></li>)}</ol></CardContent></Card> : null}
     <Card><CardHeader><CardTitle>Timeline</CardTitle></CardHeader><CardContent className="min-w-0"><ol className="grid gap-3">{activity.timeline.map((event) => <li className="min-w-0 break-words" key={event.id}><time className="block text-sm text-muted-foreground" dateTime={event.at}>{event.at}</time>{event.label}{event.detail ? `: ${event.detail}` : ''}</li>)}</ol></CardContent></Card>
+    {activity.messageId && onDiscussMessage ? <Button type="button" variant="outline" onClick={() => { if (activity.messageId) onDiscussMessage(activity.accountId, activity.messageId); }}>Discuss this mail</Button> : null}
     <Card><CardFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">{activity.messageId ? <Button type="button" variant="outline" onClick={() => onOpenMessage?.(activity.messageId as string)}>Open original message</Button> : null}<Button type="button" disabled={acknowledgementReason !== null || pendingAction === 'acknowledge'} aria-describedby={acknowledgementReason ? 'activity-acknowledgement-reason' : undefined} onClick={() => onAcknowledge?.(activity)}>{pendingAction === 'acknowledge' ? 'Acknowledging…' : 'Acknowledge'}</Button>{acknowledgementReason ? <p id="activity-acknowledgement-reason" role="status" className="w-full text-sm text-muted-foreground">{acknowledgementReason}</p> : null}</CardFooter></Card>
   </article></PageContainer></AppPage>;
 }
@@ -92,11 +99,6 @@ function QuestionCard({ question, onAnswer }: { question: NonNullable<ActivityRe
     });
   };
   return <Card aria-label="Open question"><CardHeader><CardTitle>Question needs your input</CardTitle><CardDescription>{question.prompt}</CardDescription></CardHeader><CardContent><form onSubmit={submit} className="grid gap-3"><Field><FieldLabel htmlFor={answerId}>Your answer</FieldLabel><Textarea id={answerId} name="answer" required disabled={pending} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} />{error ? <FieldError id={errorId}>{error}</FieldError> : null}</Field><Button type="submit" variant="outline" disabled={pending || !onAnswer}>{pending ? 'Recording…' : 'Answer and continue'}</Button></form></CardContent></Card>;
-}
-
-/** Deliberately inert placeholder; it conveys available context without introducing agent behavior. */
-export function AgentCardPlaceholder(): React.JSX.Element {
-  return <Card aria-label="Agent context placeholder"><CardHeader><CardTitle>Agent context</CardTitle><CardDescription>Details will appear here when available.</CardDescription></CardHeader></Card>;
 }
 
 export { matchesActivityFilter };

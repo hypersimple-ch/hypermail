@@ -11,9 +11,10 @@ export type PushPayload = Readonly<{
 }>;
 
 export type NotificationInput = PushPayload & Readonly<{ userId: string }>;
-export type LogicalNotification = PushPayload & Readonly<{ userId: string; state: NotificationState }>;
+export type NotificationCounts = Readonly<{ deliveredCount: number; failedCount: number; pendingCount: number }>;
+export type LogicalNotification = PushPayload & NotificationCounts & Readonly<{ userId: string; state: NotificationState }>;
 export type PushSubscription = Readonly<{ id: string; endpoint: string; p256dh: string; auth: string }>;
-export type DeliveryAttempt = Readonly<{ notificationId: string; subscriptionId: string; attempt: number }>;
+export type DeliveryAttempt = Readonly<{ notificationId: string; subscriptionId: string; attempt: number; claimToken: string }>;
 
 /** Deliberately projects fields rather than serialising an activity or mail object. */
 export function createPushPayload(input: NotificationInput): PushPayload {

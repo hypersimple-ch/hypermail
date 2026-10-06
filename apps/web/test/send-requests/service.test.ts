@@ -1,6 +1,14 @@
-/* eslint-disable @typescript-eslint/require-await */
 import { describe,expect,it,vi } from 'vitest';
-import { OwnerSendRequestService, SendRequestFreshAuthError, type OwnerSendRequest } from '../../src/send-requests/index.js';
-const current:OwnerSendRequest={id:'00000000-0000-4000-8000-000000000001',accountId:'00000000-0000-4000-8000-000000000002',draftId:'00000000-0000-4000-8000-000000000003',draftVersion:1,state:'pending_owner_approval',approvalId:null,actionId:null,providerMessageId:null,expiresAt:'2025-01-02T00:00:00.000Z',completedAt:null,reasonCode:null,createdAt:'2025-01-01T00:00:00.000Z',updatedAt:'2025-01-01T00:00:00.000Z'};
-const scope={subjectId:'user',accountIds:[current.accountId],freshAuthAt:'2025-01-01T00:00:00.000Z'};
-describe('OwnerSendRequestService',()=>{it('dispatches once and approves only after authoritative readback',async()=>{let claimed=true;const repository={claim:vi.fn(async()=>claimed?(claimed=false,{request:{...current,state:'sending'},approvalId:'a',idempotencyKey:'send-request:r:d:1',message:{accountId:current.accountId,draftId:current.draftId,draftVersion:1,recipients:[{kind:'to' as const,address:'x@example.test'}],subject:'s',body:'b'}}):({...current,state:'sending'})),markReported:vi.fn(async()=>({...current,state:'sending'})),finish:vi.fn(async(_s:unknown,_i:string,o:{kind:string})=>({...current,state:o.kind==='verified'?'approved':'unverifiable'})),detail:vi.fn(async()=>({...current,state:'sending'}))};const provider={send:vi.fn(async()=>({providerMessageId:'reported'})),status:vi.fn(async()=>({state:'verified' as const,providerMessageId:'readback',observedAt:'2025-01-01T00:00:01.000Z',evidence:{source:'hypermail'}}))};const service=new OwnerSendRequestService(repository as never,provider,()=>new Date('2025-01-01T00:01:00.000Z'));expect((await service.confirm(scope,current.id,'a','x'.repeat(16))).state).toBe('approved');await service.confirm(scope,current.id,'a','x'.repeat(16));expect(provider.send).toHaveBeenCalledTimes(1);expect(repository.finish).toHaveBeenCalledWith(scope,current.id,expect.objectContaining({kind:'verified',providerMessageId:'readback'}))});it('requires fresh auth before ceremony',async()=>{const service=new OwnerSendRequestService({} as never,{send:vi.fn(),status:vi.fn()},()=>new Date('2025-01-01T00:10:00.001Z'));expect(()=>service.begin(scope,current.id,1,'x'.repeat(16))).toThrow(SendRequestFreshAuthError)})});
+import { OwnerSendRequestService, SendRequestFreshAuthError } from '../../src/send-requests/index.js';
+import type { MailSendProvider } from '@hypermail/send';
+const id='00000000-0000-4000-8000-000000000001';
+describe('owner send fresh authentication',()=>{
+ it('refuses stale begin and confirm before consuming approval or contacting provider',async()=>{
+  const repository={begin:vi.fn(),claim:vi.fn()};const submit=vi.fn();const provider:MailSendProvider={submit,status:vi.fn()};
+  const service=new OwnerSendRequestService(repository as never,provider,()=>new Date('2025-01-01T00:10:00.001Z'));
+  const scope={subjectId:id,accountIds:[id],freshAuthAt:'2025-01-01T00:00:00.000Z'};
+  await expect(service.begin(scope,id,1,'x'.repeat(16))).rejects.toBeInstanceOf(SendRequestFreshAuthError);
+  await expect(service.confirm(scope,id,id,'x'.repeat(16))).rejects.toBeInstanceOf(SendRequestFreshAuthError);
+  expect(repository.begin).not.toHaveBeenCalled();expect(repository.claim).not.toHaveBeenCalled();expect(submit).not.toHaveBeenCalled();
+ });
+});

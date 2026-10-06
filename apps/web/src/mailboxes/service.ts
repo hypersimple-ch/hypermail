@@ -11,7 +11,9 @@ import {
   type StartMailboxResult,
 } from './contracts.js';
 
-export type TenantMailboxOnboardingLease = Readonly<{ provider: MailboxOnboardingProvider; release(): Promise<void> }>;
+type InitializedOnboardingProvider = Pick<MailboxOnboardingProvider, 'addAccount' | 'completeAddAccount'>;
+/** Tenant acquisition initializes and validates the client before returning its lease. */
+export type TenantMailboxOnboardingLease = Readonly<{ provider: InitializedOnboardingProvider; release(): Promise<void> }>;
 export interface TenantMailboxOnboardingProvider { leaseForUser(userId: string): Promise<TenantMailboxOnboardingLease>; }
 
 /** Explicit owner-only mailbox onboarding. Provider selection is always derived from authenticated User scope. */
@@ -53,10 +55,10 @@ export class MailboxService {
     if (!scope.subjectId.trim()) throw new MailboxInputError();
   }
 
-  private async withProvider<Result>(userId: string, operation: (provider: MailboxOnboardingProvider) => Promise<Result>): Promise<Result> {
+  private async withProvider<Result>(userId: string, operation: (provider: InitializedOnboardingProvider) => Promise<Result>): Promise<Result> {
     if ('leaseForUser' in this.provider) {
       const lease = await this.provider.leaseForUser(userId);
-      try { await lease.provider.initialize(); return await operation(lease.provider); }
+      try { return await operation(lease.provider); }
       finally { await lease.release(); }
     }
     const provider = this.provider; await this.initializeLegacy(provider); return operation(provider);

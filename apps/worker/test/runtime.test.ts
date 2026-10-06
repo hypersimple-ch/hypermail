@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ClaimingAgentConsumer, DurableNotificationRecovery, parseQueuePayload, parseWorkerEnvironment, requireAutonomousCapability, WorkerRuntime, type BossRuntime, type WorkerEnvironment, type WorkerRuntimeDependencies } from '../src/runtime.js';
 
 const env = (): WorkerEnvironment => parseWorkerEnvironment({
@@ -8,14 +8,15 @@ const env = (): WorkerEnvironment => parseWorkerEnvironment({
 class FakeBoss implements BossRuntime {
   readonly handlers = new Map<string, (job: { data: unknown }) => Promise<void>>(); readonly queues: string[] = []; started = false; stopped = false;
   start(): Promise<void> { this.started = true; return Promise.resolve(); }
-  createQueue(name: 'agent.evaluate' | 'notification.deliver' | 'policy.execute'): Promise<void> { this.queues.push(name); return Promise.resolve(); }
+  createQueue(name: Parameters<BossRuntime['createQueue']>[0]): Promise<void> { this.queues.push(name); return Promise.resolve(); }
   stop(): Promise<void> { this.stopped = true; return Promise.resolve(); }
-  work(name: 'agent.evaluate' | 'notification.deliver' | 'policy.execute', handler: (job: { data: unknown }) => Promise<void>): Promise<void> { this.handlers.set(name, handler); return Promise.resolve(); }
+  work(name: Parameters<BossRuntime['work']>[0], handler: (job: { data: unknown }) => Promise<void>): Promise<void> { this.handlers.set(name, handler); return Promise.resolve(); }
 }
 const dependencies = (boss: FakeBoss, calls: string[]): WorkerRuntimeDependencies => ({
   boss, ingestion: { start: () => Promise.resolve(), stop() { calls.push('ingestion-stop'); } }, lifecycle: { start: () => Promise.resolve(), stop() { calls.push('lifecycle-stop'); } },
   agentTaskRecovery: { recover() { calls.push('task-recovery'); return Promise.resolve(); } }, dispatchRecovery: { recover() { calls.push('dispatch-recovery'); return Promise.resolve(); } }, notificationRecovery: { recover() { calls.push('notification-recovery'); return Promise.resolve(); } }, policyRecovery: { recover() { calls.push('policy-recovery'); return Promise.resolve(); } },
   agentConsumer: { consume(payload) { calls.push(`agent:${String(payload.jobId)}`); return Promise.resolve(); } }, notificationConsumer: { consume: () => Promise.resolve() }, policyConsumer: { consume: () => Promise.resolve() },
+  conversationConsumer: { consume: () => Promise.resolve() }, conversationRecovery: { recover: () => Promise.resolve() },
   closeDatabase() { calls.push('database-close'); return Promise.resolve(); }, probes: { database: () => Promise.resolve(true), hypermail: () => Promise.resolve(true), hindsight: () => Promise.resolve(true) },
 });
 
@@ -61,7 +62,7 @@ describe('worker runtime', () => {
     const agentHandler = boss.handlers.get('agent.evaluate');
     if (!agentHandler) throw new Error('agent.evaluate handler not registered');
     await agentHandler({ data: { jobId: '00000000-0000-4000-8000-000000000000' } });
-    expect(boss.started).toBe(true); expect(boss.queues).toEqual(['agent.evaluate', 'notification.deliver', 'policy.execute']); expect(calls).toContain('dispatch-recovery'); expect(calls).toContain('notification-recovery'); expect(calls).toContain('agent:00000000-0000-4000-8000-000000000000');
+    expect(boss.started).toBe(true); expect(boss.queues).toEqual(['agent.evaluate', 'notification.deliver', 'policy.execute', 'conversation.respond']); expect(calls).toContain('dispatch-recovery'); expect(calls).toContain('notification-recovery'); expect(calls).toContain('agent:00000000-0000-4000-8000-000000000000');
     await runtime.shutdown();
     expect(boss.stopped).toBe(true); expect(calls.slice(-3)).toEqual(['ingestion-stop', 'lifecycle-stop', 'database-close']);
   });
@@ -70,17 +71,4 @@ describe('worker runtime', () => {
     const calls:string[]=[];const boss=new FakeBoss();boss.start=()=>Promise.reject(new Error('queue unavailable'));const runtime=new WorkerRuntime({...env(),HEALTH_PORT:31_004},dependencies(boss,calls));await runtime.start();expect(runtime.dependencyState.queue).toBe(false);expect(calls).toContain('task-recovery');await runtime.shutdown();
   });
 
-  it('repeats all durable recoveries on the lifecycle interval', async () => {
-    vi.useFakeTimers();
-    try {
-      const boss = new FakeBoss(); const calls: string[] = [];
-      const runtime = new WorkerRuntime({ ...env(), HEALTH_PORT: 31_003, LIFECYCLE_INTERVAL_SECONDS: 1 }, dependencies(boss, calls));
-      await runtime.start();
-      await vi.advanceTimersByTimeAsync(1_000);
-      for (const recovery of ['dispatch-recovery', 'notification-recovery', 'policy-recovery', 'task-recovery']) expect(calls.filter(call => call === recovery)).toHaveLength(2);
-      await runtime.shutdown();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

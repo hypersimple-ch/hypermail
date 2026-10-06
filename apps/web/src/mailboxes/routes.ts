@@ -55,7 +55,8 @@ function startInput(body: Readonly<Record<string, unknown>>): AddAccountInput {
   if (!isRecord(raw) || !hasOnly(raw, ['host', 'port', 'secure', 'user', 'password', 'smtpHost', 'smtpPort', 'smtpSecure'])) throw new MailboxInputError();
   const host = nonEmpty(raw['host'], 255);
   const user = nonEmpty(raw['user'], 320);
-  const password = nonEmpty(raw['password'], 1_024);
+  const password = raw['password'];
+  if (typeof password !== 'string' || password.length === 0 || password.length > 1_024) throw new MailboxInputError();
   if (/\s/.test(host)) throw new MailboxInputError();
   const imapPort = port(raw['port']);
   const secure = optionalBoolean(raw['secure']);

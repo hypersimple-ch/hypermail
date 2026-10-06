@@ -47,6 +47,21 @@ describe('policy executor', () => {
     expect(finished.completed).toHaveLength(0);
   });
 
+  it('continues incomplete verification through recovery without repeating a mutation',async()=>{
+    const store=new MemoryPersistence();let mutations=0;let state='incomplete';
+    const executor=new PolicyExecutor({persistence:store,transport:transport(async()=>state==='incomplete'?{verificationState:'incomplete'}:{folderRole:'archive'},async()=>{mutations++;return {};}),isGloballyPaused:()=>false});
+    const input={...action(),precondition:{}};
+    await expect(executor.execute(input)).rejects.toThrow('VERIFICATION_PENDING');
+    expect(store.completed).toEqual([]);
+    store.claimResult={...store.claimResult,recover:true,providerConfirmed:true};state='present';
+    await expect(executor.execute(input)).resolves.toMatchObject({outcome:'succeeded'});
+    expect(mutations).toBe(1);
+  });
+  it('records an explicit exhausted readback window without another mutation',async()=>{
+    const store=new MemoryPersistence();store.claimResult={...store.claimResult,recover:true};let mutations=0;
+    await new PolicyExecutor({persistence:store,transport:transport(async()=>({verificationState:'exhausted'}),async()=>{mutations++;return {};}),isGloballyPaused:()=>false}).execute(action());
+    expect(store.completed[0]).toMatchObject({outcome:'unverifiable',errorCode:'VERIFICATION_WINDOW_EXHAUSTED'});expect(mutations).toBe(0);
+  });
   it('marks a canonical mismatch incorrect only after a confirmed provider success', async () => {
     const store = new MemoryPersistence(); let reads = 0;
     await expect(new PolicyExecutor({ persistence: store, transport: transport(async () => {

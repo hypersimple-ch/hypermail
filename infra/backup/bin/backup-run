@@ -27,6 +27,13 @@ for tool in pg_dump age age-keygen aws tar sha256sum stat head python3; do comma
 : "${BACKUP_STATE_ENCRYPTION_KEY_FILE:?BACKUP_STATE_ENCRYPTION_KEY_FILE is required}"
 : "${BACKUP_RETENTION_DAYS:?BACKUP_RETENTION_DAYS is required}"
 : "${HYPERMAIL_STATE_DIRECTORY:?HYPERMAIL_STATE_DIRECTORY is required}"
+: "${HINDSIGHT_STATE_DIRECTORY:?HINDSIGHT_STATE_DIRECTORY is required}"
+: "${BACKUP_HINDSIGHT_IMAGE:?BACKUP_HINDSIGHT_IMAGE is required}"
+# Only the host orchestrator may set this after observing cleanly stopped writers.
+[[ "${BACKUP_QUIESCENCE_AT:-}" =~ ^[0-9]+$ ]] || fail 'host quiescence attestation required'
+now=$(date -u +%s)
+(( BACKUP_QUIESCENCE_AT <= now && now - BACKUP_QUIESCENCE_AT <= 300 )) || fail 'quiescence attestation expired'
+[[ "$BACKUP_HINDSIGHT_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || fail 'Hindsight image must be pinned by digest'
 [[ "$BACKUP_TARGET" =~ ^s3://[A-Za-z0-9.-]+(/[^[:space:]]*)?$ ]] || fail 'BACKUP_TARGET must be an s3:// bucket/prefix without whitespace'
 [[ "$BACKUP_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]] || fail 'BACKUP_RETENTION_DAYS must be a positive integer'
 for key in "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE"; do
@@ -36,6 +43,7 @@ for key in "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE"; do
 done
 cmp -s "$BACKUP_ENCRYPTION_KEY_FILE" "$BACKUP_STATE_ENCRYPTION_KEY_FILE" && fail 'database and state encryption keys must differ'
 [ -d "$HYPERMAIL_STATE_DIRECTORY" ] || fail 'Hypermail state directory is unavailable'
+[ -d "$HINDSIGHT_STATE_DIRECTORY" ] || fail 'Hindsight state directory is unavailable'
 
 tmp=$(mktemp -d)
 stamp=$(date -u +%s)
@@ -59,13 +67,25 @@ PY
 export PGHOST="${connection_parts[0]}" PGPORT="${connection_parts[1]}" PGUSER="${connection_parts[2]}" PGPASSWORD="${connection_parts[3]}" PGDATABASE="${connection_parts[4]}"
 pg_dump --format=custom --no-owner --no-privileges | age --encrypt --recipient "$db_recipient" --output "$tmp/database.dump.age"
 tar --create --file - --numeric-owner --one-file-system -C "$HYPERMAIL_STATE_DIRECTORY" . | age --encrypt --recipient "$state_recipient" --output "$tmp/state.tar.age"
-db_hash=$(sha256sum "$tmp/database.dump.age" | awk '{print $1}')
-state_hash=$(sha256sum "$tmp/state.tar.age" | awk '{print $1}')
-printf '{"generation":"%s","createdAt":"%s","artifacts":{"database.dump.age":{"sha256":"%s","bytes":%s},"state.tar.age":{"sha256":"%s","bytes":%s}}}\n' \
-  "$generation" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$db_hash" "$(stat -c %s "$tmp/database.dump.age")" "$state_hash" "$(stat -c %s "$tmp/state.tar.age")" > "$tmp/manifest.json"
+tar --create --file - --numeric-owner --one-file-system -C "$HINDSIGHT_STATE_DIRECTORY" . | age --encrypt --recipient "$state_recipient" --output "$tmp/hindsight.tar.age"
+export BACKUP_GENERATION="$generation" BACKUP_MANIFEST_DIRECTORY="$tmp"
+python3 - <<'PY' > "$tmp/manifest.json"
+import hashlib, json, os, pathlib, datetime
+root = pathlib.Path(os.environ['BACKUP_MANIFEST_DIRECTORY'])
+artifacts = {}
+for name in ('database.dump.age', 'state.tar.age', 'hindsight.tar.age'):
+    digest = hashlib.sha256()
+    with (root / name).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''): digest.update(block)
+    artifacts[name] = {'sha256': digest.hexdigest(), 'bytes': (root / name).stat().st_size}
+print(json.dumps({'schemaVersion': 2, 'generation': os.environ['BACKUP_GENERATION'],
+    'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    'hindsight': {'image': os.environ['BACKUP_HINDSIGHT_IMAGE'], 'version': '0.9.1', 'snapshot': 'clean_shutdown'},
+    'artifacts': artifacts}))
+PY
 age --encrypt --recipient "$db_recipient" --output "$tmp/manifest.age" "$tmp/manifest.json"
 base="${BACKUP_TARGET%/}/generations/$generation"
-for artifact in database.dump.age state.tar.age manifest.age; do aws s3 cp --only-show-errors "$tmp/$artifact" "$base/$artifact" >/dev/null; done
+for artifact in database.dump.age state.tar.age hindsight.tar.age manifest.age; do aws s3 cp --only-show-errors "$tmp/$artifact" "$base/$artifact" >/dev/null; done
 # Only objects with our exact generation syntax and exact known filenames are eligible for pruning.
 target_path=${BACKUP_TARGET#s3://}; bucket=${target_path%%/*}; target_prefix=${target_path#*/}; [ "$target_prefix" = "$target_path" ] && target_prefix=''
 cutoff=$((stamp - BACKUP_RETENTION_DAYS * 86400))
@@ -78,7 +98,7 @@ while IFS= read -r key; do
   id=${id%/manifest.age}
   [[ "$id" =~ ^[0-9]{10}-[0-9a-f]{12}$ ]] || continue
   [ "${id%%-*}" -lt "$cutoff" ] || continue
-  for artifact in database.dump.age state.tar.age manifest.age; do aws s3 rm --only-show-errors "${BACKUP_TARGET%/}/generations/$id/$artifact" >/dev/null; done
+  for artifact in database.dump.age state.tar.age hindsight.tar.age manifest.age; do aws s3 rm --only-show-errors "${BACKUP_TARGET%/}/generations/$id/$artifact" >/dev/null; done
 done < <(aws s3api list-objects-v2 --bucket "$bucket" --prefix "${target_prefix:+$target_prefix/}generations/" --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | grep -E '(^|/)generations/[0-9]{10}-[0-9a-f]{12}/manifest.age$' || true)
-printf '{"timestamp":"%s","level":"info","event":"backup.succeeded","fields":{"generation":"%s","databaseBytes":%s,"stateBytes":%s}}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$generation" "$(stat -c %s "$tmp/database.dump.age")" "$(stat -c %s "$tmp/state.tar.age")"
+printf '{"timestamp":"%s","level":"info","event":"backup.succeeded","fields":{"generation":"%s","databaseBytes":%s,"stateBytes":%s,"hindsightBytes":%s}}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$generation" "$(stat -c %s "$tmp/database.dump.age")" "$(stat -c %s "$tmp/state.tar.age")" "$(stat -c %s "$tmp/hindsight.tar.age")"

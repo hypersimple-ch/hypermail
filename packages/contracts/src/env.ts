@@ -2,10 +2,6 @@ import { z } from 'zod';
 
 const nodeEnv = z.enum(['development', 'test', 'production']).default('development');
 const databaseUrl = z.url().startsWith('postgresql://');
-const httpsOrigin = z.url().refine(
-  (value) => new URL(value).protocol === 'https:',
-  'must use https',
-);
 const appOrigin = z.url().refine((value) => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash && value === url.origin; } catch { return false; }
 }, 'must be an exact root http(s) origin without credentials, path, query, fragment, or trailing slash');
@@ -32,9 +28,15 @@ const shared = {
 export const webEnvSchema = z.strictObject({
   ...shared,
   APP_ORIGIN: appOrigin,
+  TRUSTED_PROXY_CIDRS: z.string().default('').transform(value => value.trim() === '' ? [] : value.split(',').map(cidr => cidr.trim())).pipe(z.array(z.union([z.cidrv4(), z.cidrv6()])).max(100)),
   AUTH_SECRET: z.string().min(32),
   OAUTH_TOKEN_HASH_KEY: z.string().min(32),
-  RECOVERY_RECIPIENT: z.email(),
+  RECOVERY_SMTP_HOST: z.string().min(1).optional(),
+  RECOVERY_SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  RECOVERY_SMTP_SECURE: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
+  RECOVERY_SMTP_USER: z.string().min(1).optional(),
+  RECOVERY_SMTP_PASSWORD: z.string().min(1).optional(),
+  RECOVERY_FROM: z.email().optional(),
   HYPERMAIL_URL: z.url(),
   HYPERMAIL_KEY: secret,
   HYPERMAIL_PROTOCOL_VERSION: z.string().min(1),
@@ -46,14 +48,18 @@ export const webEnvSchema = z.strictObject({
   ATTACHMENT_TEMP_DIRECTORY: z.string().startsWith('/').refine((value) => value !== '/tmp' && !value.startsWith('/tmp/'), 'must not use shared /tmp'),
   ATTACHMENT_MAX_BYTES: positiveInteger.default(25 * 1024 * 1024),
   ATTACHMENT_ORPHAN_MAX_AGE_SECONDS: positiveInteger.default(60 * 60),
-  APPROVED_SEND_URL: httpsOrigin.optional(),
-  APPROVED_SEND_TOKEN: secret.optional(),
 }).superRefine((environment, context) => {
   if (!isHttpsOrigin(environment.APP_ORIGIN) && !isDevelopmentLoopbackOrigin(environment.APP_ORIGIN, environment.NODE_ENV)) {
     context.addIssue({ code: 'custom', path: ['APP_ORIGIN'], message: 'must use https except for development loopback origins' });
   }
-  if ((environment.APPROVED_SEND_URL === undefined) !== (environment.APPROVED_SEND_TOKEN === undefined)) {
-    context.addIssue({ code: 'custom', path: ['APPROVED_SEND_URL'], message: 'approved send URL and token must be configured together' });
+  if ((environment.RECOVERY_SMTP_HOST === undefined) !== (environment.RECOVERY_FROM === undefined)) {
+    context.addIssue({ code: 'custom', path: ['RECOVERY_SMTP_HOST'], message: 'SMTP host and sender must be configured together' });
+  }
+  if ((environment.RECOVERY_SMTP_USER === undefined) !== (environment.RECOVERY_SMTP_PASSWORD === undefined)) {
+    context.addIssue({ code: 'custom', path: ['RECOVERY_SMTP_USER'], message: 'SMTP credentials must be configured together' });
+  }
+  if (environment.RECOVERY_SMTP_HOST && environment.NODE_ENV !== 'development' && !((environment.RECOVERY_SMTP_SECURE && environment.RECOVERY_SMTP_PORT === 465) || (!environment.RECOVERY_SMTP_SECURE && environment.RECOVERY_SMTP_PORT === 587))) {
+    context.addIssue({ code: 'custom', path: ['RECOVERY_SMTP_PORT'], message: 'production recovery requires validated TLS on 465 or STARTTLS on 587' });
   }
 });
 
@@ -94,6 +100,7 @@ export const workerEnvSchema = z.strictObject({
   USER_TASK_RATE_PER_MINUTE: z.coerce.number().int().min(1).max(10_000).default(60),
   USER_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
   USER_PENDING_TASK_QUOTA: z.coerce.number().int().min(1).max(100_000).default(1_000),
+  ACTION_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.60),
   INCORRECT_MUTATION_THRESHOLD: z.coerce.number().min(0.001).max(0.01).default(0.01),
 }).superRefine((environment, context) => {
   if (environment.MAILBOX_MEMORY_RETRY_MAXIMUM_DELAY_SECONDS < environment.MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS) {

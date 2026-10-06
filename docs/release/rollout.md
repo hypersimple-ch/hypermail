@@ -12,7 +12,7 @@ All boxes require immutable evidence from the exact proposed image digests and p
 - [x] Web runtime image builds and passes liveness, environment, graceful-shutdown, and localhost PWA-shell checks; full Android/authenticated-product acceptance remains required.
 - [x] Worker runtime image builds; `dist/main.js` smoke and migrated disposable-PostgreSQL lifecycle, pg-boss consumer/replay/isolation, pause/verification, health, and shutdown checks pass. Runtime readiness validates the pinned Hypermail restricted mutation schemas; live provider mutation acceptance remains required.
 - [ ] Concrete Hypermail mutation transport implements only the policy allowlist and verifies provider outcomes.
-- [ ] Private approved-send service is deployed, authorized, network-private, and durably deduplicates the approval key.
+- [ ] Integrated private-web approved-send journal passes single-dispatch, restart ambiguity, read-only Sent proof and separate manual-review acceptance on explicitly authorized test mailboxes.
 - [ ] Approved Hypermail v0.7.26 digest runs as UID/GID 10001, persists only its state volume, passes health, and writes attachment files through the shared mode-0700 `TMPDIR`.
 - [ ] Outlook/M365, Gmail, and IMAP live matrices pass in isolated acceptance accounts, including controlled arrival/checkpoint/reconciliation and reversible mutations.
 - [ ] Deployed fault drill passes worker/DB restarts, live-provider queue replay/consumption, model/push failures, question resume, verification ambiguity, pause race, exact safety threshold, and lifecycle restart. Disposable PostgreSQL coverage is not deployment evidence.
@@ -61,6 +61,6 @@ Record the final vendor, model/version, retention/zero-retention terms, region, 
 - Hypermail checkpoint advancement is external; Inbox reconciliation reduces but cannot eliminate the crash gap.
 - Per-email Activity/push volume may create alert fatigue.
 - Recovery depends on a mailbox that may itself be compromised.
-- Approved-send exactly-once behavior is external to Hypermail and currently undeployed.
+- Provider submission cannot promise exactly-once delivery; a dispatch timeout/restart remains unknown and cannot be automatically retried.
 - Production backup scheduling/off-host storage and real restore have not been exercised.
 - Current lower-severity dependency findings and absent secret/SAST/IaC scans require explicit owner acceptance.

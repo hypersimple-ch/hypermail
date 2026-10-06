@@ -14,7 +14,7 @@ const root = createRoot(document.getElementById('app') as HTMLElement);
 flushSync(() => {
   root.render(<HypermailShell
     data={mockShellData}
-    initialScreen={screen}
+    initialScreen={screen === 'message' ? 'inbox' : screen}
     ownerEmail="owner.with.a.long.address@example.test"
     online
     settingsMailboxes={[{ id: 'personal', provider: 'gmail', email: 'owner.with.a.long.address@example.test', displayName: 'Personal', state: 'ready' }]}
@@ -24,6 +24,11 @@ flushSync(() => {
 });
 
 const visible = (selector: string, root: ParentNode = document): HTMLElement | undefined => Array.from(root.querySelectorAll<HTMLElement>(selector)).find((element) => element.getBoundingClientRect().width > 0);
+if (screen === 'message') {
+  const message = visible('button[aria-label^="Open message from"]');
+  if (!message) throw new Error('No selectable message in the layout fixture');
+  flushSync(() => { message.click(); });
+}
 const rect = (element: Element | undefined) => element?.getBoundingClientRect();
 const rounded = (value: number | undefined) => value === undefined ? null : Math.round(value * 100) / 100;
 

@@ -26,14 +26,6 @@ describe("tenant Hypermail route configuration", () => {
     expect(new TenantHypermailRouteResolver(routes).routeForUser(first)).toMatchObject({ endpoint: "https://one.internal/mcp", key: "first-private-key" });
     expect(() => new TenantHypermailRouteResolver(routes).routeForUser("33333333-3333-4333-8333-333333333333")).toThrow("HYPERMAIL_TENANT_ROUTE_MISSING");
   });
-  it("keeps tenant-private approved-send endpoints isolated with the mailbox route", () => {
-    const routes = parseTenantHypermailRoutes(JSON.stringify({
-      [first]: { endpoint: "https://one.internal/mcp", key: "first-private-key", approvedSendEndpoint: "https://one.internal/approved", approvedSendToken: "first-approved-secret" },
-      [second]: { endpoint: "https://two.internal/mcp", key: "second-private-key", approvedSendEndpoint: "https://two.internal/approved", approvedSendToken: "second-approved-secret" },
-    }));
-    expect(new TenantHypermailRouteResolver(routes).routeForUser(first).approvedSendEndpoint).toBe("https://one.internal/approved");
-    expect(new TenantHypermailRouteResolver(routes).routeForUser(second).approvedSendEndpoint).toBe("https://two.internal/approved");
-  });
   it("rejects malformed JSON, exact-field violations, endpoint credentials and endpoint reuse", () => {
     expect(() => parseTenantHypermailRoutes("{nope")).toThrow("HYPERMAIL_TENANT_ROUTES_INVALID");
     expect(() => parseTenantHypermailRoutes(JSON.stringify({ [first]: { endpoint: "ftp://one", key: "x" } }))).toThrow("HYPERMAIL_TENANT_ROUTES_INVALID");

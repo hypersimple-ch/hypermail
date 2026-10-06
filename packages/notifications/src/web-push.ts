@@ -4,7 +4,7 @@ import type { PushProviderFailure, PushSendResult, VapidConfiguration, VapidPush
 
 export interface WebPushClient {
   setVapidDetails(subject: string, publicKey: string, privateKey: string): void;
-  sendNotification(subscription: Readonly<{ endpoint: string; keys: Readonly<{ p256dh: string; auth: string }> }>, payload: string): Promise<Readonly<{ statusCode?: number }>>;
+  sendNotification(subscription: Readonly<{ endpoint: string; keys: Readonly<{ p256dh: string; auth: string }> }>, payload: string, options: Readonly<{ timeout: number }>): Promise<Readonly<{ statusCode?: number }>>;
 }
 
 type ProviderError = Readonly<{ statusCode?: unknown; code?: unknown }>;
@@ -25,7 +25,7 @@ export class WebPushVapidTransport implements VapidPushTransport {
       statusLabel: payload.statusLabel,
     });
     try {
-      const result = await this.client.sendNotification({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, redactedPayload);
+      const result = await this.client.sendNotification({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, redactedPayload, { timeout: 30_000 });
       return { ok: true, ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }) };
     } catch (error: unknown) {
       const providerError = error as ProviderError;

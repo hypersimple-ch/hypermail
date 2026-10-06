@@ -28,4 +28,14 @@ describe('notification web contracts', () => {
     expect(displayed).toBe(true); expect(shown).toEqual([{ title: 'Subject', options: { body: 'Alice — waiting', tag: 'n1', data: { activityId: 'a / 1' } } }]);
     expect(url).toBe('https://app.test/activities/a%20%2F%201'); expect(opened).toEqual([url]);
   });
+
+  it('replaces a replayed notification without replacing a different activity notification', async () => {
+    const visible = new Map<string, string>();
+    const display = { async show(title: string, options: { tag: string }) { visible.set(options.tag, title); } };
+    const payload = { notificationId: 'n1', activityId: 'a1', senderLabel: 'Alice', subject: 'First', statusLabel: 'waiting' };
+    await displayPushNotification(payload, display);
+    await displayPushNotification({ ...payload, notificationId: 'n2', activityId: 'a2', subject: 'Other' }, display);
+    await displayPushNotification({ ...payload, subject: 'Updated' }, display);
+    expect([...visible.entries()]).toEqual([['n1', 'Updated'], ['n2', 'Other']]);
+  });
 });

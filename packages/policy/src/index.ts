@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { enqueueMailboxMemoryEventInTransaction, type SqlClient as MemorySqlClient } from '@hypermail/db';
+import { createHash, randomUUID } from 'node:crypto';
+import { aggregateAgentActivityInTransaction, enqueueMailboxMemoryEventInTransaction, validateAuthorizedProposalInTransaction, type SqlClient as MemorySqlClient } from '@hypermail/db';
 import { z } from 'zod';
 
 /** The complete, intentionally small capability surface available to policy code. */
@@ -50,13 +50,13 @@ export type MutationCapability = Readonly<{
 }>;
 /** Private transport: do not add send, deletion, admin, or folder-management methods. */
 export interface PrivateMutationTransport extends MutationCapability {
-  read?(target: z.infer<typeof policyTargetSchema>, kind?: PolicyActionKind): Promise<Readonly<Record<string, unknown>> | null>;
+  read?(target: z.infer<typeof policyTargetSchema>, kind?: PolicyActionKind, actionId?: string): Promise<Readonly<Record<string, unknown>> | null>;
   list?(target: z.infer<typeof policyTargetSchema>): Promise<readonly Readonly<Record<string, unknown>>[]>;
 }
 export type ProviderReceipt = Readonly<Record<string, unknown>>;
 
 export type ActionOutcome = 'succeeded' | 'failed' | 'unverifiable' | 'incorrect';
-export type Claim = Readonly<{ actionId: string; accountId: string; outcome?: ActionOutcome; run: boolean; recover?: boolean }>;
+export type Claim = Readonly<{ actionId: string; accountId: string; outcome?: ActionOutcome; run: boolean; recover?: boolean; providerConfirmed?: boolean }>;
 export type Completion = Readonly<{ outcome: ActionOutcome; receipt?: ProviderReceipt; observed: Readonly<Record<string, unknown>>; errorCode?: string }>;
 
 /** Persistence is deliberately a narrow policy-owned port, injected by the application. */
@@ -99,6 +99,7 @@ const verificationProjection = (input: PolicyActionInput): Readonly<Record<strin
       throw new Error('POLICY_INVALID_TARGET');
   }
 };
+export class VerificationPendingError extends Error { constructor(){super('VERIFICATION_PENDING');this.name='VerificationPendingError';} }
 
 /** The sole autonomous mailbox mutation path. It never holds a DB transaction during provider I/O. */
 export class PolicyExecutor {
@@ -108,7 +109,7 @@ export class PolicyExecutor {
     this.maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isInteger(this.maxAttempts) || this.maxAttempts < 1 || this.maxAttempts > 10) throw new Error('maxAttempts must be an integer from 1 to 10.');
     this.safety = { maxIncorrectRate: options.safety?.maxIncorrectRate ?? 0.01, windowMs: options.safety?.windowMs ?? 3_600_000 };
-    if (this.safety.maxIncorrectRate <= 0 || this.safety.maxIncorrectRate > 1 || this.safety.windowMs < 1) throw new Error('Invalid safety configuration.');
+    if (!Number.isFinite(this.safety.maxIncorrectRate) || !Number.isFinite(this.safety.windowMs) || this.safety.maxIncorrectRate <= 0 || this.safety.maxIncorrectRate > 1 || this.safety.windowMs < 1) throw new Error('Invalid safety configuration.');
   }
 
   async execute(raw: unknown): Promise<Readonly<{ actionId: string; outcome: ActionOutcome | 'paused' }>> {
@@ -118,7 +119,7 @@ export class PolicyExecutor {
     if (!claim.run) return { actionId: claim.actionId, outcome: 'paused' };
 
     // An interrupted executing action is uncertain: verify and terminally persist it, never mutate again.
-    if (claim.recover) return this.finish(claim, await this.verify(input, undefined, false));
+    if (claim.recover) return this.finish(claim, await this.verify(input, undefined, claim.providerConfirmed===true));
     // Provider preconditions are checked before claiming the external call. They are never prompt text.
     if (Object.keys(input.precondition).length && this.options.transport.read) {
       const current = await this.options.transport.read(input.target, input.kind);
@@ -180,9 +181,11 @@ export class PolicyExecutor {
     if (!this.options.transport.read && !this.options.transport.list) return completion('unverifiable', {}, 'PROVIDER_CANNOT_VERIFY');
     try {
       let observed: Readonly<Record<string, unknown>> | null;
-      if (this.options.transport.read) observed = await this.options.transport.read(input.target, input.kind);
+      if (this.options.transport.read) observed = await this.options.transport.read(input.target, input.kind, input.actionId);
       else if (this.options.transport.list) observed = (await this.options.transport.list(input.target))[0] ?? null;
       else observed = null;
+      if(observed?.['verificationState']==='incomplete') throw new VerificationPendingError();
+      if(observed?.['verificationState']==='exhausted') return completion('unverifiable',observed,'VERIFICATION_WINDOW_EXHAUSTED');
       const expected = verificationProjection(input);
       if (observed === null || !Object.keys(expected).every(key => Object.hasOwn(observed, key))) {
         return completion('unverifiable', record(observed), 'VERIFICATION_INSUFFICIENT');
@@ -192,7 +195,7 @@ export class PolicyExecutor {
       return providerConfirmed
         ? completion('incorrect', observed)
         : completion('unverifiable', observed, 'AMBIGUOUS_EXECUTION');
-    } catch { return completion('unverifiable', {}, 'VERIFICATION_UNAVAILABLE'); }
+    } catch(error) { if(error instanceof VerificationPendingError)throw error;return completion('unverifiable', {}, 'VERIFICATION_UNAVAILABLE'); }
   }
   private async finish(claim: Claim, completion: Completion): Promise<Readonly<{ actionId: string; outcome: ActionOutcome }>> {
     const outcome = await this.options.persistence.complete(claim.actionId, claim.accountId, completion, this.safety);
@@ -221,9 +224,10 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
 
   async claim(input: PolicyActionInput, isGloballyPaused: () => boolean): Promise<Claim> {
     return this.sql.transaction(async sql => {
-      const result = await sql.query(`SELECT a.*, ac.autonomy_paused_at,ac.state AS account_state
-        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id
-        WHERE a.id=$1::uuid AND a.user_id=$2::uuid AND a.account_id=$3::uuid FOR UPDATE OF a,ac`,
+      await sql.query(`SELECT id FROM app.accounts WHERE id=$1::uuid FOR UPDATE`, [input.target.accountId]);
+      const result = await sql.query(`SELECT a.*, ac.autonomy_paused_at,u.autonomy_paused_at AS global_paused_at,ac.state AS account_state
+        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id JOIN app.users u ON u.id=a.user_id
+        WHERE a.id=$1::uuid AND a.user_id=$2::uuid AND a.account_id=$3::uuid FOR UPDATE OF a`,
       [input.actionId,input.userId,input.target.accountId]);
       const row=result.rows[0];
       if (!row) throw new Error('POLICY_ACTION_NOT_FOUND');
@@ -237,30 +241,37 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
       if (state==='cancelled') return { actionId: input.actionId, accountId: input.target.accountId, outcome:'failed', run:false };
       const active = ['ready','degraded'].includes(asText(row['account_state']));
       return { actionId:input.actionId, accountId:input.target.accountId,
-        run: active && (state==='executing' || state==='verifying' || (state==='authorized' && !isGloballyPaused() && !bool(row['autonomy_paused_at']))),
-        recover: active && (state==='executing' || state==='verifying') };
+        run: active && (state==='executing' || state==='verifying' || (state==='authorized' && !isGloballyPaused() && row['autonomy_paused_at']==null && row['global_paused_at']==null)),
+        recover: active && (state==='executing' || state==='verifying'),providerConfirmed:row['provider_reported_at']!=null };
     });
   }
 
   async claimImmediatelyBeforeMutation(actionId:string, accountId:string, isGloballyPaused:()=>boolean):Promise<'run'|'paused'|'finished'> {
     return this.sql.transaction(async sql => {
+      await sql.query(`SELECT id FROM app.accounts WHERE id=$1::uuid FOR UPDATE`, [accountId]);
+      await sql.query(`SELECT u.id FROM app.users u JOIN app.accounts ac ON ac.user_id=u.id WHERE ac.id=$1::uuid FOR SHARE OF u`,[accountId]);
       const result=await sql.query(`SELECT a.state,a.user_id,a.run_id,a.kind,a.mode,a.assignment_id,a.assignment_revision,
-          a.grant_id,a.grant_revision,a.safety_revision,ac.autonomy_paused_at,ac.state AS account_state,
-          ma.id AS current_assignment_id,ma.revision AS current_assignment_revision,
+          a.grant_id,a.grant_revision,a.safety_revision,ac.autonomy_paused_at,u.autonomy_paused_at AS global_paused_at,ac.state AS account_state,
+          ma.id AS current_assignment_id,ma.revision AS current_assignment_revision,ma.automatic_processing_enabled,
           g.id AS current_grant_id,g.revision AS current_grant_revision,g.state AS grant_state,
           g.capabilities AS grant_capabilities,g.invocation_modes AS grant_modes,
-          s.revision AS current_safety_revision,s.capabilities AS safety_capabilities,s.invocation_modes AS safety_modes
-        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id
+          s.revision AS current_safety_revision,s.capabilities AS safety_capabilities,s.invocation_modes AS safety_modes,
+          c.state AS connection_state,c.lifecycle_revision AS connection_revision,a.manager_lifecycle_revision,a.manager_connection_id
+        FROM app.agent_authorized_actions a JOIN app.accounts ac ON ac.id=a.account_id JOIN app.users u ON u.id=a.user_id
+        LEFT JOIN app.agent_connections c ON c.id=a.manager_connection_id AND c.user_id=a.user_id
         LEFT JOIN app.mailbox_manager_assignments ma ON ma.user_id=a.user_id AND ma.account_id=a.account_id
         LEFT JOIN app.agent_capability_grants g ON g.user_id=a.user_id AND g.account_id=a.account_id
           AND g.manager_kind::text=a.manager_kind::text AND g.agent_connection_id IS NOT DISTINCT FROM a.manager_connection_id
         LEFT JOIN app.agent_safety_ceiling s ON s.singleton=true
-        WHERE a.id=$1::uuid AND a.account_id=$2::uuid FOR UPDATE OF a,ac`,[actionId,accountId]);
+        WHERE a.id=$1::uuid AND a.account_id=$2::uuid FOR UPDATE OF a`,[actionId,accountId]);
       const row=result.rows[0];
       if (!row || asText(row['state'])!=='authorized') return 'finished';
       const capability=this.capability(asText(row['kind']));
-      if (isGloballyPaused() || bool(row['autonomy_paused_at'])) return 'paused';
-      const allowed=['ready','degraded'].includes(asText(row['account_state']))
+      if (isGloballyPaused() || row['autonomy_paused_at']!=null || row['global_paused_at']!=null) return 'paused';
+      const proposal = await validateAuthorizedProposalInTransaction(mailboxMemorySql(sql), actionId);
+      const allowed=proposal.allowed && ['ready','degraded'].includes(asText(row['account_state']))
+        && (asText(row['mode'])!=='automatic' || bool(row['automatic_processing_enabled']))
+        && (row['manager_connection_id']==null || (row['connection_state']==='connected' && Number(row['connection_revision'])===Number(row['manager_lifecycle_revision'])))
         && asText(row['current_assignment_id'])===asText(row['assignment_id'])
         && Number(row['current_assignment_revision'])===Number(row['assignment_revision'])
         && asText(row['current_grant_id'])===asText(row['grant_id'])
@@ -273,12 +284,12 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
           WHERE id=$1::uuid AND state='authorized' RETURNING activity_id,user_id,account_id,run_id,correlation_id`,[actionId]);
         const denied=cancelled.rows[0];
         if (denied) {
-          await this.event(sql,denied,'authorization_denied',{runId:asText(denied['run_id']),reasonCode:'FROZEN_AUTHORITY_REVOKED'});
+          await this.event(sql,denied,'authorization_denied',{runId:asText(denied['run_id']),reasonCode:proposal.reasonCode??'FROZEN_AUTHORITY_REVOKED'});
           await this.aggregateActivity(sql,denied);
         }
         return 'finished';
       }
-      const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='executing',started_at=now()
+      const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='executing',started_at=now(),verification_deadline_at=now()+interval '15 minutes'
         WHERE id=$1::uuid AND state='authorized' RETURNING activity_id,user_id,account_id,run_id,correlation_id`,[actionId]);
       const action=updated.rows[0]; if (!action) return 'finished';
       await sql.query(`UPDATE app.actions SET state='executing',started_at=coalesce(started_at,now()),updated_at=now() WHERE id=$1::uuid AND state='planned'`,[actionId]);
@@ -299,8 +310,9 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
   }
 
   async complete(actionId:string, accountId:string, completion:Completion, safety:PolicySafetyConfig):Promise<ActionOutcome> {
-    void safety;
+    if(!Number.isFinite(safety.maxIncorrectRate)||safety.maxIncorrectRate<=0||safety.maxIncorrectRate>1||!Number.isFinite(safety.windowMs)||safety.windowMs<1)throw new Error('Invalid safety configuration.');
     return this.sql.transaction(async sql => {
+      await sql.query(`SELECT id FROM app.accounts WHERE id=$1::uuid FOR UPDATE`, [accountId]);
       const found=await sql.query(`SELECT * FROM app.agent_authorized_actions WHERE id=$1::uuid AND account_id=$2::uuid FOR UPDATE`,[actionId,accountId]);
       let row=found.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_FOUND');
       const terminal=asText(row['state']);
@@ -318,11 +330,12 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
         const updated=await sql.query(`UPDATE app.agent_authorized_actions SET state='verified',completed_at=now()
           WHERE id=$1::uuid AND state=$2::app.agent_action_state RETURNING *`,[actionId,priorState]);
         row=updated.rows[0]; if (!row) throw new Error('POLICY_ACTION_NOT_COMPLETABLE');
-        await sql.query(`UPDATE app.actions SET state='succeeded',provider_receipt=$2::jsonb,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,JSON.stringify(completion.receipt??{})]);
+        await sql.query(`UPDATE app.actions SET state='succeeded',provider_receipt=$2::text::jsonb,finished_at=now(),updated_at=now() WHERE id=$1::uuid AND state IN ('planned','executing')`,[actionId,JSON.stringify(completion.receipt??{})]);
         await this.event(sql,row,'action_verified',{runId:asText(row['run_id']),actionId});
         await enqueueMailboxMemoryEventInTransaction(mailboxMemorySql(sql), { userId: asText(row['user_id']), mailboxId: accountId,
           sourceType: 'agent_action', sourceId: actionId, sourceVersion: Number(row['attempt'] ?? 1), kind: 'mailbox_action_verified',
           occurredAt: iso(row['completed_at']), contentPayload: { outcome: 'verified', actionKind: asText(row['kind']), target: jsonObject(row['target']) } });
+        await this.sampleSafety(sql,row,'succeeded',safety);
         await this.aggregateActivity(sql,row);
         return 'succeeded';
       }
@@ -339,11 +352,30 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
         sourceType: 'agent_action', sourceId: actionId, sourceVersion: Number(row['attempt'] ?? 1),
         kind: state === 'unverifiable' ? 'mailbox_action_unverifiable' : 'mailbox_action_failed',
         occurredAt: iso(row['completed_at']), contentPayload: { outcome: state, actionKind: asText(row['kind']), target: jsonObject(row['target']) } });
+      if(completion.outcome==='incorrect'||code==='VERIFICATION_MISMATCH')await this.sampleSafety(sql,row,'incorrect',safety);
       await this.aggregateActivity(sql,row);
       return completion.outcome;
     });
   }
 
+  private async sampleSafety(sql:PolicySqlClient,row:SqlRow,outcome:'succeeded'|'incorrect',safety:PolicySafetyConfig):Promise<void>{
+    if(!['archive','move','recoverable_trash'].includes(asText(row['kind'])))return;
+    await sql.query(`INSERT INTO app.policy_safety_samples(action_id,user_id,account_id,outcome,observed_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4,clock_timestamp()) ON CONFLICT(action_id) DO NOTHING`,[row['id'],row['user_id'],row['account_id'],outcome]);
+    const result=await sql.query(`WITH bounds AS (SELECT clock_timestamp() AS until) SELECT count(p.action_id)::integer total,count(p.action_id) FILTER(WHERE outcome='incorrect')::integer incorrect,b.until-($2::double precision*interval '1 millisecond') window_start FROM bounds b LEFT JOIN app.policy_safety_samples p ON p.account_id=$1::uuid AND p.observed_at>b.until-($2::double precision*interval '1 millisecond') AND p.observed_at<=b.until GROUP BY b.until`,[row['account_id'],safety.windowMs]);
+    const sample=result.rows[0];const total=Number(sample?.['total']??0),incorrect=Number(sample?.['incorrect']??0);
+    await sql.query(`DELETE FROM app.safety_windows WHERE account_id=$1::uuid`,[row['account_id']]);
+    await sql.query(`INSERT INTO app.safety_windows(account_id,window_started_at,verified_mutations,incorrect_mutations) VALUES($1::uuid,$2::timestamptz,$3,$4)`,[row['account_id'],sample?.['window_start'],total,incorrect]);
+    if(total===0||incorrect/total<safety.maxIncorrectRate)return;
+    const paused=await sql.query(`UPDATE app.accounts SET autonomy_paused_at=clock_timestamp(),autonomy_pause_reason='incorrect_mutation_threshold',updated_at=clock_timestamp() WHERE id=$1::uuid AND autonomy_paused_at IS NULL RETURNING id`,[row['account_id']]);
+    if(!paused.rows[0])return;
+    const pauseId=randomUUID(),messageId=randomUUID(),activityId=randomUUID();const correlation=`safety:${asText(row['account_id'])}:${pauseId}`;
+    await sql.query(`INSERT INTO app.messages(id,account_id,provider_message_id,sender,recipients,subject,preview,received_at,is_read,is_baseline) VALUES($1::uuid,$2::uuid,$3,'{"name":"Hypermail","address":"safety@hypermail.invalid"}'::jsonb,'[]'::jsonb,'Assistant safety pause','Automatic mailbox mutations are paused.',clock_timestamp(),true,false)`,[messageId,row['account_id'],correlation]);
+    await sql.query(`INSERT INTO app.activities(id,message_id,account_id,state,last_error_code) VALUES($1::uuid,$2::uuid,$3::uuid,'failed','INCORRECT_MUTATION_THRESHOLD')`,[activityId,messageId,row['account_id']]);
+    await sql.query(`INSERT INTO app.agent_activities(id,user_id,account_id,kind,source_message_id,correlation_id,state) VALUES($1::uuid,$2::uuid,$3::uuid,'safety_event',NULL,$4,'attention_required')`,[activityId,row['user_id'],row['account_id'],correlation]);
+    await sql.query(`INSERT INTO app.account_health(account_id,state,reason_code,detail) VALUES($1::uuid,'paused','INCORRECT_MUTATION_THRESHOLD','Automatic mutations paused after verified incorrect mailbox changes.') ON CONFLICT(account_id) DO UPDATE SET state=excluded.state,reason_code=excluded.reason_code,detail=excluded.detail,updated_at=clock_timestamp()`,[row['account_id']]);
+    await sql.query(`INSERT INTO app.audits(actor_type,account_id,activity_id,event,correlation_id,metadata) VALUES('system',$1::uuid,$2::uuid,'policy.safety_paused',$3,$4::text::jsonb)`,[row['account_id'],activityId,correlation,JSON.stringify({pauseId,total,incorrect,windowMs:safety.windowMs,threshold:safety.maxIncorrectRate})]);
+    await sql.query(`INSERT INTO app.logical_notifications(activity_id,sender_label,subject,status_label) VALUES($1::uuid,'Hypermail','Assistant safety pause','Automatic mailbox mutations paused')`,[activityId]);
+  }
   private canonicalTarget(target:PolicyActionInput['target']):Record<string,unknown> {
     const canonicalTarget:Record<string,unknown>={...target}; delete canonicalTarget['accountId']; return canonicalTarget;
   }
@@ -351,18 +383,12 @@ export class PostgresPolicyPersistence implements PolicyPersistence {
   private array(value:unknown):string[] { return Array.isArray(value) ? value.map(String) : typeof value==='string' ? value.replace(/[{}]/g,'').split(',').filter(Boolean) : []; }
   private providerMutationId(receipt:ProviderReceipt|undefined):string|null { const value=receipt?.['providerMutationId'] ?? receipt?.['providerMessageId'] ?? receipt?.['providerDraftId'] ?? receipt?.['id']; return typeof value==='string'&&value.length ? value : null; }
   private async aggregateActivity(sql:PolicySqlClient,row:SqlRow):Promise<void> {
-    const summary=await sql.query(`SELECT count(*) FILTER (WHERE state IN ('authorized','executing','verifying'))::integer AS pending,
-      count(*) FILTER (WHERE state IN ('failed','unverifiable','cancelled'))::integer AS attention
-      FROM app.agent_authorized_actions WHERE run_id=$1::uuid`,[row['run_id']]);
-    const counts=summary.rows[0]; if (Number(counts?.['pending']??0)>0) return;
-    const state=Number(counts?.['attention']??0)>0?'attention_required':'resolved';
-    await sql.query(`UPDATE app.agent_activities SET state=$2::app.agent_activity_state,revision=revision+1,updated_at=now()
-      WHERE id=$1::uuid AND state='open'`,[row['activity_id'],state]);
+    await aggregateAgentActivityInTransaction(mailboxMemorySql(sql), asText(row['activity_id']));
   }
   private async event(sql:PolicySqlClient,row:SqlRow,type:string,detail:Record<string,unknown>):Promise<void> {
     await sql.query(`SELECT id FROM app.agent_activities WHERE id=$1::uuid AND user_id=$2::uuid AND account_id=$3::uuid FOR UPDATE`,[row['activity_id'],row['user_id'],row['account_id']]);
     const sequence=await sql.query(`SELECT coalesce(max(sequence),0)::integer+1 AS sequence FROM app.agent_activity_events WHERE activity_id=$1::uuid`,[row['activity_id']]);
     await sql.query(`INSERT INTO app.agent_activity_events(activity_id,user_id,account_id,sequence,correlation_id,causation_id,occurred_at,detail)
-      VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::uuid,clock_timestamp(),$7::jsonb)`,[row['activity_id'],row['user_id'],row['account_id'],Number(sequence.rows[0]?.['sequence']??1),row['correlation_id'],row['run_id'],JSON.stringify({type,...detail})]);
+      VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6::uuid,clock_timestamp(),$7::text::jsonb)`,[row['activity_id'],row['user_id'],row['account_id'],Number(sequence.rows[0]?.['sequence']??1),row['correlation_id'],row['run_id'],JSON.stringify({type,...detail})]);
   }
 }

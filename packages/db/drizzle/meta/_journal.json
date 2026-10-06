@@ -107,5 +107,10 @@
       "tag": "0014_mailbox_memory_events",
       "breakpoints": true
     }
+    ,{"idx":15,"version":"7","when":1785365767030,"tag":"0015_action_proposals","breakpoints":true}
+    ,{"idx":16,"version":"7","when":1785365767031,"tag":"0016_agent_conversations","breakpoints":true}
+    ,{"idx":17,"version":"7","when":1785365767032,"tag":"0017_delivery_safety","breakpoints":true}
+    ,{"idx":18,"version":"7","when":1785365767033,"tag":"0018_approved_send_journal","breakpoints":true}
+    ,{"idx":19,"version":"7","when":1785365767034,"tag":"0019_recovery_delivery","breakpoints":true}
   ]
 }

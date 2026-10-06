@@ -18,6 +18,7 @@
     "@ai-sdk/google": "4.0.28",
     "@ai-sdk/openai": "4.0.24",
     "@hypermail/agent": "workspace:*",
+    "@hypermail/auth": "workspace:*",
     "@hypermail/contracts": "workspace:*",
     "@hypermail/db": "workspace:*",
     "@hypermail/hypermail": "workspace:*",

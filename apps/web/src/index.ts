@@ -24,6 +24,20 @@ export async function startWebServiceFromEnvironment(environment: NodeJS.Process
     throw error;
   }
 }
+async function main(): Promise<void> {
+  const runtime = createWebRuntimeFromEnvironment(process.env);
+  const server = await startWebServiceFromEnvironment(process.env, runtime);
+  let stopping = false;
+  const stop = (): void => {
+    if (stopping) return;
+    stopping = true;
+    server.close();
+    server.closeAllConnections();
+    void runtime.close().then(() => { process.exit(0); }, () => { process.exit(1); });
+  };
+  process.once('SIGTERM', stop);
+  process.once('SIGINT', stop);
+}
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  void startWebServiceFromEnvironment().catch(() => { process.stderr.write('Hypermail web startup failed\n'); process.exitCode = 1; });
+  void main().catch(() => { process.stderr.write('Hypermail web startup failed\n'); process.exitCode = 1; });
 }

@@ -5,6 +5,7 @@ export interface EmailAddress { address: string; name?: string }
 /** Safe projection only: provider credentials and provider configuration are intentionally absent. */
 export interface Account { email: string; provider: Provider; displayName?: string; addedAt?: string; hasSignature?: boolean; hasStyle?: boolean }
 export interface Folder { id: string; displayName: string; parentFolderId?: string; wellKnownName?: string }
+export interface FolderLookupPage { state: "present" | "absent" | "incomplete"; nextCursor: string | null; }
 export interface AttachmentMetadata { id: string; name: string; contentType?: string; size?: number; webUrl?: string; webUrlUnavailableReason?: string }
 export interface Message {
   id: string; account: string; subject?: string; from?: EmailAddress; to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAddress[];

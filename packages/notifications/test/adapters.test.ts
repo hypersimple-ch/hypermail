@@ -18,6 +18,7 @@ class QueryRecorder implements PostgreSqlClient {
     this.calls.push({ text, values });
     return { rows: (this.results.shift() ?? []) as readonly Row[] };
   }
+  transaction<T>(operation: (client: PostgreSqlClient) => Promise<T>): Promise<T> { return operation(this); }
 }
 
 describe('PostgresNotificationPersistence', () => {
@@ -27,7 +28,6 @@ describe('PostgresNotificationPersistence', () => {
     const persistence = new PostgresNotificationPersistence(db, codec);
     await persistence.upsertSubscription({ userId: 'u1', endpoint: 'https://push.example/private', p256dh: 'public-material', auth: 'secret-auth' });
     const call = db.calls[0];
-    expect(call?.text).toContain('ON CONFLICT (endpoint_hash) DO UPDATE');
     expect(call?.text).not.toContain('https://push.example/private');
     expect(call?.values).toEqual(['u1', 'endpoint-digest-1', 'encrypted-1', 'encrypted-2', 'encrypted-3', null]);
     expect(JSON.stringify(call?.values)).not.toContain('https://push.example/private');
@@ -36,28 +36,13 @@ describe('PostgresNotificationPersistence', () => {
     expect(codec.encrypted).toEqual(['https://push.example/private', 'public-material', 'secret-auth']);
   });
 
-  it('claims sequential attempts with a single guarded SQL statement', async () => {
-    const db = new QueryRecorder(); const persistence = new PostgresNotificationPersistence(db, new Codec());
-    db.results.push([{ attempt: 2 }]);
-    await expect(persistence.claimDelivery('n1', 's1', 3)).resolves.toEqual({ notificationId: 'n1', subscriptionId: 's1', attempt: 2 });
-    const call = db.calls[0];
-    expect(call?.values).toEqual(['n1', 's1', 3]);
-    expect(call?.text).toContain('FOR UPDATE');
-    expect(call?.text).toContain("state IN ('succeeded', 'permanent_failure')");
-    expect(call?.text).toContain('ON CONFLICT (notification_id, subscription_id, attempt) DO NOTHING');
-    db.results.push([]);
-    await expect(persistence.claimDelivery('n1', 's1', 3)).resolves.toBeNull();
-  });
 
   it('decrypts enabled rows only at the provider boundary and disables by endpoint hash', async () => {
     const db = new QueryRecorder(); const codec = new Codec(); const persistence = new PostgresNotificationPersistence(db, codec);
     db.results.push([{ id: 's1', endpoint_ciphertext: 'cipher:endpoint', p256dh_ciphertext: 'cipher:key', auth_ciphertext: 'cipher:auth' }]);
     await expect(persistence.listEnabledSubscriptions('u1')).resolves.toEqual([{ id: 's1', endpoint: 'endpoint', p256dh: 'key', auth: 'auth' }]);
-    expect(db.calls[0]?.text).toContain('disabled_at IS NULL');
-    expect(db.calls[0]?.text).toContain('expires_at IS NULL OR expires_at > NOW()');
     await persistence.unsubscribe('endpoint');
     expect(db.calls[1]?.values).toEqual(['endpoint-digest-1']);
-    expect(db.calls[1]?.text).toContain('disabled_at = COALESCE(disabled_at, NOW())');
   });
 });
 

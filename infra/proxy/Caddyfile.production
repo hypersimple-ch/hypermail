@@ -1,3 +1,6 @@
 {$APP_HOST} {
-  reverse_proxy web:3000
+  reverse_proxy web:3000 {
+    header_up X-Forwarded-For {remote_host}
+    header_up -Forwarded
+  }
 }

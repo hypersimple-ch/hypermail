@@ -1,29 +1,21 @@
 import type { DraftScope, DraftSource, DraftSourceReader } from './contracts.js';
-import type { SqlClient } from '../activity/postgres-repository.js';
+import type { MessageReader } from '../message-reader.js';
+import { MailReadError } from '../mailbox-page.js';
 
-const text = (value: unknown): string => typeof value === 'string' ? value : '';
-const stamp = (value: unknown): string => value instanceof Date ? value.toISOString() : text(value);
-const sender = (value: unknown): string => {
-  if (typeof value === 'string') return value;
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const address = (value as Record<string, unknown>)['address'];
-    if (typeof address === 'string') return address;
-  }
-  return '';
-};
 
-/** Reads quote context only from the local, account-scoped message projection. */
+/** Quotes use the same complete, sanitized read-through body as the reader. */
 export class PostgresDraftSourceReader implements DraftSourceReader {
-  constructor(private readonly sql: SqlClient) {}
+  constructor(private readonly messages: MessageReader) {}
 
   async read(scope: DraftScope, accountId: string, sourceMessageId: string): Promise<DraftSource | null> {
     if (!scope.accountIds.includes(accountId)) return null;
-    const result = await this.sql.query(
-      `SELECT m.id, m.account_id, m.sender, m.received_at, m.subject, COALESCE(b.text_body, '') AS body FROM app.messages m LEFT JOIN app.message_bodies b ON b.message_id = m.id WHERE m.id = $1::uuid AND m.account_id = $2::uuid AND m.account_id = ANY($3::uuid[])`,
-      [sourceMessageId, accountId, scope.accountIds],
-    );
-    const row = result.rows[0];
-    if (!row) return null;
-    return { id: text(row['id']), accountId: text(row['account_id']), from: sender(row['sender']), sentAt: stamp(row['received_at']), subject: text(row['subject']), body: text(row['body']) };
+    try {
+      const message = await this.messages.read(scope, sourceMessageId);
+      if (message.account_id !== accountId) return null;
+      return { id: message.id, accountId, from: message.senderAddress, sentAt: message.received_at, subject: message.subject, body: message.body };
+    } catch (error) {
+      if (error instanceof MailReadError && error.status === 404) return null;
+      throw error;
+    }
   }
 }

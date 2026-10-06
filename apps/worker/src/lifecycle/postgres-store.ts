@@ -26,8 +26,20 @@ export class PostgresLifecycleStore implements LifecycleStore {
           'lifecycle:body-purge:' || p.message_id::text,
           jsonb_build_object('messageId', p.message_id, 'retentionCutoff', $1)
         FROM purged p
+      ), send_candidates AS (
+        SELECT approval_id FROM app.approved_send_submissions
+        WHERE payload IS NOT NULL AND state NOT IN ('pending','dispatching') AND created_at <= $1
+        ORDER BY created_at,approval_id LIMIT $3 FOR UPDATE SKIP LOCKED
+      ), send_purged AS (
+        UPDATE app.approved_send_submissions s SET payload=NULL,version=version+1,updated_at=$2
+        FROM send_candidates c WHERE s.approval_id=c.approval_id RETURNING s.approval_id,s.account_id
+      ), send_audited AS (
+        INSERT INTO app.audits(occurred_at,actor_type,actor_id,account_id,event,correlation_id,metadata)
+        SELECT $2,'system','lifecycle',account_id,'approved_send_payload_purged',
+          'lifecycle:send-purge:'||approval_id::text,jsonb_build_object('approvalId',approval_id,'retentionCutoff',$1)
+        FROM send_purged
       )
-      SELECT count(*)::int AS count FROM purged
+      SELECT ((SELECT count(*) FROM purged)+(SELECT count(*) FROM send_purged))::int AS count
     `, [cutoff, at, limit]);
     return result.rows[0]?.count ?? 0;
   }

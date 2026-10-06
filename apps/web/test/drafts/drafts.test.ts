@@ -1,11 +1,6 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-// @vitest-environment jsdom
-import * as React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { PrivateApprovedSendError, type ApprovedSend, type MailSendProvider } from '@hypermail/send';
-import { type ApprovalClaim, type DraftRecord, type DraftScope, type DraftSource, type DraftSourceReader, DraftCompose, DraftConflictError, DraftInputError, DraftService, InMemoryDraftRepository, createDraftRoutes } from '../../src/drafts/index.js';
+import type { ApprovedSend, MailSendProvider } from '@hypermail/send';
+import { type ApprovalClaim, type DraftRecord, type DraftScope, type DraftSource, type DraftSourceReader, DraftConflictError, DraftInputError, DraftService, InMemoryDraftRepository, createDraftRoutes } from '../../src/drafts/index.js';
 
 const account = '00000000-0000-4000-8000-000000000001';
 const other = '00000000-0000-4000-8000-000000000002';
@@ -18,7 +13,7 @@ class SourceReader implements DraftSourceReader {
   constructor(private readonly sources: readonly DraftSource[] = [source]) {}
   read(readerScope: DraftScope, accountId: string, id: string) { return Promise.resolve(this.sources.find((item) => item.id === id && item.accountId === accountId && readerScope.accountIds.includes(accountId)) ?? null); }
 }
-class Provider implements MailSendProvider { calls: ApprovedSend[] = []; fail = false; send(message: ApprovedSend) { this.calls.push(message); return this.fail ? Promise.reject(new PrivateApprovedSendError('rejected', 400, true)) : Promise.resolve({ providerMessageId: 'message-1' }); } status() { return Promise.resolve({ state: 'verified' as const, providerMessageId: 'message-1', observedAt: '2025-01-01T00:01:00.000Z', evidence: { source: 'hypermail_readback' } }); } }
+class Provider implements MailSendProvider { calls:ApprovedSend[]=[];fail=false;submit(message:ApprovedSend){this.calls.push(message);return Promise.resolve(this.fail?{state:'rejected' as const,reasonCode:'PROVIDER_REJECTED'}:{state:'reported' as const,reference:{kind:'native_id' as const,value:'message-1'}});}status(){return Promise.resolve({state:'verified' as const,providerMessageId:'message-1',observedAt:'2025-01-01T00:01:00.000Z',evidence:{source:'hypermail_readback'}});} }
 const service = (provider: MailSendProvider = new Provider(), sourceReader = new SourceReader()) => {
   let sequence = 99;
   return new DraftService(new InMemoryDraftRepository(), provider, sourceReader, clock, () => `00000000-0000-4000-8000-${String(sequence++).padStart(12, '0')}`);
@@ -129,37 +124,15 @@ describe('draft composition and isolated send boundary', () => {
     await expect(draftService.confirmSend(scope, approval.approvalId, 'y'.repeat(16))).rejects.toThrow('completion unavailable');
     expect(provider.calls).toHaveLength(1); expect(repository.outcomes).toEqual(['sent']);
   });
-  it('leaves mismatched report and readback identities in sending', async () => {
-    const provider: MailSendProvider = { send: () => Promise.resolve({ providerMessageId: 'reported' }), status: () => Promise.resolve({ state: 'verified', providerMessageId: 'different', observedAt: clock().toISOString(), evidence: { source: 'hypermail' } }) }; const draftService = service(provider); const draft = await draftService.createUser(scope, { ...fields, accountId: account }); const approval = await draftService.beginApproval(scope, draft.id, 1, 'm'.repeat(16)); expect((await draftService.confirmSend(scope, approval.approvalId, 'm'.repeat(16))).state).toBe('sending');
-  });
-  it('leaves ambiguous provider outcomes noneditable and never claims sent', async () => {
-    const provider: MailSendProvider = { send: () => Promise.reject(new Error('timeout')) }; const draftService = service(provider); const draft = await draftService.createUser(scope, { ...fields, accountId: account }); const approval = await draftService.beginApproval(scope, draft.id, 1, 'z'.repeat(16)); const result = await draftService.confirmSend(scope, approval.approvalId, 'z'.repeat(16)); expect(result.state).toBe('sending'); await expect(draftService.editUser(scope, draft.id, 1, fields)).rejects.toThrow('editable');
-  });
-  it('keeps agent and policy packages structurally unable to use the provider boundary', async () => {
-    const root = resolve(process.cwd());
-    const sources = await Promise.all(['packages/agent', 'packages/policy'].map((directory) => readFile(resolve(root, directory, 'package.json'), 'utf8')));
-    expect(sources.join('\n')).not.toContain('@hypermail/send');
-    const sendSource = await readFile(resolve(root, 'packages/send/src/index.ts'), 'utf8');
-    expect(sendSource).not.toMatch(/from ['"]@hypermail\/(agent|policy)['"]/);
+  it('keeps ambiguous sends noneditable and reconciles without another submission',async()=>{
+    const submit=vi.fn<MailSendProvider['submit']>().mockResolvedValue({state:'unknown',reasonCode:'PROVIDER_SUBMISSION_AMBIGUOUS'});
+    const status=vi.fn<MailSendProvider['status']>().mockResolvedValue({state:'unknown',reasonCode:'PROVIDER_SENT_ID_UNVERIFIABLE'});
+    const draftService=service({submit,status});const draft=await draftService.createUser(scope,{...fields,accountId:account});
+    const approval=await draftService.beginApproval(scope,draft.id,1,'z'.repeat(16));
+    expect((await draftService.confirmSend(scope,approval.approvalId,'z'.repeat(16))).state).toBe('sending');
+    await expect(draftService.editUser(scope,draft.id,1,fields)).rejects.toThrow('editable');
+    await draftService.reconcile(scope,draft.id,approval.approvalId,1);
+    expect(submit).toHaveBeenCalledOnce();expect(status).toHaveBeenCalledTimes(2);
   });
 
-  it('renders draft controls with versioned review semantics and preserves callbacks', () => {
-    const draft: DraftRecord = { id: 'draft-1', accountId: account, sourceMessageId: null, createdBy: 'agent', state: 'editing', recipients: fields.recipients, subject: fields.subject, body: fields.body, bodyFormat: fields.bodyFormat, version: 3, createdAt: '2025-01-01T00:00:00.000Z', updatedAt: '2025-01-01T00:00:00.000Z' };
-    const autosave = vi.fn(); const requestSend = vi.fn();
-    const view = render(React.createElement(DraftCompose, { draft, revisions: [], onAutosave: autosave, onRequestSend: requestSend }));
-
-    expect(screen.getByLabelText('To').getAttribute('data-slot')).toBe('input');
-    expect(screen.getByLabelText('Message').getAttribute('data-slot')).toBe('textarea');
-    expect(screen.getByRole('status').textContent).toContain('Version 3 · Agent-created draft');
-    expect(screen.getByText('editing').getAttribute('data-slot')).toBe('chip');
-    expect(screen.getByText('Sending requires your explicit approval.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Review and send' }));
-    expect(autosave).toHaveBeenCalledWith(draft); expect(requestSend).toHaveBeenCalledWith(draft);
-
-    view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sending' }, revisions: [] }));
-    expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);
-    view.rerender(React.createElement(DraftCompose, { draft: { ...draft, state: 'sent' }, revisions: [] }));
-    expect(screen.getByRole('button', { name: 'Review and send' }).disabled).toBe(true);
-  });
 });

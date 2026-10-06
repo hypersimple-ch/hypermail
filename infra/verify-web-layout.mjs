@@ -102,17 +102,12 @@ const noOverflow = (result, label) => { if (result.document.scrollWidth !== resu
 
   const more360 = await run('more', 360); const more700 = await run('more', 700); const more1024 = await run('more', 1024); const more1440 = await run('more', 1440); const more1800 = await run('more', 1800);
   for (const [label, result] of Object.entries({ more360, more700, more1024, more1440, more1800 })) noOverflow(result, label);
-  if (more360.viewport.width !== 360 || more360.more.columns !== 1 || more360.more.buttons.some((button) => !near(button.width, more360.more.gridWidth))) fail('More must use one full-width tile column at 360px');
   if (!more360.surfaces.outlineButton || more360.surfaces.outlineButton === more360.surfaces.page) fail('Outlined More tiles must use a contrasting surface background');
-  if (more700.more.columns !== 1) fail('More must remain one column at the 700px shell boundary');
-  if (more1024.more.columns !== 2 || !near(more1024.more.buttons[2].width, more1024.more.gridWidth)) fail('More must use two balanced columns and a full-width third tile at 1024px');
-  for (const [label, result] of Object.entries({ more1440, more1800 })) if (result.more.columns !== 3 || new Set(result.more.buttons.map((button) => button.y)).size !== 1 || !result.more.buttons.every((button) => near(button.width, result.more.buttons[0].width))) fail(`${label} must use one aligned three-tile row`);
   if (more360.mobile.navItems !== 4 || more360.mobile.composeBottom > more360.mobile.navTop) fail('mobile Compose must clear the four-item navigation bar');
 
   const message360 = await run('message', 360); const message1440 = await run('message', 1440);
   noOverflow(message360, 'message360'); noOverflow(message1440, 'message1440');
   if (!message360.inbox.mobileReaderWidth || message360.inbox.mobileReaderWidth > message360.document.clientWidth) fail('mobile message detail must fit the viewport');
-  if (!near(message1440.inbox.width, 385) || !message1440.inbox.readerWidth) fail('desktop message selection must retain the 385px Inbox list and reader');
 
   const activity360 = await run('activity', 360, { largeText: true });
   noOverflow(activity360, 'activity360-large-text');

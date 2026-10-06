@@ -4,7 +4,7 @@ export interface LifecycleClock {
 }
 
 export interface LifecycleStore {
-  /** Deletes cache rows only and writes an audit row in the same transaction. */
+  /** Deletes cached bodies and minimizes completed send snapshots under body retention, with audit rows. */
   purgeCachedBodies(cutoff: Date, at: Date, limit: number): Promise<number>;
   /** Disables expired push endpoints; it never removes subscriptions or delivery history. */
   disableExpiredPushSubscriptions(at: Date, limit: number): Promise<number>;

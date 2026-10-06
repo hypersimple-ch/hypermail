@@ -56,4 +56,19 @@ describe('arrival Mailbox-memory outbox PostgreSQL integration', () => {
         .toEqual([{ user_id: first.userId, count: 1 }, { user_id: other.userId, count: 1 }].sort((a, b) => a.user_id.localeCompare(b.user_id)));
     });
   }, 30_000);
+  it.skipIf(!databaseUrl)('creates an arrival after an owner read projected the same message', async () => {
+    await withPostgresSchemas(databaseUrl ?? '', async sql => {
+      const owner = await tenant(sql);
+      const projectedId = randomUUID();
+      await sql`insert into app.messages(id,account_id,provider_message_id,sender,recipients,subject,preview,received_at,is_baseline)
+        values(${projectedId},${owner.accountId},'read-before-poll',${sql.json({address:'sender@example.test'})},${sql.json([])},'read','','2026-01-02T00:00:00Z',false)`;
+      const store = new PostgresIngestionStore(clientFor(sql));
+      const arrival = {accountId:owner.accountId,observedAt:new Date('2026-01-02T00:00:00Z'),message:{id:'read-before-poll',account:owner.email,receivedAt:'2026-01-02T00:00:00Z'}};
+      expect(await store.recordArrival(arrival)).toMatchObject({created:true});
+      expect(await store.recordArrival(arrival)).toMatchObject({created:false});
+      expect(await sql`select message_id from app.activities`).toEqual([{message_id:projectedId}]);
+      expect((await sql`select count(*)::integer as count from app.mailbox_memory_events`)[0]?.count).toBe(1);
+      expect((await sql`select count(*)::integer as count from app.agent_jobs`)[0]?.count).toBe(1);
+    });
+  },30_000);
 });

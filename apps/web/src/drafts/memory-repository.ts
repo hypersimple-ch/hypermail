@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await -- synchronous reference repository satisfies asynchronous port. */
-import type { ApprovalClaim, ApprovalMutation, ClaimMutation, DraftActor, DraftFields, DraftMutation, DraftRecord, DraftRepository, DraftRevision, DraftScope, SendApproval } from './contracts.js';
+import type { DraftFields } from '@hypermail/contracts';
+import type { ApprovalClaim, ApprovalMutation, ClaimMutation, DraftActor, DraftMutation, DraftRecord, DraftRepository, DraftRevision, DraftScope, SendApproval } from './contracts.js';
+import { DraftConflictError, DraftNotFoundError } from './contracts.js';
 
 const cloneFields = (draft: DraftFields): DraftFields => ({ recipients: draft.recipients.map((recipient) => ({ ...recipient })), subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat });
 const cloneDraft = (draft: DraftRecord): DraftRecord => ({ ...draft, ...cloneFields(draft) });
@@ -40,4 +42,6 @@ export class InMemoryDraftRepository implements DraftRepository {
     const draft = this.drafts.get(claim.draft.id); if (!visible(scope, draft) || draft.state !== 'sending') throw new Error('Send completion lost its scoped draft.');
     const next: DraftRecord = { ...draft, state: outcome === 'sent' ? 'sent' : 'failed', version: draft.version + 1, updatedAt: new Date().toISOString() }; this.drafts.set(draft.id, next); return cloneDraft(next);
   }
+  async reconcileClaim(scope:DraftScope,id:string,approvalId:string,expected:number):Promise<ApprovalClaim>{const draft=this.drafts.get(id),approval=this.approvals.get(approvalId);if(!visible(scope,draft)||!approval||approval.draftId!==id||approval.userId!==scope.subjectId)throw new DraftNotFoundError();if(draft.version!==expected)throw new DraftConflictError();return {draft:cloneDraft(draft),approval};}
+  async manualReview(scope:DraftScope,id:string,approvalId:string,expected:number,outcome:'observed_sent'|'not_observed',note:string):Promise<DraftRecord>{const claim=await this.reconcileClaim(scope,id,approvalId,expected);const value:DraftRecord={...claim.draft,submission:{approvalId,state:'unknown',reasonCode:null,dispatchMayHaveOccurred:true,manualReview:{outcome,note,createdAt:new Date().toISOString()}}};this.drafts.set(id,value);return cloneDraft(value);}
 }

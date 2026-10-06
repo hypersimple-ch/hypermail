@@ -1,121 +1,59 @@
-/**
- * The only provider-I/O boundary. This package deliberately has no dependency on
- * agent or policy packages; callers must supply a user-approved immutable payload.
- */
-export type ApprovedSend = Readonly<{
-  approvalId: string;
-  accountId: string;
-  draftId: string;
-  draftVersion: number;
-  idempotencyKey: string;
-  recipients: readonly Readonly<{ kind: 'to' | 'cc' | 'bcc'; address: string }>[];
-  subject: string;
-  body: string;
-  bodyFormat: 'markdown' | 'html';
-}>;
+import { createHash } from 'node:crypto';
 
-/** A POST response is connector-reported only; it is never authoritative proof of delivery. */
-export type ProviderSendResult = Readonly<{ providerMessageId: string }>;
-export type ProviderSendStatus =
-  | Readonly<{ state: 'verified'; providerMessageId: string; observedAt: string; evidence: Readonly<Record<string, unknown>> }>
-  | Readonly<{ state: 'rejected'; reasonCode: string }>
-  | Readonly<{ state: 'pending' | 'unknown' }>;
-export interface MailSendProvider { send(message: ApprovedSend): Promise<ProviderSendResult>; status?(idempotencyKey: string): Promise<ProviderSendStatus>; }
-export interface AuthoritativeMailSendProvider extends MailSendProvider { status(idempotencyKey: string): Promise<ProviderSendStatus>; }
-
-export class PrivateApprovedSendError extends Error {
-  constructor(message: string, readonly status?: number, readonly definiteRejection = false) { super(message); this.name = 'PrivateApprovedSendError'; }
+/** Web-process-only boundary; no agent or policy mutation port is exposed. */
+export type ApprovedSend = Readonly<{ approvalId:string; accountId:string; draftId:string; draftVersion:number; idempotencyKey:string; recipients:readonly Readonly<{kind:'to'|'cc'|'bcc';address:string}>[]; subject:string; body:string; bodyFormat:'markdown'|'html'; sourceMessageId?:string|null }>;
+export type ProviderReference = Readonly<{kind:'native_id'|'internet_message_id';value:string}>;
+export type ProviderSendResult = Readonly<{state:'reported';reference:ProviderReference|null}> | Readonly<{state:'rejected'|'unknown';reasonCode:string}>;
+export type ProviderSendStatus = Readonly<{state:'verified';providerMessageId:string;observedAt:string;evidence:Readonly<Record<string,unknown>>}> | Readonly<{state:'rejected';reasonCode:string;dispatchMayHaveOccurred?:boolean}> | Readonly<{state:'pending'|'unknown';reasonCode?:string}>;
+export interface MailSendProvider { submit(message:ApprovedSend):Promise<ProviderSendResult>; status(approvalId:string):Promise<ProviderSendStatus>; }
+export type SubmissionState = 'pending'|'dispatching'|'reported'|'verified'|'rejected'|'unknown';
+export type SubmissionView = Readonly<{approvalId:string;state:SubmissionState;reasonCode:string|null;dispatchMayHaveOccurred:boolean;manualReview:Readonly<{outcome:'observed_sent'|'not_observed';note:string;createdAt:string}>|null}>;
+export interface SendSql { query(sql:string,parameters?:readonly unknown[]):Promise<{rows:readonly Record<string,unknown>[]}>; }
+export interface Submission extends ApprovedSend { userId:string;providerType:'gmail'|'imap'|'microsoft';account:string;providerSourceId:string|null;state:SubmissionState;reference:ProviderReference|null;startedAt:string|null; }
+export type SubmissionReadback = Readonly<Pick<Submission,'account'|'providerType'|'reference'|'startedAt'> & {state:SubmissionState}>;
+export interface ApprovedSendTransport { submit(snapshot:Submission):Promise<ProviderSendResult>; verify(snapshot:SubmissionReadback):Promise<ProviderSendStatus>; }
+export const sendDigest = (s:ApprovedSend):string => createHash('sha256').update(JSON.stringify({approvalId:s.approvalId,accountId:s.accountId,draftId:s.draftId,draftVersion:s.draftVersion,idempotencyKey:s.idempotencyKey,recipients:s.recipients.map(r=>({kind:r.kind,address:r.address})),subject:s.subject,body:s.body,bodyFormat:s.bodyFormat,sourceMessageId:s.sourceMessageId??null})).digest('hex');
+export async function insertApprovedSubmission(sql:SendSql,userId:string,sourceKind:'draft'|'send_request',sourceId:string,snapshot:ApprovedSend):Promise<void> {
+ await sql.query(`INSERT INTO app.approved_send_submissions(approval_id,user_id,account_id,source_kind,source_id,source_version,idempotency_key,request_digest,payload,provider_type) SELECT $1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9::jsonb,a.provider FROM app.accounts a JOIN app.user_accounts ua ON ua.account_id=a.id WHERE a.id=$3::uuid AND ua.user_id=$2::uuid`,[snapshot.approvalId,userId,snapshot.accountId,sourceKind,sourceId,snapshot.draftVersion,snapshot.idempotencyKey,sendDigest(snapshot),snapshot]);
 }
-
-export type PrivateApprovedSendHttpOptions = Readonly<{
-  /** Deployment-owned, private endpoint; it must durably deduplicate `idempotencyKey`. */
-  endpoint: string;
-  authorization: string;
-  fetch?: typeof fetch;
-}>;
-
-type TrustedSendPayload = Readonly<{
-  approvalId: string;
-  accountId: string;
-  draftId: string;
-  draftVersion: number;
-  idempotencyKey: string;
-  message: Readonly<{ to: readonly string[]; cc: readonly string[]; bcc: readonly string[]; subject: string; body: string; bodyFormat: 'markdown' | 'html' }>;
-}>;
-
-const mapPayload = (approved: ApprovedSend): TrustedSendPayload => ({
-  approvalId: approved.approvalId,
-  accountId: approved.accountId,
-  draftId: approved.draftId,
-  draftVersion: approved.draftVersion,
-  idempotencyKey: approved.idempotencyKey,
-  message: {
-    to: approved.recipients.filter((recipient) => recipient.kind === 'to').map((recipient) => recipient.address),
-    cc: approved.recipients.filter((recipient) => recipient.kind === 'cc').map((recipient) => recipient.address),
-    bcc: approved.recipients.filter((recipient) => recipient.kind === 'bcc').map((recipient) => recipient.address),
-    subject: approved.subject,
-    body: approved.body,
-    bodyFormat: approved.bodyFormat,
-  },
-});
-
-/**
- * Adapter for a deployment-owned trusted send endpoint: POST JSON, `Authorization`,
- * and `Idempotency-Key`; a successful response is exactly `{ providerMessageId: string }`.
- * Hypermail v0.7 has no native idempotent send contract, so deployment must provide
- * this private durable endpoint. Direct MCP transport never guarantees exactly-once.
- */
-const boundedJson = async (response: Response): Promise<unknown> => {
-  const limit = 64_000; const declared = Number(response.headers.get('content-length')); if (Number.isFinite(declared) && declared > limit) throw new PrivateApprovedSendError('Trusted send endpoint response is too large.', response.status);
-  const stream = response.body;
-  if (!stream) throw new PrivateApprovedSendError('Trusted send endpoint returned malformed JSON.', response.status);
-  const reader = stream.getReader(); const chunks: Uint8Array[] = []; let size = 0;
-  let finished = false; while (!finished) { const part = await reader.read(); finished = part.done; if (!part.done) { size += part.value.byteLength; if (size > limit) { await reader.cancel(); throw new PrivateApprovedSendError('Trusted send endpoint response is too large.', response.status); } chunks.push(part.value); } }
-  const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  const body = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  try { return JSON.parse(body) as unknown; } catch { throw new PrivateApprovedSendError('Trusted send endpoint returned malformed JSON.', response.status); }
-};
-
-export class PrivateApprovedSendHttpProvider implements MailSendProvider {
-  private readonly request: typeof fetch;
-  constructor(private readonly options: PrivateApprovedSendHttpOptions) {
-    if (!options.endpoint.startsWith('https://')) throw new RangeError('A private HTTPS send endpoint is required.');
-    if (!options.authorization.trim()) throw new RangeError('Trusted send authorization is required.');
-    this.request = options.fetch ?? fetch;
-  }
-
-  async send(approved: ApprovedSend): Promise<ProviderSendResult> {
-    const payload = mapPayload(approved);
-    if (!payload.approvalId || !payload.accountId || !payload.draftId || !payload.idempotencyKey || !Number.isSafeInteger(payload.draftVersion) || payload.draftVersion < 1 || payload.message.to.length === 0 || !(['markdown', 'html'] as readonly unknown[]).includes(payload.message.bodyFormat)) throw new PrivateApprovedSendError('Malformed approved send payload.');
-    let response: Response;
-    try {
-      response = await this.request(this.options.endpoint, { method: 'POST', headers: { authorization: this.options.authorization, 'content-type': 'application/json', accept: 'application/json', 'idempotency-key': payload.idempotencyKey }, body: JSON.stringify(payload) });
-    } catch (error) {
-      throw new PrivateApprovedSendError(`Trusted send request failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (response.status !== 200) throw new PrivateApprovedSendError(`Trusted send endpoint returned HTTP ${String(response.status)}.`, response.status, response.status >= 400 && response.status < 500 && ![408, 425, 429].includes(response.status));
-    if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) throw new PrivateApprovedSendError('Trusted send endpoint returned a non-JSON response.', response.status);
-    const result = await boundedJson(response);
-    if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length !== 1 || typeof (result as Record<string, unknown>)['providerMessageId'] !== 'string' || !(result as Record<string, unknown>)['providerMessageId']) throw new PrivateApprovedSendError('Trusted send endpoint returned a malformed result.', response.status);
-    return { providerMessageId: (result as Record<string, unknown>)['providerMessageId'] as string };
-  }
-
-  /** Read-only reconciliation. The trusted endpoint must derive `verified` from a Hypermail provider readback. */
-  async status(idempotencyKey: string): Promise<ProviderSendStatus> {
-    if (!idempotencyKey.trim()) throw new PrivateApprovedSendError('Malformed send status key.');
-    let response: Response;
-    try {
-      const url = new URL(this.options.endpoint); url.pathname = `${url.pathname.replace(/\/$/, '')}/status`; url.search = '';
-      response = await this.request(url, { method: 'GET', headers: { authorization: this.options.authorization, accept: 'application/json', 'idempotency-key': idempotencyKey } });
-    } catch (error) { throw new PrivateApprovedSendError(`Trusted send status request failed: ${error instanceof Error ? error.message : String(error)}`); }
-    if (response.status !== 200) throw new PrivateApprovedSendError(`Trusted send status endpoint returned HTTP ${String(response.status)}.`, response.status);
-    if (!response.headers.get('content-type')?.toLowerCase().includes('application/json')) throw new PrivateApprovedSendError('Trusted send status endpoint returned a non-JSON response.', response.status);
-    const value = await boundedJson(response);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new PrivateApprovedSendError('Trusted send status endpoint returned a malformed result.', response.status);
-    const record = value as Record<string, unknown>; const state = record['state'];
-    if ((state === 'pending' || state === 'unknown') && Object.keys(record).length === 1) return { state };
-    if (state === 'rejected' && Object.keys(record).length === 2 && typeof record['reasonCode'] === 'string' && record['reasonCode']) return { state, reasonCode: record['reasonCode'] };
-    if (state === 'verified' && Object.keys(record).length === 4 && typeof record['providerMessageId'] === 'string' && record['providerMessageId'] && typeof record['observedAt'] === 'string' && Number.isFinite(Date.parse(record['observedAt'])) && record['evidence'] && typeof record['evidence'] === 'object' && !Array.isArray(record['evidence'])) return { state, providerMessageId: record['providerMessageId'], observedAt: record['observedAt'], evidence: record['evidence'] as Readonly<Record<string, unknown>> };
-    throw new PrivateApprovedSendError('Trusted send status endpoint returned a malformed result.', response.status);
-  }
+/** Lock ordering shared with password reset: owner, then session/approval/draft. */
+export async function lockRecentSendSession(sql:SendSql,scope:{subjectId:string;freshAuthAt?:string;sessionId?:string}):Promise<boolean>{
+ await sql.query(`SELECT id FROM app.users WHERE id=$1::uuid FOR UPDATE`,[scope.subjectId]);
+ // JavaScript session dates preserve milliseconds; PostgreSQL timestamps retain microseconds.
+ const row=(await sql.query(`SELECT id FROM app.sessions WHERE user_id=$1::uuid AND revoked_at IS NULL AND expires_at>clock_timestamp() AND created_at>=$2::timestamptz AND created_at<$2::timestamptz+interval '1 millisecond' AND created_at>clock_timestamp()-interval '5 minutes' AND created_at<=clock_timestamp()+interval '60 seconds' AND ($3::uuid IS NULL OR id=$3::uuid) FOR UPDATE`,[scope.subjectId,scope.freshAuthAt??null,scope.sessionId??null])).rows[0];return row!==undefined;
 }
+/** A failed/expired dispatch claim is NEVER retried. Only status performs readback. */
+export class IntegratedApprovedSendProvider implements MailSendProvider {
+ constructor(private readonly sql:SendSql,private readonly userId:string,private readonly transport:ApprovedSendTransport){}
+ private async load(id:string):Promise<Submission|null>{
+  const row=(await this.sql.query(`SELECT s.*,a.email,m.provider_message_id AS provider_source_id FROM app.approved_send_submissions s JOIN app.accounts a ON a.id=s.account_id JOIN app.user_accounts ua ON (ua.user_id,ua.account_id)=(s.user_id,s.account_id) LEFT JOIN app.messages m ON m.id=(s.payload->>'sourceMessageId')::uuid AND m.account_id=s.account_id WHERE s.approval_id=$1::uuid AND s.user_id=$2::uuid`,[id,this.userId])).rows[0];
+  if(!row)return null;
+  const payload=typeof row['payload']==='string'?JSON.parse(row['payload']) as ApprovedSend:row['payload'] as ApprovedSend|null;
+  if(!payload)return null;
+  if(sendDigest(payload)!==row['request_digest'])throw new Error('APPROVED_SEND_DIGEST_MISMATCH');
+  return {...payload,userId:this.userId,providerType:row['provider_type'] as Submission['providerType'],account:String(row['email']),providerSourceId:row['provider_source_id']==null?null:(row['provider_source_id'] as string),state:row['state'] as SubmissionState,reference:row['provider_reference_type']==='none'?null:{kind:row['provider_reference_type'] as ProviderReference['kind'],value:String(row['provider_message_id'])},startedAt:row['started_at']==null?null:new Date(row['started_at'] as string).toISOString()};
+ }
+ async submit(message:ApprovedSend):Promise<ProviderSendResult>{
+  const stored=await this.load(message.approvalId);if(!stored||sendDigest(message)!==sendDigest(stored))throw new Error('APPROVED_SEND_SNAPSHOT_MISMATCH');
+  const claim=await this.sql.query(`UPDATE app.approved_send_submissions s SET state='dispatching',started_at=now(),version=s.version+1,updated_at=now() FROM app.send_approvals ap JOIN app.drafts d ON d.id=ap.draft_id WHERE s.approval_id=$1::uuid AND s.user_id=$2::uuid AND s.state='pending' AND ap.id=s.approval_id AND ap.state='consumed' AND ap.expires_at>now() AND d.version=s.source_version AND d.state='sending' RETURNING s.approval_id`,[message.approvalId,this.userId]);
+  if(!claim.rows[0])return {state:'unknown',reasonCode:'SUBMISSION_ALREADY_CLAIMED'};
+  let result:ProviderSendResult;let timer:NodeJS.Timeout|undefined;try{result=await Promise.race([this.transport.submit(stored),new Promise<ProviderSendResult>(resolve=>{timer=setTimeout(() => { resolve({state:'unknown',reasonCode:'PROVIDER_SUBMISSION_AMBIGUOUS'}); }, 30_000);})]);}catch{result={state:'unknown',reasonCode:'PROVIDER_SUBMISSION_AMBIGUOUS'};}finally{clearTimeout(timer);}
+  await this.sql.query(`UPDATE app.approved_send_submissions SET state=$3,provider_reference_type=$4,provider_message_id=$5,error_code=$6,finished_at=now(),version=version+1,updated_at=now() WHERE approval_id=$1::uuid AND user_id=$2::uuid AND state='dispatching'`,[message.approvalId,this.userId,result.state,result.state==='reported'&&result.reference?result.reference.kind:'none',result.state==='reported'&&result.reference?result.reference.value:null,result.state==='reported'?null:result.reasonCode]);return result;
+ }
+ async status(id:string):Promise<ProviderSendStatus>{
+  const proof=(await this.sql.query(`SELECT a.metadata FROM app.approved_send_submissions s JOIN app.audits a ON a.correlation_id='send-proof:'||s.approval_id::text AND a.event='send.provider_verified' WHERE s.approval_id=$1::uuid AND s.user_id=$2::uuid AND s.state='verified' ORDER BY a.occurred_at LIMIT 1`,[id,this.userId])).rows[0];
+  if(proof){const evidence=typeof proof['metadata']==='string'?JSON.parse(proof['metadata']) as ProviderSendStatus:proof['metadata'] as ProviderSendStatus;return evidence;}
+  // The dispatch CAS commits before network I/O. Only pending can prove no attempt occurred.
+  await this.sql.query(`UPDATE app.approved_send_submissions s SET state='rejected',error_code='APPROVAL_EXPIRED_UNDISPATCHED',finished_at=now(),last_checked_at=now(),version=s.version+1,updated_at=now() FROM app.send_approvals ap WHERE s.approval_id=$1::uuid AND s.user_id=$2::uuid AND s.state='pending' AND s.started_at IS NULL AND ap.id=s.approval_id AND ap.state='consumed' AND ap.expires_at<=now()`,[id,this.userId]);
+  const row=(await this.sql.query(`SELECT s.state,s.error_code,s.provider_type,s.provider_reference_type,s.provider_message_id,s.started_at,a.email FROM app.approved_send_submissions s JOIN app.accounts a ON a.id=s.account_id JOIN app.user_accounts ua ON (ua.user_id,ua.account_id)=(s.user_id,s.account_id) WHERE s.approval_id=$1::uuid AND s.user_id=$2::uuid`,[id,this.userId])).rows[0];
+  if(!row)return {state:'unknown',reasonCode:'SUBMISSION_NOT_AVAILABLE'};
+  const stored:SubmissionReadback={account:String(row['email']),providerType:row['provider_type'] as Submission['providerType'],state:row['state'] as SubmissionState,reference:row['provider_reference_type']==='none'?null:{kind:row['provider_reference_type'] as ProviderReference['kind'],value:String(row['provider_message_id'])},startedAt:row['started_at']==null?null:new Date(row['started_at'] as string).toISOString()};
+  if(stored.state==='pending')return {state:'pending'};
+  if(stored.state==='rejected')return {state:'rejected',reasonCode:row['error_code']==null?'PROVIDER_REJECTED':(row['error_code'] as string),dispatchMayHaveOccurred:stored.startedAt!==null};
+  if(stored.state==='dispatching'){await this.sql.query(`UPDATE app.approved_send_submissions SET state='unknown',error_code='PROVIDER_SUBMISSION_AMBIGUOUS',version=version+1,updated_at=now() WHERE approval_id=$1::uuid AND user_id=$2::uuid AND state='dispatching' AND started_at<now()-interval '120 seconds'`,[id,this.userId]);return {state:'unknown',reasonCode:'PROVIDER_SUBMISSION_AMBIGUOUS'};}
+  let result:ProviderSendStatus;let timer:NodeJS.Timeout|undefined;try{result=await Promise.race([this.transport.verify(stored),new Promise<ProviderSendStatus>(resolve=>{timer=setTimeout(() => { resolve({state:'unknown',reasonCode:'PROVIDER_READBACK_UNAVAILABLE'}); }, 30_000);})]);}catch{result={state:'unknown',reasonCode:'PROVIDER_READBACK_UNAVAILABLE'};}finally{clearTimeout(timer);}
+  if(result.state==='verified'&&(!stored.reference||(stored.reference.kind==='native_id'&&stored.reference.value!==result.providerMessageId)))result={state:'unknown',reasonCode:'PROVIDER_SENT_ID_UNVERIFIABLE'};
+  if(stored.state!=='verified')await this.sql.query(`WITH updated AS(UPDATE app.approved_send_submissions SET state=$3,last_checked_at=now(),error_code=$4,version=version+1,updated_at=now() WHERE approval_id=$1::uuid AND user_id=$2::uuid AND state IN ('reported','unknown') RETURNING account_id,approval_id) INSERT INTO app.audits(actor_type,actor_id,account_id,event,correlation_id,metadata) SELECT 'system','approved-send',account_id,'send.provider_verified','send-proof:'||approval_id::text,$5::jsonb FROM updated WHERE $3='verified'`,[id,this.userId,result.state==='pending'?'reported':result.state,result.state==='verified'?null:result.reasonCode??null,result]);return result;
+ }
+}
+export async function submissionView(sql:SendSql,userId:string,sourceId:string):Promise<SubmissionView|null>{const row=(await sql.query(`SELECT s.approval_id,s.state,s.error_code,s.started_at,r.outcome,r.note,r.created_at review_at FROM app.approved_send_submissions s LEFT JOIN LATERAL(SELECT outcome,note,created_at FROM app.approved_send_manual_reviews WHERE approval_id=s.approval_id ORDER BY created_at DESC,id DESC LIMIT 1)r ON true WHERE s.user_id=$1::uuid AND s.source_id=$2::uuid ORDER BY s.created_at DESC LIMIT 1`,[userId,sourceId])).rows[0];return row?{approvalId:String(row['approval_id']),state:row['state'] as SubmissionState,reasonCode:row['error_code']==null?null:(row['error_code'] as string),dispatchMayHaveOccurred:row['started_at']!=null,manualReview:row['outcome']==null?null:{outcome:row['outcome'] as 'observed_sent'|'not_observed',note:String(row['note']),createdAt:new Date(row['review_at'] as string).toISOString()}}:null;}

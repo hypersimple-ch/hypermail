@@ -55,6 +55,12 @@ describe('owner mailbox routes', () => {
     expect(projector.projectReadyAccount).toHaveBeenCalledWith('owner-1', { provider: 'imap', email: 'owner@example.test', displayName: 'Owner' });
     expect(JSON.stringify(response)).not.toContain(credential);
   });
+  it('preserves every password character through owner onboarding', async () => {
+    const { provider, routes } = harness();
+    provider.addAccount.mockResolvedValue({status:'ready',account:{provider:'imap',email:'owner@example.test'}});
+    await routes.start(request({provider:'imap',email:'owner@example.test',config:{host:'imap.example.test',user:'owner@example.test',password:'  secret avec espaces  '}}));
+    expect(provider.addAccount.mock.calls[0]?.[0]).toMatchObject({config:{password:'  secret avec espaces  '}});
+  });
 
   it('completes Gmail with request-only callback data and returns no callback values', async () => {
     const { provider, routes } = harness();

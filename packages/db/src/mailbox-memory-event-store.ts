@@ -204,13 +204,13 @@ async function insertMailboxMemoryEvent(sql: Pick<SqlClient, 'query'>, input: En
   const inserted = await sql.query<EventRow>(`insert into app.mailbox_memory_events
     (id,user_id,account_id,source_type,source_id,source_version,kind,content_digest,content_payload,state,attempt_count,claim_generation,available_at,occurred_at)
     select $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending',0,0,$10::timestamptz,$10::timestamptz
-    from app.accounts a where a.id=$3::uuid and a.user_id=$2::uuid and a.state in ('ready','degraded')
+    from app.accounts a where a.id=$3::uuid and a.user_id=$2::uuid
     on conflict(user_id,account_id,source_type,source_id,source_version,kind) do nothing returning *`,
   [input.id, input.userId, input.mailboxId, sourceType, input.sourceId, sourceVersion, kind, contentDigest, input.contentPayload, input.occurredAt]);
   const existing = inserted.rows[0] ?? (await sql.query<EventRow>(`select * from app.mailbox_memory_events
     where user_id=$1 and account_id=$2 and source_type=$3 and source_id=$4 and source_version=$5 and kind=$6 for update`,
   [input.userId, input.mailboxId, sourceType, input.sourceId, sourceVersion, kind])).rows[0];
-  if (!existing) throw new Error('Mailbox memory source is unavailable or inactive.');
+  if (!existing) throw new Error('Mailbox memory source ownership is unavailable.');
   const event = eventFrom(existing);
   if (event.contentDigest !== contentDigest || event.occurredAt !== iso(input.occurredAt)) {
     throw new Error('Mailbox memory source identity was replayed with different immutable content.');
@@ -256,7 +256,9 @@ export class PostgresMailboxMemoryEventStore implements MailboxMemoryEventStore 
         select e.id from app.mailbox_memory_events e
         join app.accounts a on a.id=e.account_id and a.user_id=e.user_id and a.state in ('ready','degraded')
         where e.state='pending' and e.available_at<=clock_timestamp()
-        order by e.available_at,e.occurred_at,e.id for update of e skip locked limit $1
+        order by case when e.kind in ('question_answered','action_approved','action_rejected','action_corrected',
+          'owner_conversation_message','draft_confirmed','draft_rejected','send_owner_confirmed','send_owner_rejected')
+          then 0 else 1 end,e.available_at,e.occurred_at,e.id for update of e skip locked limit $1
       )
       update app.mailbox_memory_events e set state='processing',attempt_count=e.attempt_count+1,
         claim_generation=e.claim_generation+1,claim_token=$2::uuid,claim_worker=$3,

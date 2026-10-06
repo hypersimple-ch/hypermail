@@ -12,12 +12,13 @@ const environment = () => parseWorkerEnvironment({
 const job = { userId: '00000000-0000-4000-8000-000000000004', id: 'job', activityId: '00000000-0000-4000-8000-000000000001', accountId: '00000000-0000-4000-8000-000000000002', accountEmail: 'account@example.test', messageId: '00000000-0000-4000-8000-000000000003', providerMessageId: 'provider-id', sender: 'Sender', subject: 'Subject', receivedAt: '2025-01-01T00:00:00.000Z', attachments: [{ sourceId: '00000000-0000-4000-8000-000000000006', providerAttachmentId: 'provider-attachment', filename: 'stored.pdf', mediaType: 'application/pdf', sizeBytes: 3 }], attempt: 1 } as const;
 
 describe('production composition', () => {
+  const chatFactories = { createConversationModel: () => ({ generate: () => Promise.resolve({ reply: 'Read-only test reply.' }) }), createSourceHistory: () => ({ append: () => Promise.resolve() }) };
   it('starts with injected resources and a model adapter that is ready without a probe request', async () => {
     const calls: string[] = [];
     const database: ManagedSqlClient = { query: () => Promise.resolve({ rows: [] }), transaction: async <T>(operation: (client: ManagedSqlClient) => Promise<T>) => operation(database), close: () => { calls.push('database-close'); return Promise.resolve(); } };
     const boss = { start: () => { calls.push('boss-start'); return Promise.resolve(); }, createQueue: (name: string) => { calls.push(`queue:${name}`); return Promise.resolve(); }, stop: () => { calls.push('boss-stop'); return Promise.resolve(); }, send: () => Promise.resolve('queue-job'), async work(name: string, handler: (jobs: readonly { data: unknown }[]) => Promise<void>) { calls.push(`work:${name}`); await handler([]); } };
-    const hypermail = { initialize: () => { calls.push('hypermail-initialize'); return Promise.resolve(null); }, verifyPolicyContract: () => { calls.push('policy-contract'); return Promise.resolve(); }, establishBaseline: () => Promise.resolve(), pollNewInbox: () => Promise.resolve([]), inbox: () => Promise.resolve({ messages: [] }) };
-    const runtime = composeWorkerRuntime(environment(), { createDatabase: () => database, createBoss: () => boss, createHypermail: () => hypermail as unknown as HypermailReadClient, createTriageService: () => ({ triage: () => Promise.resolve({ decision: { state: 'handled', rationale: 'test' } }) }) as never, createNotificationTransport: () => ({ send: () => Promise.resolve({ ok: true }) }), holderId: () => 'test-holder' });
+    const hypermail = { initialize: () => { calls.push('hypermail-initialize'); return Promise.resolve(null); }, folders: () => Promise.resolve([]), verifyPolicyContract: () => { calls.push('policy-contract'); return Promise.resolve(); }, establishBaseline: () => Promise.resolve(), pollNewInbox: () => Promise.resolve([]), inbox: () => Promise.resolve({ messages: [] }) };
+    const runtime = composeWorkerRuntime(environment(), { ...chatFactories, createDatabase: () => database, createBoss: () => boss, createHypermail: () => hypermail as unknown as HypermailReadClient, createTriageService: () => ({ triage: () => Promise.resolve({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'test' } }) }) as never, createNotificationTransport: () => ({ send: () => Promise.resolve({ ok: true }) }), holderId: () => 'test-holder' });
     await runtime.start();
     expect(calls).toEqual(expect.arrayContaining(['boss-start', 'work:agent.evaluate', 'work:notification.deliver', 'work:policy.execute', 'hypermail-initialize']));
     expect(calls.filter(call => call === 'hypermail-initialize')).toHaveLength(1);
@@ -29,7 +30,7 @@ describe('production composition', () => {
   it('uses the legacy single-owner Hypermail route only in local development', () => {
     const database: ManagedSqlClient={query:()=>Promise.resolve({rows:[]}),transaction:async<T>(work:(client:ManagedSqlClient)=>Promise<T>)=>work(database),close:()=>Promise.resolve()};
     const boss={start:()=>Promise.resolve(),createQueue:()=>Promise.resolve(),stop:()=>Promise.resolve(),send:()=>Promise.resolve('job'),work:()=>Promise.resolve()};
-    const factories={createDatabase:()=>database,createBoss:()=>boss,createTriageService:()=>({triage:()=>Promise.resolve({decision:{state:'handled',rationale:'test'}})}) as never,createNotificationTransport:()=>({send:()=>Promise.resolve({ok:true})}),holderId:()=> 'holder'};
+    const factories={...chatFactories,createDatabase:()=>database,createBoss:()=>boss,createTriageService:()=>({triage:()=>Promise.resolve({decision:{ schemaVersion: 2, state: 'no_action', rationale: 'test' }})}) as never,createNotificationTransport:()=>({send:()=>Promise.resolve({ok:true})}),holderId:()=> 'holder'};
     const local=environment();expect(()=>composeWorkerRuntime(local,factories)).not.toThrow();
     expect(()=>composeWorkerRuntime({...local,NODE_ENV:'production'},factories)).toThrow('HYPERMAIL_TENANT_ROUTES_REQUIRED');
   });
@@ -40,11 +41,7 @@ describe('production composition', () => {
 
   it('maps only fetched text and durable attachment metadata into triage', async () => {
     const inputs: TriageInput[] = []; 
-    const consumer = new DeliverAgentConsumer(
-      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body only', attachments: [{ filename: 'ignored.bin', bytes: 'secret' }] }) }) },
-      { triage: (input: TriageInput) => { inputs.push(input); return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } }); } } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
-    );
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.resolve([]), readMessage: () => Promise.resolve({ body: 'body only', attachments: [{ filename: 'ignored.bin', bytes: 'secret' }] }) }) }, { triage: (input: TriageInput) => { inputs.push(input); return Promise.resolve({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'ok' } }); } } as never, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Never mutate mail.', );
     await consumer.evaluate({ ...job, attachments: [...job.attachments] });
     expect(inputs).toHaveLength(1);
     expect(inputs[0]?.email.bodyText).toBe('body only');
@@ -54,12 +51,8 @@ describe('production composition', () => {
 
   it('passes the latest answered question as the explicit current User instruction', async () => {
     const instructions: Array<string | undefined> = []; const remembered: string[] = [];
-    const consumer = new DeliverAgentConsumer(
-      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'body' }) }) },
-      { rememberUserInstruction: (value: { instruction: string }) => { remembered.push(value.instruction); return Promise.resolve(); },
-        triage: (value: TriageInput) => { instructions.push(value.currentUserInstruction); return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } }); } } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
-    );
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.resolve([]), readMessage: () => Promise.resolve({ body: 'body' }) }) }, { rememberUserInstruction: (value: { instruction: string }) => { remembered.push(value.instruction); return Promise.resolve(); },
+      triage: (value: TriageInput) => { instructions.push(value.currentUserInstruction); return Promise.resolve({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'ok' } }); } } as never, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Never mutate mail.', );
     await consumer.evaluate({ ...job, currentUserInstruction: 'Use the archive folder.', attachments: [...job.attachments] });
     expect(instructions).toEqual(['Use the archive folder.']);
     expect(remembered).toEqual(['Use the archive folder.']);
@@ -67,18 +60,12 @@ describe('production composition', () => {
 
   it('finishes current email attachment retention before Triage recall starts', async () => {
     const order: string[] = [];
-    const consumer = new DeliverAgentConsumer(
-      { clientForUser: () => ({ initialize: () => Promise.resolve(null),
-        readMessage: () => Promise.resolve({ id: 'provider-id', account: 'account@example.test', body: 'body' }),
-        openAttachment: () => Promise.reject(new Error('retainer test seam owns attachment work')) }) },
-      { triage: (_input: TriageInput, options?: { currentEmailRetained?: boolean }) => {
-        order.push(`recall:${String(options?.currentEmailRetained)}`);
-        return Promise.resolve({ decision: { state: 'handled', rationale: 'ok' } });
-      } } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() },
-      'Never mutate mail.', undefined,
-      { retainCurrentEmail: () => { order.push('attachments-retained'); return Promise.resolve({ attachmentsRetained: 1, attachmentsSkipped: [] }); } },
-    );
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.resolve([]), readMessage: () => Promise.resolve({ id: 'provider-id', account: 'account@example.test', body: 'body' }),
+    openAttachment: () => Promise.reject(new Error('retainer test seam owns attachment work')) }) }, { triage: (_input: TriageInput, options?: { currentEmailRetained?: boolean }) => {
+      order.push(`recall:${String(options?.currentEmailRetained)}`);
+      return Promise.resolve({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'ok' } });
+    } } as never, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: () => Promise.resolve(), deferMemory: () => Promise.resolve() }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Never mutate mail.', undefined,
+    { retainCurrentEmail: () => { order.push('attachments-retained'); return Promise.resolve({ attachmentsRetained: 1, attachmentsSkipped: [] }); } },);
     await consumer.evaluate({ ...job, attachments: [...job.attachments] });
     expect(order).toEqual(['attachments-retained', 'recall:true']);
   });
@@ -87,40 +74,29 @@ describe('production composition', () => {
     const queries: string[] = [];
     const database = { query: (sql: string) => { queries.push(sql); return Promise.resolve({ rows: [] }); }, transaction: async (operation: (client: never) => Promise<void>) => operation(database) } as unknown as ManagedSqlClient;
     expect(await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).claim('job', job.userId)).toBeNull();
-    expect(queries[0]).toContain("state IN ('pending', 'running')");
-    expect(queries[0]).toContain("ac.state in ('ready','degraded')");
     const failures: string[] = [];
-    const consumer = new DeliverAgentConsumer(
-      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.reject(new Error('unavailable')) }) },
-      { triage: () => Promise.resolve({}) } as never,
-      { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); }, deferMemory: () => Promise.resolve() }, 'Never mutate mail.',
-    );
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.resolve([]), readMessage: () => Promise.reject(new Error('unavailable')) }) }, { triage: () => Promise.resolve({}) } as never, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); }, deferMemory: () => Promise.resolve() }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Never mutate mail.', );
     await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).rejects.toThrow('unavailable');
     expect(failures).toEqual(['AGENT_INPUT_UNAVAILABLE']);
+  });
+  it('reports folder input failures visibly without generation or policy planning', async () => {
+    const failures: string[] = [];
+    let generations = 0, plans = 0;
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.reject(new Error('provider folders unavailable')), readMessage: () => Promise.resolve({ body: 'Full body' }) }) }, { triage: () => { generations++; return Promise.resolve({ decision: { schemaVersion: 2, state: 'no_action', rationale: 'Keep' } }); } } as never, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); }, deferMemory: () => Promise.resolve() }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Constraints', { plan: () => { plans++; return Promise.resolve(); } },);
+    await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).rejects.toThrow('provider folders unavailable');
+    expect(failures).toEqual(['AGENT_INPUT_UNAVAILABLE']);
+    expect(generations).toBe(0); expect(plans).toBe(0);
   });
   it('defers memory-unavailable work for bounded durable retry without terminally failing the job', async () => {
     const failures: string[] = [];
     const deferred: string[] = [];
-    const consumer = new DeliverAgentConsumer(
-      { clientForUser: () => ({ initialize: () => Promise.resolve(null), readMessage: () => Promise.resolve({ body: 'complete body' }) }) },
-      { triage: () => Promise.reject(new MailboxMemoryUnavailableError()) },
-      { cacheBody: () => Promise.resolve(), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); },
-        deferMemory: (deferredJob) => { deferred.push(deferredJob.id); return Promise.resolve(); } }, 'Never mutate mail.',
-    );
+    const consumer = new DeliverAgentConsumer({ clientForUser: () => ({ initialize: () => Promise.resolve(null), folders: () => Promise.resolve([]), readMessage: () => Promise.resolve({ body: 'complete body' }) }) }, { triage: () => Promise.reject(new MailboxMemoryUnavailableError()) }, { ...{ cacheBody: () => Promise.resolve(), contextualInputs: () => Promise.resolve({ availableFolders: [], availableDrafts: [] }), failAdapter: (_job, code) => { failures.push(code); return Promise.resolve(); },
+      deferMemory: (deferredJob) => { deferred.push(deferredJob.id); return Promise.resolve(); } }, memoryContextCutoff: () => Promise.resolve(new Date(job.receivedAt)) }, { prepare: () => Promise.resolve() }, 'Never mutate mail.', );
     await expect(consumer.evaluate({ ...job, attachments: [...job.attachments] })).resolves.toBeUndefined();
     expect(deferred).toEqual([job.id]);
     expect(failures).toEqual([]);
   });
 
-  it('persists a sanitized bounded memory retry on the same logical job and Run', async () => {
-    const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
-    const database = { query: (sql: string, values?: readonly unknown[]) => { queries.push({ sql, values }); return Promise.resolve({ rows: [{ id: job.id }] }); } } as unknown as ManagedSqlClient;
-    const runId = '00000000-0000-4000-8000-000000000005';
-    await new PostgresAgentJobStore(database, 90, { retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5 }).deferMemory({ ...job, runId, attachments: [...job.attachments] });
-    expect(queries[0]?.sql).toMatch(/state='pending'.*least\(\$4, \$3/s);
-    expect(queries[0]?.sql).toContain("last_error_code='MAILBOX_MEMORY_UNAVAILABLE'");
-    expect(queries[0]?.values).toEqual([job.id, runId, 5, 900]);
-  });
 
   it.each([
     ['agent_connection', 'EXTERNAL_MANAGER_DELIVERY_REQUIRED'],

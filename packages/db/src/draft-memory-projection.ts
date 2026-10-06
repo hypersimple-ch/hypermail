@@ -1,5 +1,6 @@
-import { mailboxMemoryTextEvidence, type MailboxMemoryTextEvidence } from '@hypermail/db';
-import type { DraftActor, DraftFields, Recipient } from './contracts.js';
+import { mailboxMemoryTextEvidence, type MailboxMemoryTextEvidence } from './mailbox-memory-event-store.js';
+import type { DraftFields, Recipient } from '@hypermail/contracts';
+type DraftActor = 'agent' | 'user';
 
 /**
  * Fixed privacy and size bounds for draft evidence. Two projections plus the

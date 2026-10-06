@@ -1,3 +1,4 @@
+import { listAgentProposals } from '../agent/postgres-repository.js';
 import {
   acknowledgementBlockReason, type ActivityJobState, type ActivityListInput, type ActivityMutationResult,
   type ActivityPage, type ActivityRecord, type ActivityRepository, type AuthenticatedActivityScope,
@@ -130,7 +131,7 @@ export class PostgresActivityRepository implements ActivityRepository {
     const actions=await this.sql.query(`SELECT a.id,a.run_id,a.kind,a.state,a.assignment_revision,a.grant_revision,a.safety_revision,a.authorization_revision,a.attempt,
         v.verifier,v.observed_at,v.provider_mutation_id FROM app.agent_authorized_actions a LEFT JOIN app.agent_action_verifications v ON v.action_id=a.id AND v.user_id=a.user_id AND v.account_id=a.account_id
       WHERE a.activity_id=$1::uuid AND a.user_id=$2::uuid AND a.account_id=ANY($3::uuid[]) ORDER BY a.authorized_at,a.id`,[activityId,scope.subjectId,scope.accountIds]);
-    return {...mapActivity(result.rows[0]),runs:runs.rows.map(row=>({id:text(row['id']),sequence:Number(row['sequence']),state:text(row['state']) as 'created'|'running'|'completed',outcome:row['outcome']==null?null:text(row['outcome']),managerKind:text(row['manager_kind']),mode:text(row['mode']) as 'automatic'|'interactive',assignmentRevision:Number(row['assignment_revision']),grantRevision:Number(row['grant_revision']),safetyRevision:Number(row['safety_revision']),createdAt:timestamp(row['created_at']),startedAt:row['started_at']==null?null:timestamp(row['started_at']),completedAt:row['completed_at']==null?null:timestamp(row['completed_at'])})),actions:actions.rows.map(row=>({id:text(row['id']),runId:text(row['run_id']),kind:text(row['kind']),state:text(row['state']),assignmentRevision:Number(row['assignment_revision']),grantRevision:Number(row['grant_revision']),safetyRevision:Number(row['safety_revision']),authorizationRevision:Number(row['authorization_revision']),attempt:Number(row['attempt']),verification:row['verifier']==null?null:{verifier:text(row['verifier']),observedAt:timestamp(row['observed_at']),providerMutationId:row['provider_mutation_id']==null?null:text(row['provider_mutation_id'])}}))};
+    return {...mapActivity(result.rows[0]),proposals:await listAgentProposals(this.sql,scope,activityId)??[],runs:runs.rows.map(row=>({id:text(row['id']),sequence:Number(row['sequence']),state:text(row['state']) as 'created'|'running'|'completed',outcome:row['outcome']==null?null:text(row['outcome']),managerKind:text(row['manager_kind']),mode:text(row['mode']) as 'automatic'|'interactive',assignmentRevision:Number(row['assignment_revision']),grantRevision:Number(row['grant_revision']),safetyRevision:Number(row['safety_revision']),createdAt:timestamp(row['created_at']),startedAt:row['started_at']==null?null:timestamp(row['started_at']),completedAt:row['completed_at']==null?null:timestamp(row['completed_at'])})),actions:actions.rows.map(row=>({id:text(row['id']),runId:text(row['run_id']),kind:text(row['kind']),state:text(row['state']),assignmentRevision:Number(row['assignment_revision']),grantRevision:Number(row['grant_revision']),safetyRevision:Number(row['safety_revision']),authorizationRevision:Number(row['authorization_revision']),attempt:Number(row['attempt']),verification:row['verifier']==null?null:{verifier:text(row['verifier']),observedAt:timestamp(row['observed_at']),providerMutationId:row['provider_mutation_id']==null?null:text(row['provider_mutation_id'])}}))};
   }
 
   async requestRetry(scope: AuthenticatedActivityScope, activityId: string, expectedVersion: number): Promise<ActivityMutationResult> {
@@ -138,6 +139,7 @@ export class PostgresActivityRepository implements ActivityRepository {
       const current = await this.lock(sql, scope, activityId);
       if (!current) return { kind: 'not_found' };
       if (Number(current['version']) !== expectedVersion) return { kind: 'conflict', currentVersion: Number(current['version']) };
+      if(current['has_proposals']===true || current['has_proposals']==='true') return {kind:'blocked',reason:'Review or reconcile individual proposals; do not retry the entire message.'};
       if (current['state'] !== 'failed' || !current['failure_code'] || current['retrying'] === true || current['retrying'] === 'true') return { kind: 'blocked', reason: 'Only a failed item that is not already retrying can be retried.' };
       const update = await sql.query<{ version: unknown }>(`UPDATE app.activities SET state = 'new', version = version + 1, updated_at = now() WHERE id = $1::uuid AND account_id = ANY($2::uuid[]) AND version = $3 RETURNING version`, [activityId, scope.accountIds, expectedVersion]);
       if (!update.rows[0]) return this.mutationRace(sql, scope, activityId);
@@ -155,6 +157,14 @@ export class PostgresActivityRepository implements ActivityRepository {
       const current = await this.lock(sql, scope, activityId);
       if (!current) return { kind: 'not_found' };
       if (Number(current['version']) !== expectedVersion) return { kind: 'conflict', currentVersion: Number(current['version']) };
+      const unfinished=await sql.query(`SELECT
+        EXISTS(SELECT 1 FROM app.agent_action_proposals p LEFT JOIN app.agent_authorized_actions action ON action.id=p.authorized_action_id WHERE p.activity_id=$1::uuid AND p.user_id=$2::uuid AND p.account_id=ANY($3::uuid[]) AND (p.state IN ('waiting_review','ready','blocked') OR (p.state='authorized' AND action.state IS DISTINCT FROM 'verified')))
+        OR EXISTS(SELECT 1 FROM app.agent_authorized_actions WHERE activity_id=$1::uuid AND state<>'verified')
+        OR EXISTS(SELECT 1 FROM app.agent_runs WHERE activity_id=$1::uuid AND state<>'completed')
+        OR EXISTS(SELECT 1 FROM app.actions WHERE activity_id=$1::uuid AND state<>'succeeded')
+        OR EXISTS(SELECT 1 FROM app.agent_jobs WHERE activity_id=$1::uuid AND state IN ('pending','running','suspended','failed'))
+        OR EXISTS(SELECT 1 FROM app.questions WHERE activity_id=$1::uuid AND state='open') AS unfinished`,[activityId,scope.subjectId,scope.accountIds]);
+      if(unfinished.rows[0]?.['unfinished']===true || unfinished.rows[0]?.['unfinished']==='true') return {kind:'blocked',reason:'Finish all proposals, questions and work before acknowledging.'};
       const activity = mapActivity({ ...current, id: activityId, account_id: current['account_id'], message_id: current['message_id'], created_at: current['created_at'], updated_at: current['updated_at'], title: '', account_label: '', message_label: '', timeline: [] });
       const reason = acknowledgementBlockReason(activity);
       if (reason) return { kind: 'blocked', reason };
@@ -168,18 +178,25 @@ export class PostgresActivityRepository implements ActivityRepository {
       if (canonical) await sql.query(`UPDATE app.activities SET state='acknowledged',acknowledged_at=now(),version=version+1,updated_at=now() WHERE id=$1::uuid AND account_id=ANY($2::uuid[])`,[activityId,scope.accountIds]);
       if (current['legacy_id']) await this.audit(sql,scope,activityId,'activity.acknowledged',{version:Number(update.rows[0]['version'])});
       else await sql.query(`INSERT INTO app.audits(actor_type,actor_id,account_id,event,correlation_id,metadata)
-        VALUES('user',$1,$2::uuid,'activity.acknowledged',$3,$4::jsonb)`,[scope.subjectId,current['account_id'],`activity:${activityId}`,JSON.stringify({canonicalActivityId:activityId,version:Number(update.rows[0]['version'])})]);
+        VALUES('user',$1,$2::uuid,'activity.acknowledged',$3,$4::text::jsonb)`,[scope.subjectId,current['account_id'],`activity:${activityId}`,JSON.stringify({canonicalActivityId:activityId,version:Number(update.rows[0]['version'])})]);
       return { kind: 'updated', activity: await this.required(sql, scope, activityId) };
     });
   }
 
   private async lock(sql: SqlClient, scope: AuthenticatedActivityScope, activityId: string): Promise<SqlRow | null> {
+    const account=await sql.query(`SELECT ac.id FROM app.accounts ac WHERE ac.id=ANY($2::uuid[]) AND ac.user_id=$3::uuid
+      AND (EXISTS(SELECT 1 FROM app.agent_activities WHERE id=$1::uuid AND account_id=ac.id AND user_id=$3::uuid)
+        OR EXISTS(SELECT 1 FROM app.activities WHERE id=$1::uuid AND account_id=ac.id)) FOR UPDATE OF ac`,[activityId,scope.accountIds,scope.subjectId]);
+    if(!account.rows[0]) return null;
     await sql.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[activityId]);
+    await sql.query(`SELECT id FROM app.agent_activities WHERE id=$1::uuid AND user_id=$2::uuid AND account_id=ANY($3::uuid[]) FOR UPDATE`,[activityId,scope.subjectId,scope.accountIds]);
+    await sql.query(`SELECT id FROM app.activities WHERE id=$1::uuid AND account_id=ANY($2::uuid[]) FOR UPDATE`,[activityId,scope.accountIds]);
     const result = await sql.query(`SELECT COALESCE(ca.id,a.id) AS id,a.id AS legacy_id,ca.id AS canonical_id,COALESCE(ca.account_id,a.account_id) AS account_id,COALESCE(ca.source_message_id,a.message_id) AS message_id,${effectiveState} AS state,
       COALESCE(ca.revision,a.version) AS version,COALESCE(ca.created_at,a.created_at) AS created_at,
       COALESCE(ca.updated_at,a.updated_at) AS updated_at,a.last_error_code AS failure_code,
+      EXISTS (SELECT 1 FROM app.agent_action_proposals p WHERE p.activity_id=COALESCE(ca.id,a.id)) AS has_proposals,
       EXISTS (SELECT 1 FROM app.questions q WHERE q.activity_id=COALESCE(ca.id,a.id) AND q.state = 'open') AS open_question,
-      EXISTS (SELECT 1 FROM app.agent_jobs j WHERE j.activity_id=COALESCE(ca.id,a.id) AND j.state IN ('pending', 'running')) AS retrying
+      EXISTS (SELECT 1 FROM app.agent_jobs j WHERE j.activity_id=COALESCE(ca.id,a.id) AND j.state IN ('pending', 'running','suspended')) AS retrying
       FROM app.agent_activities ca FULL JOIN app.activities a ON a.id=ca.id AND a.account_id=ca.account_id JOIN app.accounts ac ON ac.id=COALESCE(ca.account_id,a.account_id) WHERE COALESCE(ca.id,a.id)=$1::uuid AND ${scopeWhere(2,3)}`, [activityId, scope.accountIds,scope.subjectId]);
     const row = result.rows[0];
     return row ? { ...row, question_state: row['open_question'] === true || row['open_question'] === 'true' ? 'open' : null, job_state: row['retrying'] === true || row['retrying'] === 'true' ? 'pending' : null } : null;
@@ -194,6 +211,6 @@ export class PostgresActivityRepository implements ActivityRepository {
     return current ? { kind: 'conflict', currentVersion: Number(current['version']) } : { kind: 'not_found' };
   }
   private audit(sql: SqlClient, scope: AuthenticatedActivityScope, activityId: string, event: string, metadata: Record<string, unknown>): Promise<SqlQueryResult> {
-    return sql.query(`INSERT INTO app.audits (actor_type, actor_id, account_id, activity_id, event, correlation_id, metadata) VALUES ('user', $1, (SELECT account_id FROM app.activities WHERE id = $2::uuid), $2::uuid, $3, $4, $5::jsonb)`, [scope.subjectId, activityId, event, `activity:${activityId}`, JSON.stringify(metadata)]);
+    return sql.query(`INSERT INTO app.audits (actor_type, actor_id, account_id, activity_id, event, correlation_id, metadata) VALUES ('user', $1, (SELECT account_id FROM app.activities WHERE id = $2::uuid), $2::uuid, $3, $4, $5::text::jsonb)`, [scope.subjectId, activityId, event, `activity:${activityId}`, JSON.stringify(metadata)]);
   }
 }

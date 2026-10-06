@@ -32,6 +32,11 @@ describe("Hypermail explicit-user onboarding", () => {
     expect(server.calls.at(-1)?.params?.arguments).toMatchObject({ provider: "imap", config: { host: "imap.example.test", user: "user@example.test" } });
     expect(server.calls.at(-1)?.params?.arguments?.config).not.toHaveProperty("port");
   });
+  it("passes whitespace-bearing IMAP credentials byte-for-byte to the tool transport", async () => {
+    const server = await initialized({ add_account: { status: "ready", account: { provider: "imap", email: "user@example.test" } } });
+    await server.client.addAccount({provider:"imap",config:{host:"imap.example.test",user:"user@example.test",password:"  secret avec espaces  "}});
+    expect(server.calls.at(-1)?.params?.arguments?.config).toMatchObject({password:"  secret avec espaces  "});
+  });
 
   it("projects completion pending, ready, expired, and error without server error text", async () => {
     const server = await initialized({ complete_add_account: [

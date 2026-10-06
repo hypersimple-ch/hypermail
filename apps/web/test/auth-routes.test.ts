@@ -19,6 +19,7 @@ function service(result: Awaited<ReturnType<AuthRouteService['rotatePassword']>>
     rotatePassword,
     requestRecovery: vi.fn(),
     resetPassword: vi.fn(),
+    reauthenticate: vi.fn(),
   };
   return { auth, rotatePassword, signOut };
 }
@@ -62,5 +63,11 @@ describe('authenticated password route', () => {
 
     await expect(invalid.password(request())).resolves.toEqual({ status: 401, body: { error: 'invalid_credentials' } });
     await expect(throttled.password(request())).resolves.toEqual({ status: 429, body: { error: 'invalid_credentials' } });
+  });
+  it('reset success clears the session and requires login rather than issuing a replacement', async () => {
+    const auth = service({ ok: true, token: 'unused' }).auth;
+    auth.resetPassword = () => Promise.resolve({ ok: true });
+    const routes = createAuthRoutes(auth, cookies, origin);
+    expect(await routes.reset(request({ body: { token: 'one-use-token', password: 'replacement password' } }))).toEqual({ status: 200, body: { status: 'ok' }, setCookie: 'session=; Max-Age=0' });
   });
 });

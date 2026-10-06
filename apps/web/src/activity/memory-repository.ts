@@ -48,6 +48,7 @@ export class InMemoryActivityRepository implements ActivityRepository {
     const activity = await this.get(scope, activityId);
     if (!activity) return { kind: 'not_found' };
     if (activity.version !== expectedVersion) return { kind: 'conflict', currentVersion: activity.version };
+    if(activity.proposals?.length) return {kind:'blocked',reason:'Review or reconcile individual proposals; do not retry the entire message.'};
     if (activity.state !== 'failed' || !activity.failure || activity.failure.retrying) return { kind: 'blocked', reason: 'Only a failed item that is not already retrying can be retried.' };
     return this.replace(activity, { state: 'new', failure: { ...activity.failure, retrying: true }, jobState: 'pending' });
   }

@@ -48,6 +48,16 @@ describe('public MCP raw Streamable HTTP transport', () => {
     const {origin,oauth}=await fixture(principal,{preAuthLimit:2,preAuthWindowMs:60_000});const send=(token:string)=>fetch(origin+'/mcp',{method:'GET',headers:{authorization:`Bearer ${token}`}});
     expect((await send('invalid-one')).status).toBe(401);expect((await send('invalid-two')).status).toBe(401);expect((await send('invalid-three')).status).toBe(429);expect(oauth.verifyAccess).toHaveBeenCalledTimes(2);
   });
+  it('uses only trusted normalized proxy identities for MCP admission', async () => {
+    const { origin, oauth } = await fixture(principal, { preAuthLimit: 1, trustedProxyCidrs: ['127.0.0.1/32'] });
+    const send = (forwarded: string) => fetch(origin + '/mcp', { method: 'GET', headers: { authorization: 'Bearer invalid', 'x-forwarded-for': forwarded } });
+    expect((await send('203.0.113.1')).status).toBe(401);
+    expect((await send('203.0.113.2')).status).toBe(401);
+    expect((await send('::ffff:203.0.113.1')).status).toBe(429);
+    expect((await send('203.0.113.3, malformed')).status).toBe(401);
+    expect((await send('203.0.113.4:123')).status).toBe(429);
+    expect(oauth.verifyAccess).toHaveBeenCalledTimes(3);
+  });
   it('reserves initialization admission atomically and releases failed initialize reservations',async()=>{
     const {request,publicMcp}=await fixture(principal,{maxSessions:1,preAuthLimit:20});
     const malformed=await request({...initialize,params:{}});expect([400,200]).toContain(malformed.status);await malformed.text();expect(publicMcp.sessionCount).toBe(0);
