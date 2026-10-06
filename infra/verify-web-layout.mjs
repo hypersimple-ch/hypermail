@@ -43,14 +43,16 @@ if (typeof process.getuid === 'function' && process.getuid() === 0) chromeArgs.u
 chromeProcess = spawn(chrome, chromeArgs, { stdio: ['ignore', 'ignore', 'pipe'] });
 const debuggerUrl = await new Promise((resolveUrl, reject) => {
   let stderr = '';
-  const timeout = setTimeout(() => reject(new Error('Chrome did not expose DevTools in time')), 10000);
+  const startupError = (message) => new Error(`${message}${stderr.trim() ? `\nChrome stderr:\n${stderr.trim()}` : ''}`);
+  const timeout = setTimeout(() => reject(startupError('Chrome did not expose DevTools in time')), 10000);
   chromeProcess.stderr.setEncoding('utf8');
   chromeProcess.stderr.on('data', (chunk) => {
-    stderr += chunk;
+    stderr = (stderr + chunk).slice(-16_384);
     const match = /DevTools listening on (ws:\/\/[^\s]+)/.exec(stderr);
     if (match?.[1]) { clearTimeout(timeout); resolveUrl(match[1]); }
   });
-  chromeProcess.once('exit', (code) => { clearTimeout(timeout); reject(new Error(`Chrome exited before DevTools was ready (${String(code)})`)); });
+  chromeProcess.once('error', (error) => { clearTimeout(timeout); reject(startupError(`Chrome could not start: ${error.message}`)); });
+  chromeProcess.once('exit', (code) => { clearTimeout(timeout); reject(startupError(`Chrome exited before DevTools was ready (${String(code)})`)); });
 });
 socket = new WebSocket(debuggerUrl);
 await new Promise((resolveOpen, reject) => {
