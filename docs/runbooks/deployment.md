@@ -1,5 +1,24 @@
 # Deployment runbook
 
+## Branch and promotion policy
+
+`main` is for ongoing development; all deployments use `prod`. Merge reviewed
+development into `main`, then promote a reviewed release with a PR from `main`
+to `prod`. Build release images from that `prod` revision and record the source
+SHA alongside immutable image digests. Do not deploy from feature branches or
+`main`. Rollbacks must be represented on `prod` too.
+
+The currently published **Hypermail — site vitrine** Dokploy application uses
+`hypersimple-ch/hypermail`, branch `prod`, build path `/website`, Static build,
+publish directory `.`, and no SPA fallback. Automatic deployments are disabled:
+after promotion, explicitly deploy and verify HTTPS, FR/EN pages and assets at
+<https://hypermail.hypersimple.ch/>. It must not expose MCP, OAuth callbacks,
+the PWA, worker, database or repository files.
+
+The application-service procedures below retain their release preconditions.
+Creating `prod` or publishing the website does not clear the application's
+NO-GO status or its dependency-security findings.
+
 ## Preconditions
 
 1. Build and pin immutable `WEB_IMAGE`, `WORKER_IMAGE`, and `BACKUP_IMAGE` digests. Set `HINDSIGHT_IMAGE` to the approved full Hindsight 0.9.1 `ghcr.io/vectorize-io/hindsight@sha256:…` digest; the worker separately enforces read-only `/health/ready`, exact `/version` API version `0.9.1`, required features, and the bounded OpenAPI methods used by the adapter before it starts consumers or schedulers. Worker `dist/main.js` container smoke and web liveness/environment/graceful-shutdown checks pass; worker readiness is expected to remain `not_ready` until the Hypermail draft create/edit response contract is verified.

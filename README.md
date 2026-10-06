@@ -22,6 +22,7 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 - `infra` — deployment assets added in phase 3
 - `docs` — architecture, data model, design, contracts, and decisions
 - `spikes` — evidence only; excluded from the production pnpm workspace
+- `website` — standalone bilingual public website, separate from the PWA and its services
 
 ## Commands
 
@@ -50,3 +51,53 @@ Open <http://localhost:8080>. Local Compose applies migrations automatically and
 Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
 
 Gmail and Outlook flows require deployment OAuth/device-code configuration and isolated provider accounts before they can be accepted as live integrations. The pinned local service and fixture proof do not establish that acceptance. Production secrets belong in deployment secret storage.
+
+## Public website
+
+`website/` contains the static Hypermail and Hypermail MCP website: French at
+`index.html`, English at `en/index.html`, with privacy, terms and Gmail OAuth
+setup pages in both languages. It requires no frontend build, JavaScript,
+external fonts, analytics or cookies.
+
+Preview from this repository root:
+
+```sh
+python3 -m http.server 4173 --bind 127.0.0.1 --directory website
+```
+
+The visual foundations follow [`docs/design/system.md`](docs/design/system.md):
+off-white `#F6F6F5`, white surfaces, charcoal `#252525`, thin `#E2E2E0`
+borders, system typography, 8px controls and 12px cards. Green indicates product
+availability, not branding. The inbox preview is conceptual. Composition
+references are recorded in this
+[private Lazyweb collection](https://www.lazyweb.com/agentic-search/7e65437f-7831-4322-8e05-e507bd0e1f0e);
+competitor privacy claims and branding are not reused.
+
+Dokploy publishes only `/website` from `prod` in
+`hypersimple-ch/hypermail`, using the Static build type, publish directory `.`,
+and SPA fallback disabled. Automatic deployments are disabled. The application
+is **Hypermail — site vitrine**, in the **Hypermail** project of **Hypersimple**.
+HTTPS routing is configured in the application's Traefik configuration for
+<https://hypermail.hypersimple.ch/>; the temporary
+<https://hypermail-website.46.225.4.162.nip.io/> address is also retained.
+
+This deployment does not build or expose the PWA, worker, database, MCP server,
+or OAuth callback. Use the public homepage, `/privacy.html` and `/terms.html`
+URLs in Google Cloud branding; domain ownership and restricted-scope approval
+remain separate Google requirements. Review the layout at 375px and 1440px
+before changing the visual design.
+
+## Development and production branches
+
+`main` is the ongoing development branch. `prod` is the sole deployment source
+for this repository; never point a production service at `main` or a feature
+branch. Promotion does not authorize deploying services that remain NO-GO.
+
+Merge development PRs into `main`. For a release, review the changes in a PR
+from `main` to `prod`, verify the intended release surface, then merge it.
+Deploy the resulting `prod` commit through Dokploy and record its SHA and smoke
+results. The website application currently requires an explicit deployment;
+automatic deployments remain disabled. Reverting a release must also go
+through `prod`, not an ad-hoc deployment from a different branch.
+
+See the [deployment runbook](docs/runbooks/deployment.md) for release boundaries.
