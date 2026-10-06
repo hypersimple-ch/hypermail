@@ -150,7 +150,7 @@ services:
     networks: [private, egress]
 
   hindsight:
-    image: ${HINDSIGHT_IMAGE:?set HINDSIGHT_IMAGE to an immutable Hindsight 0.9.1 digest}
+    image: ${HINDSIGHT_IMAGE:?set HINDSIGHT_IMAGE to an immutable Hindsight 0.10.2 digest}
     restart: unless-stopped
     env_file: ["${HINDSIGHT_ENV_FILE:?set HINDSIGHT_ENV_FILE to Hindsight-only LLM secrets}"]
     environment:
@@ -167,7 +167,7 @@ services:
     mem_limit: ${HINDSIGHT_MEMORY_LIMIT:-4g}
     cpus: ${HINDSIGHT_CPU_LIMIT:-2.0}
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8888/health"]
+      test: ["CMD", "python3", "-c", "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8888/health/ready', timeout=4); assert r.status == 200; body = json.load(r); assert body.get('status') == 'healthy' and body.get('database') == 'connected'"]
       interval: 30s
       timeout: 10s
       start_period: 60s

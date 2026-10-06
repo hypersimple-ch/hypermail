@@ -99,6 +99,7 @@ Commit before queue publication or model/provider calls. A replay either finds t
 
 - `scheduler_leases` elects one polling scheduler; each ready account is polled independently and records bounded backoff in `poll_states` plus sanitized status in `account_health`.
 - Pending `agent_jobs` without `queue_job_id` form the durable dispatch outbox. pg-boss singleton keys prevent duplicate queue deliveries after commit/mark-dispatched crashes.
+- A memory-unavailable triage delivery returns its existing `agent_jobs` row to `pending`, clears `queue_job_id`, and delays `available_at`. Dispatch recovery reoffers the same logical job when due. Reclaim reuses its canonical running Run without inserting another Run: PostgreSQL's contiguous-sequence `BEFORE INSERT` guard runs before conflict handling. The original Run start time remains the memory-context cutoff, including across memory deferrals and queue replays.
 - Activity list cursors are the descending `(created_at, id)` tuple. Acknowledgement uses a row lock and version compare-and-swap, and requires `handled` state with no open question or active retry.
 - Push endpoints and key material are encrypted; only endpoint hashes are used for idempotent subscription identity. Delivery attempts are claimed under a notification lock and uniquely numbered.
 - Retryable push failures transition `delivering -> failed`; a later durable invocation performs `failed -> pending -> delivering`. Provider 404/410 responses permanently disable that subscription.

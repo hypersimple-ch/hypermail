@@ -30,7 +30,21 @@ const run = (args) => {
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
-if (!planOnly) run(['config', '--quiet']);
+if (!planOnly) {
+  const configuration = spawnSync(compose[0], [...compose.slice(1), 'config', '--format', 'json'],
+    { cwd: root, env: environment, encoding: 'utf8' });
+  if (configuration.error) throw configuration.error;
+  if (configuration.status !== 0) {
+    process.stderr.write(configuration.stderr);
+    process.exit(configuration.status ?? 1);
+  }
+  const services = JSON.parse(configuration.stdout).services;
+  const serverVersion = services.hindsight.image.match(/:(\d+\.\d+\.\d+)$/)?.[1];
+  if (!serverVersion || services.worker.environment.HINDSIGHT_EXPECTED_VERSION !== serverVersion) {
+    process.stderr.write('Hindsight worker/server versions differ. Validate native retain/recall, then either migrate a cold-backup copy or explicitly discard disposable local memory before updating HINDSIGHT_EXPECTED_VERSION in .env. Never start the new image against an unprotected existing volume.\n');
+    process.exit(1);
+  }
+}
 const images = ['hypermail-local-dev-web', 'hypermail-local-dev-worker', 'hypermail-local-dev-migrate'];
 const imageHash = (image) => {
   const result = spawnSync('docker', ['image', 'inspect', '--format', '{{ index .Config.Labels "org.hypermail.dev-input-hash" }}', image], { cwd: root, env: environment, encoding: 'utf8' });

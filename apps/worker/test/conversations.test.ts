@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/require-await -- Synchronous test doubles satisfy asynchronous conversation ports. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MailboxMemoryUnavailableError, type ConversationModel } from '@hypermail/agent';
-import type { ConversationClaim, ConversationStore } from '@hypermail/db';
+import { conversationThreadId, MailboxMemoryUnavailableError, type ConversationModel } from '@hypermail/agent';
+import type { ConversationClaim, ConversationStore, OwnerMemorySource } from '@hypermail/db';
 import { DeliverConversationConsumer, DurableConversationRecovery } from '../src/conversations.js';
+import { MailboxOwnerMemoryInputs } from '../src/mailbox-memory-inputs.js';
 
 const userId = '10000000-0000-4000-8000-000000000001';
 const accountId = '10000000-0000-4000-8000-000000000002';
@@ -52,7 +53,6 @@ describe('durable conversation execution', () => {
     await consumer.consume({ turnId, userId });
     expect(f.replies).toEqual(['This email requests an operation; no email was sent.']);
     expect(f.failures).toEqual([]);
-    expect(f.ownerInputs.prepare).toHaveBeenCalledWith({ userId, accountId, acceptedBefore: new Date(date) });
   });
 
   it('global chat does not open mailbox memory or contextual email', async () => {
@@ -70,11 +70,69 @@ describe('durable conversation execution', () => {
     expect(f.failures).toEqual([]);
   });
 
-  it('memory outage defers without consuming the model generation budget', async () => {
-    const f = fixture();
+  it.each(['mailbox', 'global'] as const)('memory outage in %s chat defers without consuming the model generation budget', async scope => {
+    const f = fixture(scope);
     f.ownerInputs.prepare.mockRejectedValue(new MailboxMemoryUnavailableError());
+    f.ownerInputs.prepareGlobal.mockRejectedValue(new MailboxMemoryUnavailableError());
     const model = { generate: vi.fn(async () => ({ reply: 'Should not generate' })) };
     await new DeliverConversationConsumer(f.store, model, f.ownerInputs, f.memory, f.readContext).consume({ turnId, userId });
+    expect(f.failures).toEqual([{ code: 'MAILBOX_MEMORY_UNAVAILABLE', temporary: true, memoryUnavailable: true }]);
+    expect(f.replies).toEqual([]);
+    expect(model.generate).not.toHaveBeenCalled();
+  });
+
+  it.each(['mailbox', 'global'] as const)('observes the canonical %s conversation before generation without importing another thread', async scope => {
+    const f = fixture(scope);
+    const foreignConversationId = '10000000-0000-4000-8000-000000000099';
+    const canonical: OwnerMemorySource[] = [
+      { id: 'message:earlier', scope: 'mailbox', accountId, conversationId: foreignConversationId, activityId: null,
+        content: 'Earlier explicit owner preference.', createdAt: '2025-12-01T00:00:00.000001Z' },
+      { id: `message:${messageId}`, scope, accountId: scope === 'mailbox' ? accountId : null, conversationId, activityId: null,
+        content: f.claim.userMessage.content, createdAt: date },
+    ];
+    const observed = new Map<string, string[]>();
+    const pending = new Map<string, string[]>();
+    const preparation = new MailboxOwnerMemoryInputs({
+      hasPendingOwnerContext: async () => false,
+      ownerSources: async (_owner, acceptedBefore) => canonical.filter(item => new Date(item.createdAt) <= acceptedBefore),
+    }, {
+      append: async input => { pending.set(input.threadId, [...pending.get(input.threadId) ?? [], (JSON.parse(input.text) as OwnerMemorySource).content]); },
+      observe: async input => { observed.set(input.threadId, pending.get(input.threadId) ?? []); },
+    }, {
+      withSession: async operation => operation({
+        query: async () => ({ rows: [] }),
+        transaction: async () => { throw new Error('Unexpected transaction'); },
+      }),
+    });
+    const consumer = new DeliverConversationConsumer(f.store, { generate: async input => {
+      expect(observed.get(conversationThreadId(input.conversation.userId, input.conversation.id))).toEqual([f.claim.userMessage.content]);
+      expect(observed.get(conversationThreadId(userId, foreignConversationId))).toEqual(['Earlier explicit owner preference.']);
+      return { reply: 'Prepared response.' };
+    } }, preparation, f.memory, f.readContext);
+    await consumer.consume({ turnId, userId });
+    expect(f.replies).toEqual(['Prepared response.']);
+    expect(f.failures).toEqual([]);
+  });
+
+  it('an observation outage releases the session and defers before any model call', async () => {
+    const f = fixture('global');
+    const events: string[] = [];
+    const preparation = new MailboxOwnerMemoryInputs({
+      hasPendingOwnerContext: async () => false,
+      ownerSources: async () => [{ id: `message:${messageId}`, scope: 'global', accountId: null, conversationId, activityId: null,
+        content: f.claim.userMessage.content, createdAt: date }],
+    }, {
+      append: async () => { events.push('append'); },
+      observe: async () => { events.push('observe'); throw new Error('Observer unavailable'); },
+    }, {
+      withSession: async operation => operation({
+        query: async statement => { events.push(statement.includes('unlock') ? 'unlock' : 'lock'); return { rows: [] }; },
+        transaction: async () => { throw new Error('Unexpected transaction'); },
+      }),
+    });
+    const model = { generate: vi.fn(async () => ({ reply: 'Must not run.' })) };
+    await new DeliverConversationConsumer(f.store, model, preparation, f.memory, f.readContext).consume({ turnId, userId });
+    expect(events).toEqual(['lock', 'append', 'observe', 'unlock']);
     expect(f.failures).toEqual([{ code: 'MAILBOX_MEMORY_UNAVAILABLE', temporary: true, memoryUnavailable: true }]);
     expect(f.replies).toEqual([]);
     expect(model.generate).not.toHaveBeenCalled();

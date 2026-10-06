@@ -142,7 +142,7 @@ services:
     networks: [private, egress]
 
   hindsight:
-    image: ghcr.io/vectorize-io/hindsight:0.9.1
+    image: ghcr.io/vectorize-io/hindsight:0.10.2
     restart: unless-stopped
     env_file: ["${HINDSIGHT_ENV_FILE:-../.env.hindsight}"]
     environment:
@@ -159,7 +159,7 @@ services:
     mem_limit: ${HINDSIGHT_MEMORY_LIMIT:-4g}
     cpus: ${HINDSIGHT_CPU_LIMIT:-2.0}
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8888/health"]
+      test: ["CMD", "python3", "-c", "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8888/health/ready', timeout=4); assert r.status == 200; body = json.load(r); assert body.get('status') == 'healthy' and body.get('database') == 'connected'"]
       interval: 10s
       timeout: 5s
       start_period: 60s
@@ -172,6 +172,8 @@ networks:
     ipam:
       config:
         - subnet: 172.30.81.0/24
+          # Keep dynamically assigned web addresses away from the fixed proxy .2.
+          ip_range: 172.30.81.128/25
   egress: {}
   private:
     internal: true

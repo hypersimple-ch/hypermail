@@ -8,7 +8,7 @@ const validWorker = {
   HYPERMAIL_KEY: 'not-a-real-secret-value',
   HYPERMAIL_PROTOCOL_VERSION: 'deployment-negotiated',
   HINDSIGHT_URL: 'http://hindsight:8888',
-  HINDSIGHT_EXPECTED_VERSION: '0.9.1',
+  HINDSIGHT_EXPECTED_VERSION: '0.10.2',
   MODEL_PROVIDER: 'openai',
   MODEL_NAME: 'configured-at-deploy',
   MODEL_API_KEY: 'not-a-real-model-secret',
@@ -84,12 +84,13 @@ describe('environment contracts', () => {
     });
     expect(env).toMatchObject({
       HINDSIGHT_URL: 'http://hindsight:8888',
-      HINDSIGHT_EXPECTED_VERSION: '0.9.1',
+      HINDSIGHT_EXPECTED_VERSION: '0.10.2',
       HINDSIGHT_REQUEST_TIMEOUT_MS: 45_000,
       HINDSIGHT_MAX_FILE_BYTES: 1_048_576,
     });
     expect(redactEnvironment(env).HINDSIGHT_API_KEY).toBe('[REDACTED]');
     expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_EXPECTED_VERSION: 'latest' })).toThrow(/HINDSIGHT_EXPECTED_VERSION/);
+    expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_EXPECTED_VERSION: '0.9.1' })).toThrow(/HINDSIGHT_EXPECTED_VERSION/);
     expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_URL: 'http://hindsight:8888/path' })).toThrow(/HINDSIGHT_URL/);
     expect(() => parseEnvironment(workerEnvSchema, { ...validWorker, HINDSIGHT_MAX_FILE_BYTES: String(25 * 1024 * 1024 + 1) })).toThrow(/HINDSIGHT_MAX_FILE_BYTES/);
   });

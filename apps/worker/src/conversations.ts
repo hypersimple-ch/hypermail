@@ -6,8 +6,8 @@ type ConsumerStore = Pick<ConversationStore, 'claim' | 'recentMessages' | 'renew
 export interface ConversationContextMessage { messageId: string; sender: string; subject: string; body: string }
 export type ConversationContextReader = (userId: string, accountId: string, messageId: string) => Promise<ConversationContextMessage>;
 export interface ConversationOwnerInputs {
-  prepare(input: { userId: string; accountId: string; acceptedBefore: Date }): Promise<void>;
-  prepareGlobal(input: { userId: string; acceptedBefore: Date }): Promise<void>;
+  prepare(input: { userId: string; accountId: string; acceptedBefore: Date; conversationId?: string }): Promise<void>;
+  prepareGlobal(input: { userId: string; acceptedBefore: Date; conversationId?: string }): Promise<void>;
 }
 
 /** Claims commit before any memory, provider or model I/O; this consumer owns no mutation ports. */
@@ -50,7 +50,7 @@ export class DeliverConversationConsumer {
           if (!conversation.accountId) throw new Error('CONVERSATION_SCOPE_INVALID');
           if (!this.memory) throw new MailboxMemoryUnavailableError();
           await this.ownerInputs.prepare({ userId: conversation.userId, accountId: conversation.accountId,
-            acceptedBefore: new Date(claim.claimedAt) });
+            acceptedBefore: new Date(claim.claimedAt), conversationId: conversation.id });
           const recalled = await this.memory.recall({ scope: { userId: conversation.userId, mailboxId: conversation.accountId },
             query: claim.userMessage.content, maxTokens: 1_024 });
           const entries: string[] = [];
@@ -70,7 +70,7 @@ export class DeliverConversationConsumer {
             if (contextMessage.messageId !== conversation.contextMessageId) throw new Error('CONVERSATION_CONTEXT_INVALID');
           }
         } else {
-          await this.ownerInputs.prepareGlobal({ userId: conversation.userId, acceptedBefore: new Date(claim.claimedAt) });
+          await this.ownerInputs.prepareGlobal({ userId: conversation.userId, acceptedBefore: new Date(claim.claimedAt), conversationId: conversation.id });
         }
         if (abort.signal.aborted) throw new Error('CONVERSATION_LEASE_LOST');
         phase.stage = 'model';

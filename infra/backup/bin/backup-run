@@ -80,7 +80,7 @@ for name in ('database.dump.age', 'state.tar.age', 'hindsight.tar.age'):
     artifacts[name] = {'sha256': digest.hexdigest(), 'bytes': (root / name).stat().st_size}
 print(json.dumps({'schemaVersion': 2, 'generation': os.environ['BACKUP_GENERATION'],
     'createdAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    'hindsight': {'image': os.environ['BACKUP_HINDSIGHT_IMAGE'], 'version': '0.9.1', 'snapshot': 'clean_shutdown'},
+    'hindsight': {'image': os.environ['BACKUP_HINDSIGHT_IMAGE'], 'version': '0.10.2', 'snapshot': 'clean_shutdown'},
     'artifacts': artifacts}))
 PY
 age --encrypt --recipient "$db_recipient" --output "$tmp/manifest.age" "$tmp/manifest.json"

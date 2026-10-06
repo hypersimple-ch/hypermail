@@ -2,7 +2,9 @@
 # Disposable seeded backup/restore drill. It uses a local filesystem AWS CLI double; no remote credentials are needed.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../../.." && pwd)
-: "${HINDSIGHT_DRILL_IMAGE:?set HINDSIGHT_DRILL_IMAGE to the approved Hindsight 0.9.1 digest}"
+: "${HINDSIGHT_DRILL_IMAGE:?set HINDSIGHT_DRILL_IMAGE to an approved digest matching HINDSIGHT_DRILL_VERSION}"
+HINDSIGHT_DRILL_VERSION=${HINDSIGHT_DRILL_VERSION:-0.10.2}
+[[ "$HINDSIGHT_DRILL_VERSION" = 0.9.1 || "$HINDSIGHT_DRILL_VERSION" = 0.10.2 ]] || { printf 'unsupported isolated drill version\n' >&2; exit 1; }
 [[ "$HINDSIGHT_DRILL_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || exit 1
 network="backup-drill-$RANDOM"; source="${DRILL_APPLICATION_SOURCE_CONTAINER:-backup-source-$RANDOM}"; target="backup-target-$RANDOM"; memory="backup-memory-$RANDOM"
 owns_source=1; source_database=hypermail; source_user=hypermail; source_password=drill-password
@@ -126,6 +128,37 @@ generation=$(sed -n 's/.*"generation":"\([^"]*\)".*/\1/p' "$tmp/backup.out")
 restore_generation() {
   docker run --rm --user 0 --network "$network" -v "$tmp/secrets:/run/secrets:ro" -v "$tmp/s3:/mock-s3" -v "$tmp/restore-state:/restore-state" -v "$tmp/restore-hindsight:/restore-hindsight" -v "$tmp/mock-bin/aws:/usr/local/bin/aws:ro" --entrypoint /usr/local/bin/restore-run -e BACKUP_TARGET=s3://drill-bucket/hypermail -e BACKUP_ENCRYPTION_KEY_FILE=/run/secrets/backup-database-key -e BACKUP_STATE_ENCRYPTION_KEY_FILE=/run/secrets/backup-state-key -e RESTORE_ISOLATED=1 -e RESTORE_HINDSIGHT_IMAGE="$HINDSIGHT_DRILL_IMAGE" hypermail-backup-drill --generation "$generation" --target-db-url-file /run/secrets/restore-db-url --state-directory /restore-state --hindsight-directory /restore-hindsight
 }
+# The backup writer always emits the current runtime version. Re-encrypt an isolated
+# historical fixture for the legacy restore gate; never relax the production writer.
+rewrite_manifest() {
+  docker run --rm -i --user 0 --network none -v "$tmp:/work" --entrypoint python3 hypermail-backup-drill - /work "$generation" "$1" "$2" <<'PY'
+import json, pathlib, subprocess, sys
+root, generation, version, image = sys.argv[1:]
+root = pathlib.Path(root)
+key = root / 'secrets/backup-database-key'
+path = root / 's3/drill-bucket/hypermail/generations' / generation / 'manifest.age'
+manifest = json.loads(subprocess.check_output(['age', '--decrypt', '--identity', str(key), str(path)]))
+manifest['hindsight']['version'] = version
+manifest['hindsight']['image'] = image
+recipient = subprocess.check_output(['age-keygen', '-y', str(key)], text=True).strip()
+encrypted = subprocess.check_output(['age', '--encrypt', '--recipient', recipient], input=json.dumps(manifest).encode())
+path.write_bytes(encrypted)
+PY
+}
+assert_restore_refused() {
+  if restore_generation > "$tmp/$1.out" 2>&1; then
+    printf 'drill failed: restore accepted %s\n' "$1" >&2; exit 1
+  fi
+  [ "$(docker exec "$target" psql -U hypermail -d hypermail_restore -tAc "select count(*) from pg_tables where schemaname in ('app','mastra') or (schemaname='public' and tablename='drill_seed')")" = 0 ]
+  [ -z "$(find "$tmp/restore-state" "$tmp/restore-hindsight" -mindepth 1 -print -quit)" ]
+}
+rewrite_manifest 0.9.0 "$HINDSIGHT_DRILL_IMAGE"
+assert_restore_refused unsupported-version
+mismatched_image="ghcr.io/vectorize-io/hindsight@sha256:$(printf '%064d' 0)"
+[ "$mismatched_image" != "$HINDSIGHT_DRILL_IMAGE" ] || mismatched_image="ghcr.io/vectorize-io/hindsight@sha256:$(printf '%064d' 1)"
+rewrite_manifest "$HINDSIGHT_DRILL_VERSION" "$mismatched_image"
+assert_restore_refused mismatched-image
+rewrite_manifest "$HINDSIGHT_DRILL_VERSION" "$HINDSIGHT_DRILL_IMAGE"
 # Corruption in the LAST artifact must prevent even the first database/state write.
 artifact="drill-bucket/hypermail/generations/$generation/hindsight.tar.age"
 docker run --rm -v "$tmp/s3:/s3" alpine sh -c 'cp "/s3/$1" "/s3/$1.saved"; printf x >> "/s3/$1"' sh "$artifact"
@@ -154,16 +187,22 @@ if [ -n "${HINDSIGHT_DRILL_SOURCE_DIRECTORY:-}" ]; then
   docker run --rm --user 0:0 -v "$tmp/restore-hindsight:/restore-hindsight" alpine chown -R 1000:1000 /restore-hindsight
   docker run -d --name "$memory" --network "$network" --env-file "$HINDSIGHT_DRILL_ENV_FILE" -e HINDSIGHT_ENABLE_CP=false -v "$tmp/restore-hindsight:/home/hindsight/.pg0" "$HINDSIGHT_DRILL_IMAGE" >/dev/null
   for attempt in $(seq 1 90); do
-    docker exec "$memory" curl --fail --silent --max-time 5 http://127.0.0.1:8888/health >/dev/null && break
+    docker exec "$memory" python3 -c "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8888/health/ready', timeout=4); assert r.status == 200; body = json.load(r); assert body.get('status') == 'healthy' and body.get('database') == 'connected'" >/dev/null && break
     [ "$attempt" -lt 90 ] || { printf 'restored Hindsight health failed\\n' >&2; exit 1; }
     sleep 2
   done
+  docker exec "$memory" python3 -c "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8888/version', timeout=4); assert r.status == 200; result = json.load(r); assert isinstance(result, dict); print(json.dumps(result))" > "$tmp/restored-version.json"
+  python3 - "$tmp/restored-version.json" "$HINDSIGHT_DRILL_VERSION" <<'PY'
+import json, sys
+if json.load(open(sys.argv[1])).get('api_version') != sys.argv[2]:
+    raise SystemExit('restored Hindsight version does not match the archived version')
+PY
   [[ "$HINDSIGHT_DRILL_BANK" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1
   python3 - "$HINDSIGHT_DRILL_QUERY" > "$tmp/recall-request.json" <<'PY'
 import json, sys
 print(json.dumps({'query': sys.argv[1], 'budget': 'low', 'max_tokens': 1024}))
 PY
-  docker exec -i "$memory" curl --fail --silent --max-time 120 -H 'content-type: application/json' --data-binary @- "http://127.0.0.1:8888/v1/default/banks/$HINDSIGHT_DRILL_BANK/memories/recall" < "$tmp/recall-request.json" > "$tmp/recall-result.json"
+  docker exec -i "$memory" python3 -c "import json, sys, urllib.request; body = json.load(sys.stdin); request = urllib.request.Request(sys.argv[1], data=json.dumps(body).encode(), headers={'content-type': 'application/json'}, method='POST'); r = urllib.request.urlopen(request, timeout=120); assert r.status == 200; result = json.load(r); assert isinstance(result, dict) and isinstance(result.get('results'), list); print(json.dumps(result))" "http://127.0.0.1:8888/v1/default/banks/$HINDSIGHT_DRILL_BANK/memories/recall" < "$tmp/recall-request.json" > "$tmp/recall-result.json"
   python3 - "$tmp/recall-result.json" "$HINDSIGHT_DRILL_EXPECTED" <<'PY'
 import json, sys
 result = json.load(open(sys.argv[1]))
@@ -178,4 +217,4 @@ else
 fi
 finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker run --rm -v "$tmp/s3:/s3" alpine chmod -R a+rX /s3 >/dev/null
-printf 'drill passed generation=%s started=%s finished=%s encrypted_bytes=%s application_state=%s memory_recall=%s\n' "$generation" "$started" "$finished" "$(du -sb "$tmp/s3" | awk '{print $1}')" "$application_state" "$recall"
+printf 'drill passed generation=%s hindsight_version=%s started=%s finished=%s encrypted_bytes=%s application_state=%s memory_recall=%s\n' "$generation" "$HINDSIGHT_DRILL_VERSION" "$started" "$finished" "$(du -sb "$tmp/s3" | awk '{print $1}')" "$application_state" "$recall"

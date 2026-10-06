@@ -10,7 +10,8 @@ import { DispatchRecovery, IngestionWorker, type DeliveryQueue, type MailProvide
 import { PostgresIngestionStore, type SqlClient } from '../src/postgres-store.js';
 import { PostgresLifecycleStore } from '../src/lifecycle/postgres-store.js';
 import { DurablePolicyRecovery, PgBossPolicyDispatcher } from '../src/policy.js';
-import { composeWorkerRuntime } from '../src/production.js';
+import { composeWorkerRuntime, PostgresAgentJobStore } from '../src/production.js';
+import { PgBossDeliveryQueue } from '../src/pg-boss-queue.js';
 import { PostgresNotificationDispatchStore } from '../src/notification-dispatch-store.js';
 import { parseWorkerEnvironment } from '../src/runtime.js';
 import { withPostgresSchemas } from './postgres-test.js';
@@ -24,7 +25,7 @@ const workerSql = (database: DatabaseSqlClient): SqlClient => ({
 });
 const environment = (port: number, hindsightUrl: string) => parseWorkerEnvironment({
   DATABASE_URL: databaseUrl, HYPERMAIL_URL: 'http://127.0.0.1:9/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: 'test',
-  HINDSIGHT_URL: hindsightUrl, HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: port,
+  HINDSIGHT_URL: hindsightUrl, HINDSIGHT_EXPECTED_VERSION: '0.10.2', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: port,
 });
 
 async function unusedPort(): Promise<number> {
@@ -41,7 +42,7 @@ async function unusedPort(): Promise<number> {
 async function hindsightReadinessFixture() {
   const responses: Readonly<Record<string, unknown>> = {
     '/health/ready': { status: 'ready' },
-    '/version': { api_version: '0.9.1', features: {
+    '/version': { api_version: '0.10.2', features: {
       observations: true, worker: true, bank_config_api: true, file_upload_api: true, store_document_text: true,
     } },
     '/openapi.json': { openapi: '3.1.0', paths: {
@@ -50,6 +51,7 @@ async function hindsightReadinessFixture() {
       '/v1/default/banks/{bank_id}/memories/recall': { post: { responses: {} } },
       '/v1/default/banks/{bank_id}/files/retain': { post: { responses: {} } },
       '/v1/default/banks/{bank_id}/operations/{operation_id}': { get: { responses: {} } },
+      '/v1/default/banks/{bank_id}/operations': { get: { responses: {} } },
     } },
   };
   const server = createServer((request, response) => {
@@ -86,6 +88,68 @@ async function seedActivity(sql: { unsafe(query: string, values?: readonly unkno
 }
 
 describe('worker PostgreSQL runtime integration', () => {
+  it.skipIf(!databaseUrl)('redispatches a memory-deferred delivery without recreating its canonical Run', async () => {
+    if (!databaseUrl) throw new Error('DATABASE_URL is required');
+    await withPostgresSchemas(databaseUrl, async sql => {
+      const database = createPostgresClient(databaseUrl);
+      const boss = new PgBoss({ connectionString: databaseUrl });
+      const userId = randomUUID(), accountId = randomUUID(), assignmentId = randomUUID(), grantId = randomUUID();
+      try {
+        await sql.begin(async tx => {
+          await tx`insert into app.users(id,email,password_hash) values(${userId},${`${userId}@example.test`},'test')`;
+          await tx`insert into app.accounts(id,user_id,provider,provider_account_id,email,state,baseline_completed_at)
+            values(${accountId},${userId},'gmail',${accountId},'deferred@example.test','ready',${now})`;
+          await tx`insert into app.user_accounts(user_id,account_id) values(${userId},${accountId})`;
+          await tx`insert into app.mailbox_manager_assignments(id,user_id,account_id,manager_kind,automatic_processing_enabled)
+            values(${assignmentId},${userId},${accountId},'mastra',true)`;
+          await tx`insert into app.agent_capability_grants(id,user_id,account_id,manager_kind,capabilities,invocation_modes,state,approved_at)
+            values(${grantId},${userId},${accountId},'mastra',array['mail.read'],array['automatic'],'active',now())`;
+        });
+        const ingestion = new PostgresIngestionStore(workerSql(database));
+        const arrival = await ingestion.recordArrival({ accountId, observedAt: new Date(),
+          message: { id: 'deferred-email', account: 'deferred@example.test', receivedAt: new Date().toISOString() } });
+        if (!arrival) throw new Error('Expected durable arrival');
+        await boss.start();
+        await boss.createQueue('agent.evaluate');
+        const recovery = new DispatchRecovery(ingestion, new PgBossDeliveryQueue(boss));
+        const store = new PostgresAgentJobStore(database, 90, {
+          retryBaseDelaySeconds: 5, retryMaximumDelaySeconds: 900, claimLeaseSeconds: 60, schedulerIntervalSeconds: 5,
+        });
+        await recovery.dispatch();
+        const [delivery] = await boss.fetch<{ jobId: string; userId: string }>('agent.evaluate');
+        if (!delivery) throw new Error('Expected first delivery');
+        const first = await store.claim(delivery.data.jobId, delivery.data.userId);
+        if (!first) throw new Error('Expected first claim');
+        const cutoff = await store.memoryContextCutoff(first);
+        await store.deferMemory(first);
+        await boss.complete('agent.evaluate', delivery.id);
+        expect(await sql`select state,attempt,last_error_code,queue_job_id,available_at>now() as delayed
+          from app.agent_jobs where id=${arrival.jobId}`).toEqual([{
+          state: 'pending', attempt: 1, last_error_code: 'MAILBOX_MEMORY_UNAVAILABLE', queue_job_id: null, delayed: true,
+        }]);
+        // Advance the durable due time, not a wall-clock sleep or an altered retry policy.
+        await sql`update app.agent_jobs set available_at=now() where id=${arrival.jobId}`;
+        await recovery.dispatch();
+        const [redelivery] = await boss.fetch<{ jobId: string; userId: string }>('agent.evaluate');
+        if (!redelivery) throw new Error('Expected memory redelivery');
+        expect(redelivery.data).toEqual(delivery.data);
+        expect(redelivery.id).not.toBe(delivery.id);
+        const resumed = await store.claim(redelivery.data.jobId, redelivery.data.userId);
+        if (!resumed) throw new Error('Expected resumed claim');
+        expect(resumed).toMatchObject({ id: first.id, runId: first.runId, attempt: 2 });
+        expect(await store.memoryContextCutoff(resumed)).toEqual(cutoff);
+        expect(await sql`select id,sequence,state,started_at from app.agent_runs where activity_id=${first.activityId}`)
+          .toEqual([{ id: first.runId, sequence: 1, state: 'running', started_at: cutoff }]);
+        expect(await sql`select state,last_error_code from app.agent_jobs where id=${arrival.jobId}`)
+          .toEqual([{ state: 'running', last_error_code: null }]);
+        // A queue crash/replay while running must also reuse that Run and attempt.
+        expect(await store.claim(resumed.id, userId)).toMatchObject({ runId: first.runId, attempt: 2 });
+        await boss.complete('agent.evaluate', redelivery.id);
+      } finally {
+        try { await boss.stop({ graceful: true }); } finally { await database.close(); }
+      }
+    });
+  }, 60_000);
   it.skipIf(!databaseUrl)('replays durable work, isolates provider faults, runs lifecycle, and shuts down not-ready safely', async () => {
     if (!databaseUrl) throw new Error('DATABASE_URL is required');
     await withPostgresSchemas(databaseUrl, async sql => {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { ConversationCursorError, type ScopeAuth } from '@hypermail/contracts';
-import { ConversationStore, createPostgresClient, PostgresMailboxMemoryEventStore, type ConversationAppendResult, type ConversationClaim } from '../src/index.js';
+import { ConversationStore, createPostgresClient, PostgresMailboxMemoryEventStore, type ConversationAppendResult, type ConversationClaim, type OwnerMemorySource, type OwnerSourceCursor } from '../src/index.js';
 import { withPostgresSchemas } from '../../../apps/worker/test/postgres-test.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -96,9 +96,11 @@ describe('Durable conversations PostgreSQL', () => {
         expect(await sql`select content from app.agent_conversation_messages where reply_to=${ownerA.message.id}`).toEqual([{ content: 'A unique assistant reply' }]);
         const ownerCutoff = new Date(Date.now() + 1000);
         const aSources = await first.ownerSources({ userId, accountId: accountA }, ownerCutoff);
-        expect(aSources.map((source) => source.id)).toEqual([ownerA.message.id, accepted(appends.find((result) => result.kind === 'accepted') as ConversationAppendResult).message.id]);
-        expect(aSources.every((source) => source.scope === 'mailbox')).toBe(true);
-        expect(await first.ownerSources({ userId, accountId: accountB }, ownerCutoff)).toEqual([{ id: ownerB.message.id, scope: 'mailbox', content: 'Private B instruction', createdAt: ownerB.message.createdAt }]);
+        expect(aSources.map((source) => source.id)).toEqual([ownerA.message.id, accepted(appends.find((result) => result.kind === 'accepted') as ConversationAppendResult).message.id].map(id => `conversation_message:${id}`));
+        expect(aSources.every((source) => source.scope === 'mailbox' && source.accountId === accountA && source.conversationId === a.id)).toBe(true);
+        expect(await first.ownerSources({ userId, accountId: accountB }, ownerCutoff)).toEqual([expect.objectContaining({
+          id: `conversation_message:${ownerB.message.id}`, scope: 'mailbox', accountId: accountB, conversationId: b.id, activityId: null, content: 'Private B instruction',
+        })]);
 
         let retryClaim = claimed(await first.claim(ownerB.turn.id, userId));
         for (let index = 0; index < 4; index++) {
@@ -199,4 +201,109 @@ describe('Durable conversations PostgreSQL', () => {
       } finally { await Promise.all([firstClient.close(), secondClient.close()]); }
     });
   }, 60_000);
+
+  it.skipIf(!databaseUrl)('paginates exact timestamps and colliding canonical UUIDs without mixing owners or source scopes', async () => {
+    await withPostgresSchemas(databaseUrl ?? '', async (sql) => {
+      const userId = await seedOwner(sql); const otherId = await seedOwner(sql);
+      const accountId = await seedBox(sql, userId); const secondBox = await seedBox(sql, userId); const foreignBox = await seedBox(sql, otherId);
+      const client = createPostgresClient(databaseUrl ?? ''); const store = new ConversationStore(client);
+      const cutoff = new Date('2026-01-02T00:00:00Z');
+      const timestamp = '2026-01-01T00:00:00.000001Z'; const collisionId = randomUUID();
+      try {
+        const global = await store.create({ userId, accountIds: [accountId, secondBox] }, { scope: 'global' });
+        const local = await store.create({ userId, accountIds: [accountId, secondBox] }, { scope: 'mailbox', accountId: secondBox });
+        const foreign = await store.create({ userId: otherId, accountIds: [foreignBox] }, { scope: 'global' });
+        if (!global || !local || !foreign) throw new Error('Expected fixture conversations.');
+        const ids: string[] = [];
+        for (let sequence = 1; sequence <= 102; sequence++) {
+          const id = sequence === 1 ? collisionId : randomUUID(); ids.push(`conversation_message:${id}`);
+          const createdAt = sequence <= 100 ? timestamp : sequence === 101 ? '2026-01-01T00:00:00.000002Z' : '2026-01-01T00:00:00.000999Z';
+          await sql`insert into app.agent_conversation_messages(id,conversation_id,user_id,sequence,role,content,request_id,request_digest,created_at)
+            values(${id},${global.id},${userId},${sequence},'user',${`General preference ${String(sequence)}`},${randomUUID()},${'a'.repeat(64)},${createdAt}::text::timestamptz)`;
+        }
+        for (const conversation of [local, foreign]) await sql`insert into app.agent_conversation_messages(conversation_id,user_id,sequence,role,content,request_id,request_digest,created_at)
+          values(${conversation.id},${conversation.userId},1,'user',${conversation.id === local.id ? 'Second mailbox preference' : 'Foreign preference'},${randomUUID()},${'a'.repeat(64)},${timestamp}::text::timestamptz)`;
+        const messageId = randomUUID(), activityId = randomUUID(), decisionId = randomUUID(), runId = randomUUID(), assignmentId = randomUUID(), grantId = randomUUID(), proposalId = randomUUID();
+        await sql`insert into app.messages(id,account_id,provider_message_id,sender,recipients,subject,preview,received_at)
+          values(${messageId},${accountId},${messageId},'{"address":"sender@example.test"}','[]','Never a preference','Received email is not owner input',now())`;
+        await sql`insert into app.activities(id,account_id,message_id,state) values(${activityId},${accountId},${messageId},'waiting_question')`;
+        await sql`insert into app.agent_activities(id,user_id,account_id,kind,source_message_id,correlation_id)
+          values(${activityId},${userId},${accountId},'arrival',${messageId},${`arrival:${activityId}`})`;
+        await sql`insert into app.mailbox_manager_assignments(id,user_id,account_id,manager_kind,automatic_processing_enabled) values(${assignmentId},${userId},${accountId},'mastra',true)`;
+        await sql`insert into app.agent_capability_grants(id,user_id,account_id,manager_kind,capabilities,invocation_modes,state,approved_at)
+          values(${grantId},${userId},${accountId},'mastra',array['mail.archive'],array['automatic'],'active',now())`;
+        await sql`insert into app.agent_runs(id,activity_id,user_id,account_id,sequence,manager_kind,assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,mode,trigger,input_digest,correlation_id,state,started_at,completed_at,outcome)
+          values(${runId},${activityId},${userId},${accountId},1,'mastra',${assignmentId},1,${grantId},1,1,'automatic',${sql.json({ kind: 'arrival', messageId })},${'a'.repeat(64)},${`run:${runId}`},'completed',now(),now(),'action_requests_emitted')`;
+        await sql`insert into app.decisions(id,activity_id,user_id,account_id,run_id,schema_version,attempt,state,rationale,model_provider,model_name,input_digest,output)
+          values(${decisionId},${activityId},${userId},${accountId},${runId},2,1,'question','ask','fixture','fixture',${'a'.repeat(64)},${sql.json({ schemaVersion: 2, state: 'question', rationale: 'ask', question: 'What tone?' })})`;
+        await sql`insert into app.questions(id,activity_id,decision_id,prompt,state,answer,answered_at)
+          values(${collisionId},${activityId},${decisionId},'What tone?','answered','Use a calm tone',${timestamp}::text::timestamptz)`;
+        const payload = { kind: 'archive', target: { accountId, messageId }, reason: 'fixture', key: 'archive', confidence: 0.6, evidenceIds: [], dependsOn: [] };
+        await sql`insert into app.agent_action_proposals(id,user_id,account_id,activity_id,run_id,decision_id,action_key,origin,kind,payload,confidence,threshold,evidence_snapshot,state)
+          values(${proposalId},${userId},${accountId},${activityId},${runId},${decisionId},'archive','model','archive',${sql.json(payload)},0.6,0.9,'[]','waiting_review')`;
+        await sql`insert into app.agent_action_reviews(id,proposal_id,user_id,account_id,decision,idempotency_key,request_digest,reason,created_at)
+          values(${collisionId},${proposalId},${userId},${accountId},'reject',${randomUUID()},${'a'.repeat(64)},'Explain briefly',${timestamp}::text::timestamptz)`;
+        const foreignMessageId = randomUUID(), foreignActivityId = randomUUID(), foreignDecisionId = randomUUID();
+        await sql`insert into app.messages(id,account_id,provider_message_id,sender,recipients,received_at)
+          values(${foreignMessageId},${foreignBox},${foreignMessageId},'{"address":"sender@example.test"}','[]',now())`;
+        await sql`insert into app.activities(id,account_id,message_id,state) values(${foreignActivityId},${foreignBox},${foreignMessageId},'waiting_question')`;
+        await sql`insert into app.decisions(id,activity_id,user_id,account_id,schema_version,attempt,state,rationale,model_provider,model_name,input_digest,output)
+          values(${foreignDecisionId},${foreignActivityId},${otherId},${foreignBox},1,1,'question','ask','fixture','fixture',${'a'.repeat(64)},'{}')`;
+        await sql`insert into app.questions(activity_id,decision_id,prompt,state,answer,answered_at)
+          values(${foreignActivityId},${foreignDecisionId},'What tone?','answered','Foreign answer',${timestamp}::text::timestamptz)`;
+
+        const all: OwnerMemorySource[] = [];
+        let cursor: OwnerSourceCursor | undefined;
+        const pageSizes: number[] = [];
+        for (;;) {
+          const page = await store.ownerSources({ userId }, cutoff, cursor); pageSizes.push(page.length);
+          if (page.length === 0) break;
+          all.push(...page); const last = page.at(-1);
+          if (!last) throw new Error('Expected a nonempty source page.');
+          cursor = { createdAt: last.createdAt, sourceId: last.id };
+        }
+        expect(pageSizes).toEqual([100, 5, 0]);
+        expect(all.map(source => source.id).filter(id => ids.includes(id)).sort()).toEqual([...ids].sort());
+        expect(new Set(all.map(source => source.id)).size).toBe(105);
+        expect(all.filter(source => source.id.endsWith(collisionId))).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: `conversation_message:${collisionId}`, conversationId: global.id, accountId: null, activityId: null }),
+          expect.objectContaining({ id: `question_answer:${collisionId}`, activityId, accountId, conversationId: null, content: 'Use a calm tone' }),
+          expect.objectContaining({ id: `action_review:${collisionId}`, activityId, accountId, conversationId: null, content: 'Owner review: reject\nOwner explanation: Explain briefly' }),
+        ]));
+        expect(all.slice(-2).map(source => source.createdAt)).toEqual(['2026-01-01T00:00:00.000002Z', '2026-01-01T00:00:00.000999Z']);
+        expect(all.some(source => source.content === 'Foreign preference' || source.content === 'Foreign answer' || source.content === 'Received email is not owner input')).toBe(false);
+        const globalFirst = await store.globalOwnerSources(userId, cutoff);
+        const lastGlobal = globalFirst.at(-1);
+        if (!lastGlobal) throw new Error('Expected global owner sources.');
+        const globalNext = await store.globalOwnerSources(userId, cutoff, { createdAt: lastGlobal.createdAt, sourceId: lastGlobal.id });
+        expect([...globalFirst, ...globalNext].map(source => source.id).sort()).toEqual([...ids].sort());
+        expect([...globalFirst, ...globalNext].every(source => source.scope === 'global' && source.accountId === null)).toBe(true);
+        expect((await store.ownerSources({ userId: otherId }, cutoff)).map(source => source.content).sort()).toEqual(['Foreign answer', 'Foreign preference']);
+        expect((await store.ownerSources({ userId, accountId: foreignBox }, cutoff)).every(source => source.scope === 'global')).toBe(true);
+        expect((await store.ownerSources({ userId, accountId }, cutoff)).some(source => source.content === 'Second mailbox preference')).toBe(false);
+        expect(await store.ownerSources({ userId }, new Date('2025-12-31T23:59:59Z'))).toEqual([]);
+      } finally { await client.close(); }
+    });
+  }, 60_000);
+
+  it.skipIf(!databaseUrl)('keeps reserved sessions outside transactions and releases them after rejected callbacks', async () => {
+    await withPostgresSchemas(databaseUrl ?? '', async () => {
+      const client = createPostgresClient(databaseUrl ?? '');
+      try {
+        for (let attempt = 0; attempt < 12; attempt++) {
+          await expect(client.withSession(async session => {
+            const before = (await session.query('select pg_backend_pid() as pid,txid_current_if_assigned() as transaction_id')).rows[0];
+            expect(before?.['transaction_id']).toBeNull();
+            await session.query('create temporary table session_probe(value integer)');
+            await session.query('insert into session_probe values(1)');
+            const after = (await session.query('select pg_backend_pid() as pid,txid_current_if_assigned() as transaction_id,(select sum(value)::integer from session_probe) as value')).rows[0];
+            expect(after).toEqual({ pid: before?.['pid'], transaction_id: null, value: 1 });
+            await session.query('drop table session_probe');
+            throw new Error('Rejected session callback');
+          })).rejects.toThrow('Rejected session callback');
+        }
+        expect(await client.withSession(async session => (await session.query('select 42 as answer')).rows[0]?.['answer'])).toBe(42);
+      } finally { await client.close(); }
+    });
+  }, 30_000);
 });

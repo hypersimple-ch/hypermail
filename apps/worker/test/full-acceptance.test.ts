@@ -122,7 +122,7 @@ describe('isolated full application acceptance', () => {
           if (input.messages.some(message => message.content === 'retry-fixture') && rejectConversation) throw Object.assign(new Error('Controlled permanent model refusal'), { statusCode: 400 });
           return { reply: 'Read-only discussion. No mail was sent or changed.' };
         } };
-        const workerEnvironment = parseWorkerEnvironment({ ...common, HINDSIGHT_URL: origin, HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'default', AGENT_GLOBAL_CONSTRAINTS: 'Never send email automatically.', HEALTH_PORT: String(healthPort), POLL_INTERVAL_SECONDS: '30', MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: '1' });
+        const workerEnvironment = parseWorkerEnvironment({ ...common, HINDSIGHT_URL: origin, HINDSIGHT_EXPECTED_VERSION: '0.10.2', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'default', AGENT_GLOBAL_CONSTRAINTS: 'Never send email automatically.', HEALTH_PORT: String(healthPort), POLL_INTERVAL_SECONDS: '30', MAILBOX_MEMORY_SCHEDULER_INTERVAL_SECONDS: '1' });
         async function startWorker(): Promise<void> {
           worker = composeWorkerRuntime(workerEnvironment, { createDecisionModel: () => decisionModel, createConversationModel: () => conversationModel, createSourceHistory: () => memory, createMailboxMemory: () => memory, createNotificationTransport: () => ({ send: async () => ({ ok: true }) }), holderId: () => `acceptance:${randomUUID()}` });
           await worker.start();

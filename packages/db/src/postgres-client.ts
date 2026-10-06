@@ -14,6 +14,8 @@ export interface SqlClient {
 }
 
 export interface ManagedSqlClient extends SqlClient {
+  /** Reserves one connection without holding a transaction across the callback. */
+  withSession<T>(operation: (client: SqlClient) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -45,6 +47,14 @@ export function createPostgresClient(databaseUrl: string): ManagedSqlClient {
   const client = wrap(connection);
   return {
     ...client,
+    withSession: async <T>(operation: (client: SqlClient) => Promise<T>): Promise<T> => {
+      const session = await connection.reserve();
+      try {
+        return await operation(wrap(session));
+      } finally {
+        session.release();
+      }
+    },
     close: async () => connection.end({ timeout: 5 }),
   };
 }

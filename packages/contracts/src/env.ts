@@ -71,7 +71,7 @@ export const workerEnvSchema = z.strictObject({
   HYPERMAIL_TENANT_ROUTES: z.string().min(2).optional(),
   HINDSIGHT_URL: privateServiceOrigin,
   HINDSIGHT_API_KEY: secret.optional(),
-  HINDSIGHT_EXPECTED_VERSION: z.literal('0.9.1'),
+  HINDSIGHT_EXPECTED_VERSION: z.literal('0.10.2'),
   HINDSIGHT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
   HINDSIGHT_MAX_FILE_BYTES: z.coerce.number().int().min(1).max(25 * 1024 * 1024).default(10 * 1024 * 1024),
   MAILBOX_MEMORY_RETRY_BASE_DELAY_SECONDS: z.coerce.number().int().min(1).max(3_600).default(5),

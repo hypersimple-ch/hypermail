@@ -18,7 +18,7 @@ The EXIT/signal trap restarts in reverse order: Hindsight, Hypermail, worker, we
 
 Required backup-only environment: `DATABASE_URL`, `BACKUP_TARGET=s3://bucket/prefix`, `BACKUP_RETENTION_DAYS`, `BACKUP_ENCRYPTION_KEY_FILE=/run/secrets/backup-database-key`, `BACKUP_STATE_ENCRYPTION_KEY_FILE=/run/secrets/backup-state-key`, `HYPERMAIL_STATE_DIRECTORY=/var/lib/hypermail`, `HINDSIGHT_STATE_DIRECTORY=/var/lib/hindsight`, restricted AWS credentials and `BACKUP_ALERT_WEBHOOK_FILE=/run/secrets/backup-alert-webhook`. Compose supplies the volume paths. Host-only runtime values are `BACKUP_QUIESCENCE_AT` and `BACKUP_HINDSIGHT_IMAGE`.
 
-Use two independent age identities in separate secret-store access domains: database/manifest and state (Hypermail + Hindsight). Missing, broadly readable or equal keys are refused. Both state archives contain secrets and require the same restricted treatment as mailbox credentials. Manifest `schemaVersion:2` records ciphertext SHA-256 and byte size for `database.dump.age`, `state.tar.age`, and `hindsight.tar.age`, plus Hindsight version `0.9.1`, exact image digest and clean-shutdown snapshot method. `manifest.age` is uploaded **last**; only then is `backup.succeeded` emitted. Incomplete generations without a final manifest are not valid backups. Retention deletes only the four exact known filenames from expired generations, never an entire bucket/prefix. Failure alerts contain only service/status/time.
+Use two independent age identities in separate secret-store access domains: database/manifest and state (Hypermail + Hindsight). Missing, broadly readable or equal keys are refused. Both state archives contain secrets and require the same restricted treatment as mailbox credentials. Manifest `schemaVersion:2` records ciphertext SHA-256 and byte size for `database.dump.age`, `state.tar.age`, and `hindsight.tar.age`, plus Hindsight version `0.10.2`, exact image digest and clean-shutdown snapshot method. `manifest.age` is uploaded **last**; only then is `backup.succeeded` emitted. Incomplete generations without a final manifest are not valid backups. Retention deletes only the four exact known filenames from expired generations, never an entire bucket/prefix. Fa…
 
 ## Isolated restore preconditions
 
@@ -45,10 +45,12 @@ Record generation, UTC start/end, ciphertext byte count, integrity checks, image
 
 `python3 infra/backup/test/orchestration.py` runs behavioral host orchestration regressions using a simulated Docker CLI; no daemon/network/real state is touched. `HINDSIGHT_DRILL_IMAGE=<approved digest> infra/backup/test/drill.sh` builds the backup image, starts disposable PostgreSQL on an internal network, round-trips a seeded DB row and synthetic state archives via a local AWS CLI double, and reports `memory_recall=not_exercised` unless a real memory fixture is supplied. That result is **not** the Hindsight restore acceptance gate.
 
+Select `HINDSIGHT_DRILL_VERSION=0.10.2` (default) or `HINDSIGHT_DRILL_VERSION=0.9.1` and provide `HINDSIGHT_DRILL_IMAGE` as the exact immutable digest for that version. Run the drill separately for both versions with corresponding cleanly stopped isolated data fixtures; do not reopen a migrated fixture with 0.9.1. The drill re-encrypts only its disposable manifest to model a historical 0.9.1 archive; the production backup writer always announces 0.10.2. It rejects unsupported versions and mismatched archived image digests before any target write, then restores the selected compatible generation. When a runtime fixture is supplied, its `/version` must match the archived version before real recall is exercised. Historical 0.9.1 backups remain readable only with their recorded image; this does not relax the normal worker's strict 0.10.2 readiness contract.
+
 The complete application-state option runs after the controlled full HTTP acceptance case:
 
 ```sh
-FULL_ACCEPTANCE_BACKUP_DRILL=1 HINDSIGHT_DRILL_IMAGE="${HINDSIGHT_IMAGE:?set an approved 0.9.1 digest}" \
+FULL_ACCEPTANCE_BACKUP_DRILL=1 HINDSIGHT_DRILL_IMAGE="${HINDSIGHT_IMAGE:?set an approved 0.10.2 digest}" \
   bash infra/acceptance/full-runtime.sh
 ```
 

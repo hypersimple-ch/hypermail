@@ -49,6 +49,17 @@ export type ConversationAppendResult =
   | { kind: 'accepted'; conversation: Conversation; message: ConversationMessage; turn: ConversationTurn; replayed: boolean }
   | { kind: 'not_found' } | { kind: 'conflict'; currentVersion: number };
 export type ConversationRetryResult = { kind: 'queued'; turn: ConversationTurn } | { kind: 'not_found' } | { kind: 'conflict'; currentAttempt: number };
+export interface OwnerMemorySource {
+  id: string;
+  scope: 'mailbox' | 'global';
+  accountId: string | null;
+  conversationId: string | null;
+  activityId: string | null;
+  content: string;
+  /** Exact PostgreSQL timestamp, including microseconds, for lossless pagination. */
+  createdAt: string;
+}
+export interface OwnerSourceCursor { createdAt: string; sourceId: string }
 
 /** Application history only: no model or provider calls occur inside these transactions. */
 export class ConversationStore {
@@ -273,31 +284,49 @@ export class ConversationStore {
     return row?.['pending'] === true;
   }
 
-  async ownerSources(scope: { userId: string; accountId: string }, acceptedBefore: Date, limit = 20): Promise<readonly { id: string; scope: 'mailbox' | 'global'; content: string; createdAt: string }[]> {
-    bounded(limit, 20);
-    const rows = (await this.sql.query(`select * from (
-      select m.id,c.scope,m.content,m.created_at from app.agent_conversation_messages m join app.agent_conversations c on c.id=m.conversation_id
-        where c.user_id=$1::uuid and (c.scope='global' or c.account_id=$2::uuid) and m.role='user' and m.created_at<=$3
-      union all
-      select q.id,'mailbox' as scope,q.answer as content,q.answered_at as created_at from app.questions q join app.activities a on a.id=q.activity_id
-        join app.accounts box on box.id=a.account_id
-        where box.user_id=$1::uuid and a.account_id=$2::uuid and q.answer is not null and q.answered_at<=$3
-      union all
-      select r.id,'mailbox' as scope,
-        'Owner review: '||r.decision||case when r.reason is null then '' else E'\nOwner explanation: '||r.reason end||
-        case when r.correction is null then '' else E'\nOwner correction fields (draft content is contextual evidence): '||(r.correction-'draft')::text end as content,r.created_at
-        from app.agent_action_reviews r where r.user_id=$1::uuid and r.account_id=$2::uuid and r.created_at<=$3
-      ) sources order by created_at desc,id desc limit $4`, [scope.userId, scope.accountId, acceptedBefore, limit])).rows;
-    return rows.map((row) => ({ id: row['id'] as string, scope: row['scope'] as 'mailbox' | 'global', content: row['content'] as string, createdAt: iso(row['created_at']) })).reverse();
+  async ownerSources(scope: { userId: string; accountId?: string }, acceptedBefore: Date, cursor?: OwnerSourceCursor): Promise<readonly OwnerMemorySource[]> {
+    return this.readOwnerSources(scope, acceptedBefore, cursor, false);
   }
 
-  async globalOwnerSources(userId: string, acceptedBefore: Date, limit = 20): Promise<readonly { id: string; scope: 'global'; content: string; createdAt: string }[]> {
-    bounded(limit, 20);
-    const rows = (await this.sql.query(`select m.id,m.content,m.created_at from app.agent_conversation_messages m
-      join app.agent_conversations c on c.id=m.conversation_id and c.user_id=m.user_id
-      where c.user_id=$1::uuid and c.scope='global' and m.role='user' and m.created_at<=$2
-      order by m.created_at desc,m.id desc limit $3`, [userId, acceptedBefore, limit])).rows;
-    return rows.map(row => ({ id: row['id'] as string, scope: 'global' as const, content: row['content'] as string, createdAt: iso(row['created_at']) })).reverse();
+  async globalOwnerSources(userId: string, acceptedBefore: Date, cursor?: OwnerSourceCursor): Promise<readonly OwnerMemorySource[]> {
+    return this.readOwnerSources({ userId }, acceptedBefore, cursor, true);
+  }
+
+  private async readOwnerSources(scope: { userId: string; accountId?: string }, acceptedBefore: Date, cursor: OwnerSourceCursor | undefined, globalOnly: boolean): Promise<readonly OwnerMemorySource[]> {
+    const rows = (await this.sql.query(`select sources.*,
+      to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at from (
+      select 'conversation_message:'||m.id::text as id,c.scope,c.account_id,c.id as conversation_id,null::uuid as activity_id,m.content,m.created_at
+        from app.agent_conversation_messages m join app.agent_conversations c on c.id=m.conversation_id and c.user_id=m.user_id
+        where c.user_id=$1::uuid and (c.scope='global' or (
+          ($2::uuid is null or c.account_id=$2::uuid) and exists(
+            select 1 from app.user_accounts ua join app.accounts box on box.id=ua.account_id and box.user_id=ua.user_id
+            where ua.user_id=c.user_id and ua.account_id=c.account_id)))
+          and m.role='user' and m.created_at<=$3
+      union all
+      select 'question_answer:'||q.id::text,'mailbox',a.account_id,null::uuid,a.id,q.answer,q.answered_at
+        from app.questions q join app.activities a on a.id=q.activity_id
+        join app.accounts box on box.id=a.account_id
+        join app.user_accounts ua on ua.account_id=box.id and ua.user_id=box.user_id
+        where box.user_id=$1::uuid and ($2::uuid is null or a.account_id=$2::uuid) and q.answer is not null and q.answered_at<=$3
+      union all
+      select 'action_review:'||r.id::text,'mailbox',r.account_id,null::uuid,p.activity_id,
+        'Owner review: '||r.decision||case when r.reason is null then '' else E'\nOwner explanation: '||r.reason end||
+        case when r.correction is null then '' else E'\nOwner correction fields (draft content is contextual evidence): '||(r.correction-'draft')::text end,r.created_at
+        from app.agent_action_reviews r
+        join app.agent_action_proposals p on p.id=r.proposal_id and p.user_id=r.user_id and p.account_id=r.account_id
+        join app.accounts box on box.id=r.account_id and box.user_id=r.user_id
+        join app.user_accounts ua on ua.account_id=r.account_id and ua.user_id=r.user_id
+        where r.user_id=$1::uuid and ($2::uuid is null or r.account_id=$2::uuid) and r.created_at<=$3
+      ) sources where (not $6::boolean or scope='global')
+        and ($4::text::timestamptz is null or (created_at,id collate "C")>($4::text::timestamptz,$5::text collate "C"))
+      order by created_at,id collate "C" limit 100`,
+    [scope.userId, scope.accountId ?? null, acceptedBefore, cursor?.createdAt ?? null, cursor?.sourceId ?? null, globalOnly])).rows;
+    return rows.map((row) => ({
+      id: row['id'] as string, scope: row['scope'] as 'mailbox' | 'global',
+      accountId: row['account_id'] as string | null, conversationId: row['conversation_id'] as string | null,
+      activityId: row['activity_id'] as string | null, content: row['content'] as string,
+      createdAt: row['cursor_created_at'] as string,
+    }));
   }
 
   private async readConversation(db: SqlClient, scope: ScopeAuth, conversationId: string, lock = false): Promise<Row | undefined> {

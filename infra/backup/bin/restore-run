@@ -46,7 +46,7 @@ import hashlib, json, os, pathlib, re, sys
 manifest = json.load(open(sys.argv[1]))
 if manifest.get('generation') != sys.argv[2]: raise SystemExit('manifest generation mismatch')
 memory = manifest.get('hindsight', {})
-if memory.get('version') != '0.9.1' or memory.get('snapshot') != 'clean_shutdown' or not re.search(r'@sha256:[0-9a-f]{64}$', memory.get('image', '')):
+if memory.get('version') not in ('0.9.1', '0.10.2') or memory.get('snapshot') != 'clean_shutdown' or not re.search(r'@sha256:[0-9a-f]{64}$', memory.get('image', '')):
     raise SystemExit('invalid Hindsight snapshot metadata')
 if memory['image'] != os.environ['RESTORE_HINDSIGHT_IMAGE']: raise SystemExit('restore Hindsight image mismatch')
 for name in ('database.dump.age', 'state.tar.age', 'hindsight.tar.age'):

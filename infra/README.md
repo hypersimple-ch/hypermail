@@ -2,12 +2,12 @@
 
 - `Dockerfile.web` and `Dockerfile.worker` build the production pnpm workspace independently and run as UID 10001.
 - `Dockerfile.dev`, `compose.dev.yaml`, and `dev.mjs` provide dependency-aware Compose Watch for local source changes without production image rebuilds.
-- `compose.local.yaml` is loopback-only for the local proxy; database, Hypermail, and pinned Hindsight 0.9.1 remain private. Copy `.env.hindsight.example` to `.env.hindsight` and configure its LLM provider before startup.
+- `compose.local.yaml` is loopback-only for the local proxy; database, Hypermail, and pinned Hindsight 0.10.2 remain private. Copy `.env.hindsight.example` to `.env.hindsight` and configure its LLM provider before startup.
 - `compose.vps.yaml` is the generic-VPS topology: only Caddy publishes `80` and `443`.
 - `dokploy/compose.yaml` relies on Dokploy's Traefik network; it publishes no host ports.
 - `backup/Dockerfile` is a one-shot encrypted DB+Hypermail+Hindsight snapshot job. Schedule the **host** `backup/bin/backup-quiesced -f infra/compose.vps.yaml` orchestrator, not a direct `compose run backup`: it enters maintenance, cleanly stops all writers, attests quiescence, invokes the read-only volume job with `--no-deps`, and resumes in reverse order. Manifest v2 records all three ciphertext checksums/sizes and the pinned Hindsight image. No backup container gets a Docker socket. See [`docs/runbooks/backup-restore.md`](../docs/runbooks/backup-restore.md).
 
-Local Hindsight uses the exact full `ghcr.io/vectorize-io/hindsight:0.9.1` image; production requires `HINDSIGHT_IMAGE` pinned by approved digest. Its control plane is disabled, API ports are not published, the stable worker ID is `hypermail-hindsight-0`, and `hindsight-data` persists embedded pg0 at `/home/hindsight/.pg0`. `HINDSIGHT_ENV_FILE` is service-only LLM configuration; it must never be reused as a web or worker env file. Release deployment may add the approved image digest without changing the `0.9.1` compatibility contract.
+Local Hindsight uses the exact full `ghcr.io/vectorize-io/hindsight:0.10.2` image; production requires `HINDSIGHT_IMAGE` pinned by approved digest. Its control plane is disabled, API ports are not published, the stable worker ID is `hypermail-hindsight-0`, and `hindsight-data` persists embedded pg0 at `/home/hindsight/.pg0`. `HINDSIGHT_ENV_FILE` is service-only LLM configuration; it must never be reused as a web or worker env file. Release deployment may add the approved image digest without changing the `0.10.2` compatibility contract.
 
 Set `HYPERMAIL_IMAGE` to the approved, pinned Hypermail v0.7.26 image before rendering either compose file. Its state directory is intentionally mounted at `/var/lib/hypermail`; confirm that path against the selected image before first production deployment.
 
@@ -34,7 +34,7 @@ Mailbox/provider HTTP and SMTP remain controlled loopback fixtures. Hindsight al
 To also restore the populated application SQL state produced by the controlled HTTP case:
 
 ```sh
-FULL_ACCEPTANCE_BACKUP_DRILL=1 HINDSIGHT_DRILL_IMAGE="${HINDSIGHT_IMAGE:?set an approved 0.9.1 digest}" \
+FULL_ACCEPTANCE_BACKUP_DRILL=1 HINDSIGHT_DRILL_IMAGE="${HINDSIGHT_IMAGE:?set an approved 0.10.2 digest}" \
   bash infra/acceptance/full-runtime.sh
 ```
 

@@ -14,7 +14,7 @@
 
 ## Hindsight failure or incompatibility
 
-- Keep memory-dependent worker readiness closed when private `GET /health/ready` fails, `GET /version` is not exact API version `0.9.1`, required feature flags are absent, or bounded `GET /openapi.json` is malformed, times out, or omits an adapter method. The shared gate blocks memory work until a 30-second refresh succeeds.
+- Keep memory-dependent worker readiness closed when private `GET /health/ready` fails, `GET /version` is not exact API version `0.10.2`, required feature flags are absent, or bounded `GET /openapi.json` is malformed, times out, or omits an adapter method. The shared gate blocks memory work until a 30-second refresh succeeds.
 - Check the private health/version status and OpenAPI availability, named-volume presence/free space, stable worker ID, and Hindsight LLM provider status. Never test compatibility by creating a bank, retaining/recalling data, uploading a file, deleting a bank, invoking an LLM, or reading email. Never expose ports 8888/9999 or enable the control plane as a workaround.
 - Preserve `hindsight-data` and restart with the 45-second stop grace period. Do not attempt recovery from an online filesystem tar. Development memory may be reset; production recovery remains blocked until a supported quiesced or logical backup is accepted.
 - If one owner-requested bank deletion fails or is ambiguous, keep that Mailbox's memory work paused and verify bank absence before retrying. Do not delete the volume or another bank.

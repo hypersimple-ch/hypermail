@@ -32,7 +32,7 @@ try {
   container = run('docker', ['run', '--detach',
     '--env', 'DATABASE_URL=postgresql://127.0.0.1:1/hypermail',
     '--env', 'HYPERMAIL_URL=http://127.0.0.1:9/mcp', '--env', `HYPERMAIL_KEY=${'a'.repeat(16)}`, '--env', 'HYPERMAIL_PROTOCOL_VERSION=test',
-    '--env', 'HINDSIGHT_URL=http://127.0.0.1:1', '--env', 'HINDSIGHT_EXPECTED_VERSION=0.9.1',
+    '--env', 'HINDSIGHT_URL=http://127.0.0.1:1', '--env', 'HINDSIGHT_EXPECTED_VERSION=0.10.2',
     '--env', 'MODEL_PROVIDER=openai', '--env', 'MODEL_NAME=test', '--env', `MODEL_API_KEY=${'b'.repeat(16)}`,
     '--env', 'VAPID_SUBJECT=mailto:ops@example.test', '--env', `VAPID_PUBLIC_KEY=${vapidPublicKey}`, '--env', `VAPID_PRIVATE_KEY=${vapidPrivateKey}`, 
     '--env', `PUSH_SUBSCRIPTION_ENCRYPTION_KEY=${'e'.repeat(32)}`, '--env', 'AGENT_GLOBAL_CONSTRAINTS=Never send mail.', image]);

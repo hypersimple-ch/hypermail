@@ -42,7 +42,8 @@ export interface HindsightApi {
   retain(bankId: string, content: string, options: RetainOptions): Promise<unknown>;
   recall(bankId: string, query: string, options: RecallOptions): Promise<unknown>;
   retainFiles(bankId: string, files: Array<File | Blob>, options: FileOptions): Promise<unknown>;
-  getOperationStatus(bankId: string, operationId: string, signal?: AbortSignal): Promise<unknown>;
+  getOperationStatus(bankId: string, operationId: string, signal?: AbortSignal, includePayload?: boolean): Promise<unknown>;
+  listOperations(bankId: string, offset: number, signal?: AbortSignal): Promise<unknown>;
   deleteBank(bankId: string, signal?: AbortSignal): Promise<unknown>;
 }
 
@@ -88,10 +89,11 @@ const REQUIRED_HINDSIGHT_OPERATIONS = [
   ['post', '/v1/default/banks/{bank_id}/memories/recall'],
   ['post', '/v1/default/banks/{bank_id}/files/retain'],
   ['get', '/v1/default/banks/{bank_id}/operations/{operation_id}'],
+  ['get', '/v1/default/banks/{bank_id}/operations'],
   ['delete', '/v1/default/banks/{bank_id}'],
 ] as const;
 
-/** Verify only the routes the pinned 0.9.1 client calls. This never executes an operation. */
+/** Verify only the routes the pinned 0.10.2 client calls. This never executes an operation. */
 function hasRequiredHindsightOperations(document: unknown): boolean {
   if (!isRecord(document) || typeof document['openapi'] !== 'string' || !/^3\.(?:0|1)\.\d+$/.test(document['openapi'])
     || !isRecord(document['paths'])) return false;
@@ -145,9 +147,14 @@ class OfficialHindsightApi implements HindsightApi {
   retain(bankId: string, content: string, options: Parameters<HindsightClient['retain']>[2]): Promise<unknown> { return this.client.retain(bankId, content, options); }
   recall(bankId: string, query: string, options: Parameters<HindsightClient['recall']>[2]): Promise<unknown> { return this.client.recall(bankId, query, options); }
   retainFiles(bankId: string, files: Array<File | Blob>, options: Parameters<HindsightClient['retainFiles']>[2]): Promise<unknown> { return this.client.retainFiles(bankId, files, options); }
-  async getOperationStatus(bankId: string, operationId: string, signal?: AbortSignal): Promise<unknown> {
+  async getOperationStatus(bankId: string, operationId: string, signal?: AbortSignal, includePayload = false): Promise<unknown> {
     const response = await sdk.getOperationStatus({ client: this.generated, throwOnError: true,
-      path: { bank_id: bankId, operation_id: operationId }, ...(signal ? { signal } : {}) });
+      path: { bank_id: bankId, operation_id: operationId }, query: { include_payload: includePayload }, ...(signal ? { signal } : {}) });
+    return response.data;
+  }
+  async listOperations(bankId: string, offset: number, signal?: AbortSignal): Promise<unknown> {
+    const response = await sdk.listOperations({ client: this.generated, throwOnError: true,
+      path: { bank_id: bankId }, query: { type: 'retain', limit: 100, offset }, ...(signal ? { signal } : {}) });
     return response.data;
   }
   async deleteBank(bankId: string, signal?: AbortSignal): Promise<unknown> {
@@ -202,13 +209,13 @@ export class HindsightMailboxMemory implements MailboxMemory {
     expectedVersion?: string; timeoutMs?: number; pollIntervalMs?: number; maxFileBytes?: number;
     now?: () => number; wait?: (milliseconds: number) => Promise<void>;
   }> = {}) {
-    this.expectedVersion = options.expectedVersion ?? '0.9.1';
+    this.expectedVersion = options.expectedVersion ?? '0.10.2';
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.pollIntervalMs = options.pollIntervalMs ?? 100;
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024;
     this.now = options.now ?? Date.now;
     this.wait = options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-    if (this.expectedVersion !== '0.9.1') throw new Error('HINDSIGHT_VERSION_INVALID');
+    if (this.expectedVersion !== '0.10.2') throw new Error('HINDSIGHT_VERSION_INVALID');
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 120_000) throw new Error('HINDSIGHT_TIMEOUT_INVALID');
     if (!Number.isInteger(this.pollIntervalMs) || this.pollIntervalMs < 1 || this.pollIntervalMs > this.timeoutMs) throw new Error('HINDSIGHT_POLL_INTERVAL_INVALID');
     if (!Number.isInteger(this.maxFileBytes) || this.maxFileBytes < 1 || this.maxFileBytes > 25 * 1024 * 1024) throw new Error('HINDSIGHT_FILE_LIMIT_INVALID');
@@ -244,16 +251,53 @@ export class HindsightMailboxMemory implements MailboxMemory {
     return bankId;
   }
 
-  private async waitForOperation(bankId: string, operationId: string): Promise<void> {
+  private async waitForOperation(bankId: string, operationId: string, deadline = this.now() + this.timeoutMs): Promise<Record<string, unknown>> {
     if (!UUID.test(operationId)) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
-    const deadline = this.now() + this.timeoutMs;
     while (this.now() < deadline) {
       const remaining = Math.max(1, deadline - this.now());
       const response = await this.request((signal) => this.api.getOperationStatus(bankId, operationId, signal), remaining);
       if (!isRecord(response) || response['operation_id'] !== operationId || typeof response['status'] !== 'string') throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
-      if (COMPLETED.has(response['status'])) return;
+      if (COMPLETED.has(response['status'])) return response;
       if (FAILED.has(response['status'])) throw new HindsightMemoryError('HINDSIGHT_OPERATION_FAILED');
       if (response['status'] !== 'pending' && response['status'] !== 'processing') throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
+      await this.wait(Math.min(this.pollIntervalMs, Math.max(1, deadline - this.now())));
+    }
+    throw new HindsightMemoryError('HINDSIGHT_TIMEOUT');
+  }
+
+  /** 0.10.2 conversion completes before its separate retain task. Follow the exact file document, not bank-wide idleness. */
+  private async waitForFileRetain(bankId: string, documentId: string, submittedAt: number, deadline: number): Promise<void> {
+    while (this.now() < deadline) {
+      let offset = 0;
+      for (;;) {
+        const page = await this.request((signal) => this.api.listOperations(bankId, offset, signal), Math.max(1, deadline - this.now()));
+        if (!isRecord(page) || page['bank_id'] !== bankId || !Number.isInteger(page['total']) || Number(page['total']) < 0
+          || !Array.isArray(page['operations']) || page['operations'].length > 100) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
+        let reachedOlderOperations = false;
+        for (const operation of page['operations']) {
+          if (!isRecord(operation) || typeof operation['operation_id'] !== 'string' || !UUID.test(operation['operation_id'])
+            || operation['operation_type'] !== 'retain' || typeof operation['created_at'] !== 'string'
+            || !Number.isFinite(Date.parse(operation['created_at']))) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
+          if (Date.parse(operation['created_at']) < submittedAt) { reachedOlderOperations = true; break; }
+          if (operation['document_id'] != null && operation['document_id'] !== documentId) continue;
+          const status = await this.request((signal) => this.api.getOperationStatus(bankId, operation['operation_id'] as string, signal, true),
+            Math.max(1, deadline - this.now()));
+          if (!isRecord(status) || status['operation_id'] !== operation['operation_id']) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
+          const payload = status['task_payload'];
+          if (!isRecord(payload) || !Array.isArray(payload['contents']) || !payload['contents'].some((item: unknown) =>
+            isRecord(item) && item['document_id'] === documentId)) continue;
+          if (status['status'] === 'completed') return;
+          if (typeof status['status'] !== 'string' || (status['status'] !== 'pending' && status['status'] !== 'processing')) {
+            throw new HindsightMemoryError(FAILED.has(String(status['status'])) ? 'HINDSIGHT_OPERATION_FAILED' : 'HINDSIGHT_RESPONSE_INVALID');
+          }
+          await this.wait(Math.min(this.pollIntervalMs, Math.max(1, deadline - this.now())));
+          await this.waitForOperation(bankId, operation['operation_id'], deadline);
+          return;
+        }
+        offset += page['operations'].length;
+        if (reachedOlderOperations || offset >= Number(page['total']) || page['operations'].length === 0) break;
+        if (this.now() >= deadline) throw new HindsightMemoryError('HINDSIGHT_TIMEOUT');
+      }
       await this.wait(Math.min(this.pollIntervalMs, Math.max(1, deadline - this.now())));
     }
     throw new HindsightMemoryError('HINDSIGHT_TIMEOUT');
@@ -290,7 +334,7 @@ export class HindsightMailboxMemory implements MailboxMemory {
       const context = stringField(raw, 'context', 10_000);
       const chunkId = stringField(raw, 'chunk_id', 200);
       let sourceChunks: Array<{ id: string; text: string }> = [];
-      if (chunkId !== undefined) {
+      if (chunkId !== undefined && Object.hasOwn(chunks, chunkId)) {
         const chunk = chunks[chunkId];
         if (!isRecord(chunk) || stringField(chunk, 'id', 200) !== chunkId) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
         const chunkText = stringField(chunk, 'text', 50_000);
@@ -315,7 +359,11 @@ export class HindsightMailboxMemory implements MailboxMemory {
     if (!isRecord(response) || !Array.isArray(response['operation_ids']) || response['operation_ids'].length !== 1 || typeof response['operation_ids'][0] !== 'string') {
       throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
     }
-    await this.waitForOperation(bankId, response['operation_ids'][0]);
+    const deadline = this.now() + this.timeoutMs;
+    const conversion = await this.waitForOperation(bankId, response['operation_ids'][0], deadline);
+    const submittedAt = typeof conversion['created_at'] === 'string' ? Date.parse(conversion['created_at']) : NaN;
+    if (conversion['operation_type'] !== 'file_convert_retain' || !Number.isFinite(submittedAt)) throw new HindsightMemoryError('HINDSIGHT_RESPONSE_INVALID');
+    await this.waitForFileRetain(bankId, documentId, submittedAt, deadline);
   }
 
   async deleteMailbox(scope: MailboxMemoryScope): Promise<void> {

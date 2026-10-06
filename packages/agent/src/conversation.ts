@@ -1,6 +1,6 @@
 import type { Agent } from '@mastra/core/agent';
 import { conversationReplySchema, type Conversation, type ConversationMessage } from '@hypermail/contracts';
-import { userResourceId } from './index.js';
+import { conversationThreadId, userResourceId } from './index.js';
 
 export interface ConversationModel {
   generate(input: {
@@ -19,10 +19,11 @@ export function mastraConversationModel(agent: Pick<Agent, 'generate'>): Convers
   return {
     async generate(input) {
       const conversation = input.conversation;
-      const resource = conversation.scope === 'mailbox' && conversation.accountId !== null
-        ? userResourceId(conversation.userId, { scope: 'mailbox', accountId: conversation.accountId })
-        : conversation.scope === 'global' ? userResourceId(conversation.userId, { scope: 'global' }) : null;
-      if (!resource) throw new Error('CONVERSATION_SCOPE_INVALID');
+      if (!((conversation.scope === 'mailbox' && conversation.accountId !== null)
+        || (conversation.scope === 'global' && conversation.accountId === null))) {
+        throw new Error('CONVERSATION_SCOPE_INVALID');
+      }
+      const resource = userResourceId(conversation.userId);
       const messages: Parameters<Agent['generate']>[0] = [
         { role: 'system', content: conversationSystemPrompt },
         { role: 'user', content: JSON.stringify({
@@ -38,8 +39,8 @@ export function mastraConversationModel(agent: Pick<Agent, 'generate'>): Convers
       }
       const result = await agent.generate(messages, {
         maxSteps: 1,
-        memory: { resource, thread: `${resource}:conversation:${conversation.id}`, options: {
-          readOnly: true, lastMessages: false, semanticRecall: false, workingMemory: { enabled: false },
+        memory: { resource, thread: conversationThreadId(conversation.userId, conversation.id), options: {
+          readOnly: true, lastMessages: false, semanticRecall: false, workingMemory: { enabled: true },
         } },
         structuredOutput: { schema: conversationReplySchema },
         abortSignal: input.signal,

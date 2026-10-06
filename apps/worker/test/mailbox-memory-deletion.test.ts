@@ -19,6 +19,7 @@ function database() {
       return { rows: [] as Row[] };
     },
     transaction: async <T>(work: (sql: ManagedSqlClient) => Promise<T>) => work(client),
+    withSession: async operation => operation(client),
     close: () => Promise.resolve(),
   };
   return { client, statements };

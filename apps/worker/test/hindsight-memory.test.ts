@@ -17,22 +17,36 @@ const completeOpenApi = (): Record<string, unknown> => ({
     '/v1/default/banks/{bank_id}/memories/recall': { post: { responses: {} } },
     '/v1/default/banks/{bank_id}/files/retain': { post: { responses: {} } },
     '/v1/default/banks/{bank_id}/operations/{operation_id}': { get: { responses: {} } },
+    '/v1/default/banks/{bank_id}/operations': { get: { responses: {} } },
   },
 });
 
 function fakeApi(overrides: Partial<HindsightApi> = {}): HindsightApi & { calls: Array<{ method: string; args: unknown[] }> } {
   const calls: Array<{ method: string; args: unknown[] }> = [];
+  let fileDocumentId = '';
   const record = <T>(method: string, result: T) => async (...args: unknown[]): Promise<T> => { calls.push({ method, args }); return result; };
   return {
     calls,
     getReadiness: record('getReadiness', { status: 'ready' }),
     getOpenApi: record('getOpenApi', completeOpenApi()),
-    getVersion: record('getVersion', { api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: true, store_document_text: true } }),
+    getVersion: record('getVersion', { api_version: '0.10.2', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: true, store_document_text: true } }),
     createBank: record('createBank', { bank_id: mailboxBankId(scope), mission: 'x', name: 'x', disposition: { skepticism: 3, literalism: 3, empathy: 3 } }),
     retain: record('retain', { success: true, bank_id: mailboxBankId(scope), items_count: 1, async: true, operation_id: '11111111-1111-4111-8111-111111111111' }),
     recall: record('recall', { results: [], chunks: {} }),
-    retainFiles: record('retainFiles', { operation_ids: ['22222222-2222-4222-8222-222222222222'] }),
-    getOperationStatus: async (bankId, operationId) => { calls.push({ method: 'getOperationStatus', args: [bankId, operationId] }); return { operation_id: operationId, status: 'completed' }; },
+    retainFiles: async (bankId, files, options) => {
+      calls.push({ method: 'retainFiles', args: [bankId, files, options] });
+      fileDocumentId = options.filesMetadata[0]?.document_id ?? '';
+      return { operation_ids: ['22222222-2222-4222-8222-222222222222'] };
+    },
+    listOperations: record('listOperations', { bank_id: mailboxBankId(scope), total: 1, operations: [
+      { operation_id: '33333333-3333-4333-8333-333333333333', operation_type: 'retain', created_at: '2026-01-01T00:00:01Z' },
+    ] }),
+    getOperationStatus: async (bankId, operationId) => {
+      calls.push({ method: 'getOperationStatus', args: [bankId, operationId] });
+      return { operation_id: operationId, status: 'completed',
+        operation_type: operationId === '22222222-2222-4222-8222-222222222222' ? 'file_convert_retain' : 'retain',
+        created_at: '2026-01-01T00:00:00Z', task_payload: { contents: [{ document_id: fileDocumentId }] } };
+    },
     deleteBank: record('deleteBank', undefined),
     ...overrides,
   };
@@ -92,15 +106,58 @@ describe('Hindsight Mailbox memory adapter', () => {
       types: ['world', 'experience'], preferObservations: false, includeSourceFacts: false });
   });
 
-  it('uploads a direct supported file with a deterministic document ID and waits for completion', async () => {
+  it('accepts facts whose source chunks were omitted by the chunk token budget', async () => {
+    const api = fakeApi({ recall: async () => ({ results: [
+      { text: 'Appointment remains unconfirmed', chunk_id: 'included' },
+      { text: 'Check the calendar before replying', chunk_id: 'budget-omitted' },
+    ], chunks: { included: { id: 'included', text: 'Owner correction: do not confirm yet.' } } }) });
+    expect(await memory(api).recall({ scope, query: 'appointment', maxTokens: 1_024 })).toEqual({ entries: [
+      { text: 'Appointment remains unconfirmed', sourceChunks: [{ id: 'included', text: 'Owner correction: do not confirm yet.' }] },
+      { text: 'Check the calendar before replying' },
+    ] });
+  });
+
+  it('still rejects a present source chunk with an invalid identity', async () => {
+    const api = fakeApi({ recall: async () => ({ results: [{ text: 'Appointment', chunk_id: 'source' }],
+      chunks: { source: { id: 'other-source', text: 'Wrong source' } } }) });
+    await expect(memory(api).recall({ scope, query: 'appointment', maxTokens: 1_024 }))
+      .rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
+  });
+
+  it('does not publish file completion while the post-conversion retain is pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = fakeApi();
+      const getStatus = api.getOperationStatus.bind(api);
+      let retained = false;
+      api.getOperationStatus = async (...args) => {
+        const status = await getStatus(...args);
+        return args[1] === '33333333-3333-4333-8333-333333333333'
+          ? { ...(status as Record<string, unknown>), status: retained ? 'completed' : 'processing' } : status;
+      };
+      let completed = false;
+      const pending = new HindsightMailboxMemory(api, { timeoutMs: 1_000, pollIntervalMs: 10 })
+        .retainFile({ scope, sourceId: randomUUID(), file: new Blob(['hello']), filename: 'message.txt', mediaType: 'text/plain' })
+        .then(() => { completed = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(completed).toBe(false);
+      retained = true;
+      await vi.advanceTimersByTimeAsync(10);
+      await pending;
+      expect(completed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('fails the file when its post-conversion retain fails', async () => {
     const api = fakeApi();
-    const adapter = memory(api);
-    await adapter.retainFile({ scope, sourceId: randomUUID(), file: new Blob(['hello'], { type: 'text/plain' }), filename: 'message.txt', mediaType: 'text/plain' });
-    const upload = api.calls.find((call) => call.method === 'retainFiles');
-    expect(upload?.args[0]).toBe(mailboxBankId(scope));
-    const uploadOptions = upload?.args[2] as { filesMetadata?: Array<{ document_id?: string }> } | undefined;
-    expect(uploadOptions?.filesMetadata?.[0]?.document_id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(api.calls.some((call) => call.method === 'getOperationStatus')).toBe(true);
+    const getStatus = api.getOperationStatus.bind(api);
+    api.getOperationStatus = async (...args) => {
+      const status = await getStatus(...args);
+      return args[1] === '33333333-3333-4333-8333-333333333333'
+        ? { ...(status as Record<string, unknown>), status: 'failed' } : status;
+    };
+    await expect(memory(api).retainFile({ scope, sourceId: randomUUID(), file: new Blob(['hello']),
+      filename: 'message.txt', mediaType: 'text/plain' })).rejects.toMatchObject({ code: 'HINDSIGHT_OPERATION_FAILED' });
   });
 
   it('sanitizes timeouts, failures, and malformed responses', async () => {
@@ -119,7 +176,7 @@ describe('Hindsight Mailbox memory adapter', () => {
     const calls: string[] = []; let healthy = true;
     const underlying: MailboxMemory = { retain: () => { calls.push('retain'); return Promise.resolve(); }, recall: () => Promise.resolve({ entries: [] }),
       retainFile: () => Promise.resolve(), deleteMailbox: () => Promise.resolve(),
-      readiness: () => healthy ? Promise.resolve({ version: '0.9.1' }) : Promise.reject(new Error('down')) };
+      readiness: () => healthy ? Promise.resolve({ version: '0.10.2' }) : Promise.reject(new Error('down')) };
     const gate = new ReadinessGatedMailboxMemory(underlying);
     await expect(gate.retain({ scope, eventId: randomUUID(), text: 'x', timestamp: '2026-01-01T00:00:00.000Z', context: 'x' }))
       .rejects.toMatchObject({ code: 'HINDSIGHT_UNAVAILABLE' });
@@ -130,10 +187,10 @@ describe('Hindsight Mailbox memory adapter', () => {
     expect(calls).toEqual(['retain']);
   });
 
-  it('accepts a complete read-only 0.9.1 contract before supporting explicit bank deletion', async () => {
+  it('accepts a complete read-only 0.10.2 contract before supporting explicit bank deletion', async () => {
     const api = fakeApi();
     const adapter = memory(api);
-    await expect(adapter.readiness()).resolves.toEqual({ version: '0.9.1' });
+    await expect(adapter.readiness()).resolves.toEqual({ version: '0.10.2' });
     expect(api.calls.slice(0, 3).map(({ method }) => method)).toEqual(['getReadiness', 'getVersion', 'getOpenApi']);
     expect(api.calls.every(({ method }) => ['getReadiness', 'getVersion', 'getOpenApi'].includes(method))).toBe(true);
     await adapter.deleteMailbox(scope);
@@ -169,10 +226,10 @@ describe('Hindsight Mailbox memory adapter', () => {
   });
 
   it('fails closed before schema discovery for wrong versions or incomplete feature flags', async () => {
-    const wrongVersion = fakeApi({ getVersion: async () => ({ api_version: '0.9.0', features: { observations: true } }) });
+    const wrongVersion = fakeApi({ getVersion: async () => ({ api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: true, store_document_text: true } }) });
     await expect(memory(wrongVersion).readiness()).rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
     expect(wrongVersion.calls.some(({ method }) => method === 'getOpenApi')).toBe(false);
-    const incompleteFeatures = fakeApi({ getVersion: async () => ({ api_version: '0.9.1', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: false, store_document_text: true } }) });
+    const incompleteFeatures = fakeApi({ getVersion: async () => ({ api_version: '0.10.2', features: { observations: true, worker: true, bank_config_api: true, file_upload_api: false, store_document_text: true } }) });
     await expect(memory(incompleteFeatures).readiness()).rejects.toMatchObject({ code: 'HINDSIGHT_RESPONSE_INVALID' });
     expect(incompleteFeatures.calls.some(({ method }) => method === 'getOpenApi')).toBe(false);
   });
@@ -183,6 +240,7 @@ describe('Hindsight Mailbox memory adapter', () => {
     ['recall', '/v1/default/banks/{bank_id}/memories/recall', 'post'],
     ['file upload', '/v1/default/banks/{bank_id}/files/retain', 'post'],
     ['operation status', '/v1/default/banks/{bank_id}/operations/{operation_id}', 'get'],
+    ['operation discovery', '/v1/default/banks/{bank_id}/operations', 'get'],
     ['bank delete', '/v1/default/banks/{bank_id}', 'delete'],
   ])('rejects an incomplete OpenAPI schema missing %s', async (_operation, path, method) => {
     const document = completeOpenApi();

@@ -11,9 +11,11 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 export { mastraConversationModel, type ConversationModel } from './conversation.js';
 
-/** Versioned, explicitly scoped owner history; legacy user resources remain unread. */
-export const userResourceId = (userId: string, scope: { scope: 'mailbox'; accountId: string } | { scope: 'global' }) =>
-  scope.scope === 'mailbox' ? `user:${userId}:mailbox:${scope.accountId}:v2` : `user:${userId}:global:v2`;
+/** Shared owner interaction profile; legacy user resources remain unread. */
+export const userResourceId = (userId: string): string => `user:${userId}:profile:v3`;
+/** Conversation observations stay isolated even when their owner profile is shared. */
+export const conversationThreadId = (userId: string, conversationId: string): string =>
+  `user:${userId}:conversation:${conversationId}:v3`;
 /** Shared, read-only operational constraints belong to this separate resource. */
 export const GLOBAL_CONSTRAINTS_RESOURCE_ID = 'global:constraints';
 
@@ -112,6 +114,7 @@ export interface DecisionPersistence {
 /** Minimal source-history port. It intentionally has no recall, inspect, reset, or correction API. */
 export interface SourceHistory {
   append(input: { resourceId: string; threadId: string; text: string }): Promise<void>;
+  observe(input: { resourceId: string; threadId: string }): Promise<void>;
 }
 
 export interface DecisionModel {
@@ -146,7 +149,7 @@ export function digestTriageInput(input: TriageInput): string {
   return createHash('sha256').update(JSON.stringify(input)).digest('hex');
 }
 
-export const activityThreadId = (userId: string, accountId: string, activityId: string) => `user:${userId}:mailbox:${accountId}:activity:${activityId}:v2`;
+export const activityThreadId = (userId: string, accountId: string, activityId: string): string => `user:${userId}:mailbox:${accountId}:activity:${activityId}:v3`;
 
 function deterministicUuid(seed: string): string {
   const hex = createHash('sha256').update(seed).digest('hex');
@@ -253,7 +256,7 @@ export class TriageService {
     const input = triageInputSchema.parse(rawInput);
     if (!input.runId && this.options.persistence.currentRunId) input.runId = await this.options.persistence.currentRunId(input.activityId, input.userId, input.accountId);
     const digest = digestTriageInput(input);
-    const resourceId = userResourceId(input.userId, { scope: 'mailbox', accountId: input.accountId });
+    const resourceId = userResourceId(input.userId);
     const scope = { userId: input.userId, mailboxId: input.accountId };
     // This is the complete current email accepted by the agent boundary, including IDs and
     // attachment metadata but never attachment bytes. The adapter supplies idempotent identity.
@@ -325,7 +328,7 @@ export class TriageService {
   async rememberUserInstruction(input: Readonly<{ userId: string; accountId: string; activityId: string; instruction: string }>): Promise<void> {
     const instruction = input.instruction.trim();
     if (!instruction || instruction.length > 8_000) throw new Error('User instruction must contain 1 to 8,000 characters.');
-    await this.options.sourceHistory?.append({ resourceId: userResourceId(input.userId, { scope: 'mailbox', accountId: input.accountId }),
+    await this.options.sourceHistory?.append({ resourceId: userResourceId(input.userId),
       threadId: activityThreadId(input.userId, input.accountId, input.activityId),
       text: JSON.stringify({ provenance: 'user', scope: 'mailbox', userInstruction: instruction }) });
   }
@@ -385,7 +388,9 @@ export function mastraDecisionModel(agent: Pick<Agent, 'generate'>): DecisionMod
           globalConstraints: input.globalConstraints, userResourceId: input.userResourceId,
           globalConstraintsResourceId: input.globalConstraintsResourceId, sourceHistory: input.sourceHistory }) },
       ], {
-        memory: { resource: input.userResourceId, thread: input.thread, options: { readOnly: true } },
+        memory: { resource: input.userResourceId, thread: input.thread, options: {
+          readOnly: true, lastMessages: false, semanticRecall: false, workingMemory: { enabled: true },
+        } },
         structuredOutput: { schema: mastraDecisionOutputSchema },
         abortSignal: input.signal,
       });
@@ -546,9 +551,20 @@ export class PostgresDecisionPersistence implements DecisionPersistence {
 export class MastraSourceHistory implements SourceHistory {
   constructor(private readonly memory: Memory) {}
   async append(input: { resourceId: string; threadId: string; text: string }): Promise<void> {
-    try { await this.memory.createThread({ threadId: input.threadId, resourceId: input.resourceId }); } catch { /* existing durable thread */ }
-    // A retry can re-append the same source event after its question claim committed.
-    await this.memory.saveMessages({ messages: [{ id: sourceMessageId(input), role: 'user', content: { format: 2, parts: [{ type: 'text', text: input.text }] }, threadId: input.threadId, resourceId: input.resourceId, createdAt: new Date() }] });
+    const thread = await this.memory.getThreadById({ threadId: input.threadId, resourceId: input.resourceId });
+    if (!thread) await this.memory.createThread({ threadId: input.threadId, resourceId: input.resourceId });
+    const id = sourceMessageId(input);
+    const previous = await this.memory.recall({ threadId: input.threadId, resourceId: input.resourceId,
+      perPage: 1, include: [{ id, withPreviousMessages: 0, withNextMessages: 0 }],
+      threadConfig: { semanticRecall: false } });
+    // Preserve the observation boundary on replay; upserting would advance createdAt.
+    if (previous.messages.some(message => message.id === id)) return;
+    await this.memory.saveMessages({ messages: [{ id, role: 'user', content: { format: 2, parts: [{ type: 'text', text: input.text }] }, threadId: input.threadId, resourceId: input.resourceId, createdAt: new Date() }] });
+  }
+  async observe(input: { resourceId: string; threadId: string }): Promise<void> {
+    const engine = await this.memory.omEngine;
+    if (!engine) throw new Error('OBSERVATIONAL_MEMORY_REQUIRED');
+    await engine.observe(input);
   }
 }
 

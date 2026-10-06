@@ -22,6 +22,10 @@ const envContract = read('packages/contracts/src/env.ts');
 const envExample = read('.env.example');
 const hindsightEnvExample = read('.env.hindsight.example');
 
+const hasHindsightHealthcheck = (section) => /test: \["CMD", "python3", "-c",/.test(section)
+  && section.includes("urllib.request.urlopen('http://127.0.0.1:8888/health/ready', timeout=4)")
+  && section.includes('assert r.status == 200')
+  && section.includes("body.get('status') == 'healthy' and body.get('database') == 'connected'");
 const hindsightWorkerFields = [
   'HINDSIGHT_URL', 'HINDSIGHT_API_KEY', 'HINDSIGHT_EXPECTED_VERSION',
   'HINDSIGHT_REQUEST_TIMEOUT_MS', 'HINDSIGHT_MAX_FILE_BYTES',
@@ -32,7 +36,22 @@ for (const field of hindsightWorkerFields) {
   if (!envContract.includes(field)) fail(`worker environment contract must define ${field}`);
   if (field !== 'HINDSIGHT_API_KEY' && !envExample.includes(`${field}=`)) fail(`local environment example must define ${field}`);
 }
-if (!/HINDSIGHT_EXPECTED_VERSION: z\.literal\('0\.9\.1'\)/.test(envContract)) fail('worker must fail closed on the Hindsight 0.9.1 version contract');
+if (!/HINDSIGHT_EXPECTED_VERSION: z\.literal\('0\.10\.2'\)/.test(envContract)) fail('worker must fail closed on the Hindsight 0.10.2 version contract');
+if (!/^HINDSIGHT_EXPECTED_VERSION=0\.10\.2$/m.test(envExample)) fail('local environment example must pin Hindsight 0.10.2');
+const hindsightAdapter = read('apps/worker/src/hindsight-memory.ts');
+if (!/options\.expectedVersion \?\? '0\.10\.2'/.test(hindsightAdapter)
+  || !/this\.expectedVersion !== '0\.10\.2'/.test(hindsightAdapter)) fail('normal worker adapter must reject legacy Hindsight versions');
+if (process.env['HINDSIGHT_IMAGE'] !== undefined
+  && !/^ghcr\.io\/vectorize-io\/hindsight@sha256:[0-9a-f]{64}$/.test(process.env['HINDSIGHT_IMAGE'])) {
+  fail('configured production Hindsight image must be a full immutable registry digest, never a tag');
+}
+const backupRunner = read('infra/backup/bin/backup-run');
+const restoreRunner = read('infra/backup/bin/restore-run');
+if (!/'version': '0\.10\.2'/.test(backupRunner)
+  || !/memory\.get\('version'\) not in \('0\.9\.1', '0\.10\.2'\)/.test(restoreRunner)
+  || !/memory\['image'\] != os\.environ\['RESTORE_HINDSIGHT_IMAGE'\]/.test(restoreRunner)) {
+  fail('backup must announce 0.10.2 and isolated restore must preserve exact legacy/current archived image identity');
+}
 if (/HINDSIGHT_API_LLM_API_KEY=/.test(envExample)) fail('shared local environment must not contain the Hindsight LLM secret');
 if (!/HINDSIGHT_API_LLM_PROVIDER=/.test(hindsightEnvExample) || !/HINDSIGHT_API_LLM_MODEL=/.test(hindsightEnvExample) || !/HINDSIGHT_API_LLM_API_KEY=/.test(hindsightEnvExample) || !/HINDSIGHT_API_EMBEDDINGS_PROVIDER=local/.test(hindsightEnvExample) || !/HINDSIGHT_API_RERANKER_PROVIDER=local/.test(hindsightEnvExample)) {
   fail('dedicated Hindsight env template must configure its LLM and local full-image models');
@@ -58,11 +77,11 @@ for (const [name, compose] of [['VPS', vps], ['Dokploy', dokploy]]) {
     fail(`${name} backup must be an opt-in job with read-only Hypermail/Hindsight state, object-store egress, and no Docker socket`);
   }
   const hindsight = compose.match(/^  hindsight:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
-  if (!/image: \$\{HINDSIGHT_IMAGE:\?set HINDSIGHT_IMAGE to an immutable Hindsight 0\.9\.1 digest\}/.test(hindsight)
+  if (!/image: \$\{HINDSIGHT_IMAGE:\?set HINDSIGHT_IMAGE to an immutable Hindsight 0\.10\.2 digest\}/.test(hindsight)
     || /^    ports:/m.test(hindsight) || !/networks: \[private, egress\]/.test(hindsight)) {
-    fail(`${name} Hindsight must use an immutable approved 0.9.1 digest with private ingress, provider egress, and no published ports`);
+    fail(`${name} Hindsight must use an immutable approved 0.10.2 digest with private ingress, provider egress, and no published ports`);
   }
-  if (!/HINDSIGHT_ENABLE_CP: "false"/.test(hindsight) || !/HINDSIGHT_API_WORKER_ID: hypermail-hindsight-0/.test(hindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(hindsight) || !/127\.0\.0\.1:8888\/health/.test(hindsight)) {
+  if (!/HINDSIGHT_ENABLE_CP: "false"/.test(hindsight) || !/HINDSIGHT_API_WORKER_ID: hypermail-hindsight-0/.test(hindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(hindsight) || !hasHindsightHealthcheck(hindsight)) {
     fail(`${name} Hindsight must disable its control plane and use stable persistent healthy embedded state`);
   }
   if (!/HINDSIGHT_ENV_FILE/.test(hindsight) || !/mem_limit:/.test(hindsight) || !/cpus:/.test(hindsight) || !/HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE_MB: 50/.test(hindsight) || !/HINDSIGHT_API_FILE_CONVERSION_MAX_BATCH_SIZE: 5/.test(hindsight)) {
@@ -105,8 +124,9 @@ if (!/127\.0\.0\.1:\$\{LOCAL_HTTP_PORT:-8080\}:80/.test(local)) fail('local prox
 const localHypermail = local.match(/^  hypermail:\n([\s\S]*?)(?=\nnetworks:)/m)?.[1] ?? '';
 if (!/networks: \[private, egress\]/.test(localHypermail) || /^    ports:/m.test(localHypermail)) fail('local Hypermail must have private ingress and provider egress without host ports');
 const localHindsight = local.match(/^  hindsight:\n([\s\S]*?)(?=\nnetworks:)/m)?.[1] ?? '';
-if (!/image: ghcr\.io\/vectorize-io\/hindsight:0\.9\.1/.test(localHindsight) || !/HINDSIGHT_ENABLE_CP: "false"/.test(localHindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(localHindsight) || /^    ports:/m.test(localHindsight) || !/networks: \[private, egress\]/.test(localHindsight)) {
-  fail('local Hindsight must use pinned full 0.9.1 privately with persistent embedded state and provider egress');
+if (!hasHindsightHealthcheck(localHindsight)) fail('local Hindsight must use its available Python runtime to validate HTTP and database readiness');
+if (!/image: ghcr\.io\/vectorize-io\/hindsight:0\.10\.2/.test(localHindsight) || !/HINDSIGHT_ENABLE_CP: "false"/.test(localHindsight) || !/hindsight-data:\/home\/hindsight\/\.pg0/.test(localHindsight) || /^    ports:/m.test(localHindsight) || !/networks: \[private, egress\]/.test(localHindsight)) {
+  fail('local Hindsight must use pinned full 0.10.2 privately with persistent embedded state and provider egress');
 }
 const localWorker = local.match(/^  worker:\n([\s\S]*?)(?=\n  [a-z]|\nnetworks:)/m)?.[1] ?? '';
 if (!/hindsight:\n        condition: service_healthy/.test(localWorker) || !/hindsight-data:\s*\{\}/.test(local)) fail('local worker must wait for persistent healthy Hindsight');

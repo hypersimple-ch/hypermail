@@ -2,6 +2,7 @@
 import { createServer as httpServer, type Server as HttpServer } from 'node:http';
 import { createServer as tcpServer, type Server as TcpServer, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import type { MailboxMemory, MailboxMemoryEntry, SourceHistory } from '@hypermail/agent';
 
 export async function listen(server: HttpServer | TcpServer, port = 0): Promise<number> {
@@ -49,10 +50,12 @@ export class ControlledSmtp {
   async stop(): Promise<void> { for (const socket of this.sockets) socket.destroy(); await close(this.server); }
 }
 
-type Mail = { id: string; account: string; subject: string; body: string; folder: string; receivedAt: string; from: { address: string }; to: { address: string }[]; isRead: boolean };
+type SyntheticAttachment = { id: string; name: string; contentType: string; size: number; path: string; content: Buffer };
+type Mail = { id: string; account: string; subject: string; body: string; folder: string; receivedAt: string; from: { address: string }; to: { address: string }[]; isRead: boolean; attachments?: SyntheticAttachment[] };
 type Call = { name: string; args: Record<string, unknown> };
 const fields: Record<string, string[]> = {
   list_emails: ['account', 'folder', 'limit', 'skip'], read_email: ['account', 'id', 'format'],
+  read_attachment: ['account', 'messageId', 'attachmentId'],
   archive_email: ['account', 'id'], trash_email: ['account', 'id'], move_email: ['account', 'id', 'destination'],
   mark_read: ['account', 'id'], mark_unread: ['account', 'id'],
   draft_email: ['account', 'to', 'subject', 'body', 'format', 'include_signature', 'inReplyTo'],
@@ -97,19 +100,35 @@ export class ControlledHypermail {
     const id = randomUUID(); const mail: Mail = { id, account, subject, body, folder: 'inbox', receivedAt: new Date().toISOString(), from: { address: 'sender@example.test' }, to: [{ address: account }], isRead: false };
     this.mails.set(id, mail); this.arrivals.set(account, [...(this.arrivals.get(account) ?? []), mail]); return id;
   }
+  attachTextFile(messageId: string, path: string, size: number): string {
+    const mail = this.mails.get(messageId);
+    if (!mail) throw new Error('Missing synthetic attachment email');
+    const id = randomUUID();
+    mail.attachments = [{ id, name: 'synthetic-ledger.txt', contentType: 'text/plain', size, path, content: readFileSync(path) }];
+    return id;
+  }
   count(name: string): number { return this.calls.filter(call => call.name === name).length; }
   private tool(name: string, args: Record<string, unknown>): Record<string, unknown> {
     const account = typeof args['account'] === 'string' ? args['account'] : ''; const id = typeof args['id'] === 'string' ? args['id'] : '';
     if (name === 'add_account') { const config = args['config'] as { user?: string }; const email = typeof args['email'] === 'string' ? args['email'] : config.user; if (!email) throw new Error('Missing fixture account email'); this.accounts.add(email); return { status: 'ready', account: { provider: 'imap', email, displayName: email, state: 'connected' } }; }
     if (name === 'list_accounts') return { accounts: [...this.accounts].map(email => ({ email, provider: 'imap', displayName: email })) };
     if (!this.accounts.has(account)) throw new Error('Unknown fixture account');
+    if (name === 'read_attachment') {
+      const mail = this.mails.get(String(args['messageId']));
+      const attachment = mail?.attachments?.find(item => item.id === args['attachmentId']);
+      if (!attachment || mail?.account !== account) throw new Error('Missing scoped synthetic attachment');
+      const path = `${attachment.path}-${randomUUID()}`;
+      writeFileSync(path, attachment.content, { mode: 0o600 });
+      return { id: attachment.id, name: attachment.name, contentType: attachment.contentType, size: attachment.size, path };
+    }
     if (name === 'list_folders') return { items: ['inbox', 'archive', 'trash', 'drafts', 'sent', 'destination'].map(folder => ({ id: folder, displayName: folder, wellKnownName: folder === 'destination' ? undefined : folder })) };
     if (name === 'get_new_emails') { this.baseline.add(account); const emails = this.arrivals.get(account) ?? []; this.arrivals.set(account, []); return { emails }; }
     if (name === 'list_emails' || name === 'search_emails') { const folder = typeof args['folder'] === 'string' ? args['folder'] : 'inbox'; const mails = [...this.mails.values()].filter(mail => mail.account === account && mail.folder === folder); const skip = Number(args['skip'] ?? 0), limit = Number(args['limit'] ?? 50); return { items: mails.slice(skip, skip + limit), hasMore: skip + limit < mails.length }; }
     if (name === 'send_email') return { sent: true, id: '', email: { id: '' } }; // Graph-like empty reference: submission is not Sent proof.
     if (name === 'draft_email') { const draftId = this.arrive(account, String(args['subject']), String(args['body'])); const mail = this.mails.get(draftId); if (!mail) throw new Error('Missing created draft'); mail.folder = 'drafts'; this.arrivals.set(account, (this.arrivals.get(account) ?? []).filter(item => item.id !== draftId)); return { draft: true, id: draftId, draftHtml: String(args['body']) }; }
     const mail = this.mails.get(id); if (!mail || mail.account !== account) throw new Error('Missing fixture mail');
-    if (name === 'get_email' || name === 'read_email') return { ...mail, bodyFormat: 'text', attachments: [] };
+    if (name === 'get_email' || name === 'read_email') return { ...mail, bodyFormat: 'text',
+      attachments: (mail.attachments ?? []).map(({ id, name, contentType, size }) => ({ id, name, contentType, size })) };
     if (name === 'archive_email') { mail.folder = 'archive'; return { archived: true, id }; }
     if (name === 'trash_email') { mail.folder = 'trash'; return { trashed: true, id }; }
     if (name === 'move_email') { mail.folder = String(args['destination']); return { moved: true, id, destination: mail.folder }; }
@@ -123,9 +142,10 @@ export class ControlledMemory implements MailboxMemory, SourceHistory {
   readonly retained = new Map<string, { mailboxId: string; text: string; context: string }>();
   readonly history: { resourceId: string; threadId: string; text: string }[] = [];
   async retain(input: Parameters<MailboxMemory['retain']>[0]): Promise<void> { this.retained.set(`${input.scope.userId}:${input.scope.mailboxId}:${input.eventId}`, { mailboxId: input.scope.mailboxId, text: input.text, context: input.context }); }
-  async recall(input: Parameters<MailboxMemory['recall']>[0]): Promise<{ entries: readonly MailboxMemoryEntry[] }> { return { entries: [...this.retained.values()].filter(row => row.mailboxId === input.scope.mailboxId).slice(-20).map(row => ({ text: row.text, context: row.context })) }; }
+  async recall(input: Parameters<MailboxMemory['recall']>[0]): Promise<{ entries: readonly MailboxMemoryEntry[] }> { return { entries: [...this.retained.values()].filter(row => row.mailboxId === input.scope.mailboxId).slice(-20).reverse().map(row => ({ text: row.text, context: row.context })) }; }
   async retainFile(): Promise<void> { throw new Error('No attachment fixture configured'); }
   async deleteMailbox(scope: Parameters<MailboxMemory['deleteMailbox']>[0]): Promise<void> { for (const [key, row] of this.retained) if (row.mailboxId === scope.mailboxId) this.retained.delete(key); }
-  async readiness(): Promise<{ version: string }> { return { version: '0.9.1' }; }
+  async readiness(): Promise<{ version: string }> { return { version: '0.10.2' }; }
   async append(input: Parameters<SourceHistory['append']>[0]): Promise<void> { if (!this.history.some(row => row.threadId === input.threadId && row.text === input.text)) this.history.push(input); }
+  async observe(): Promise<void> {}
 }

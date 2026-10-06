@@ -142,20 +142,24 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
       }
 
       const runId: string = row.runId || deterministicWorkUuid(`run:${row.activityId}:1`);
-      // inputDigest covers the canonical durable envelope available before provider body read;
-      // body evidence is included separately in the legacy decision digest after read.
-      const inputDigest = createHash('sha256').update(JSON.stringify({ messageId: row.messageId,
-        providerMessageId: row.providerMessageId, sender: row.sender, subject: row.subject,
-        receivedAt: new Date(row.receivedAt).toISOString(), attachments: attachmentMetadata(row.attachments) })).digest('hex');
-      await db.query(`insert into app.agent_runs
-        (id,activity_id,user_id,account_id,sequence,manager_kind,manager_lifecycle_revision,
-         assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,mode,trigger,input_digest,
-         correlation_id,causation_id,state,created_at,started_at)
-        values($1,$2,$3,$4,1,'mastra',null,$5,$6,$7,$8,$9,'automatic',
-          jsonb_build_object('kind','arrival','messageId',$10::text),$11,'arrival:'||$2::uuid::text,$2::uuid,
-          'running',now(),now()) on conflict(id) do nothing`,
-      [runId,row.activityId,row.userId,row.accountId,row.assignmentId,row.assignmentRevision,row.grantId,
-        row.grantRevision,row.safetyRevision,row.messageId,inputDigest]);
+      // Deferred deliveries and continuations already own a canonical Run. Reuse it:
+      // BEFORE INSERT sequence guards run even when ON CONFLICT would skip the row.
+      if (!row.runId) {
+        // inputDigest covers the canonical durable envelope available before provider body read;
+        // body evidence is included separately in the legacy decision digest after read.
+        const inputDigest = createHash('sha256').update(JSON.stringify({ messageId: row.messageId,
+          providerMessageId: row.providerMessageId, sender: row.sender, subject: row.subject,
+          receivedAt: new Date(row.receivedAt).toISOString(), attachments: attachmentMetadata(row.attachments) })).digest('hex');
+        await db.query(`insert into app.agent_runs
+          (id,activity_id,user_id,account_id,sequence,manager_kind,manager_lifecycle_revision,
+           assignment_id,assignment_revision,grant_id,grant_revision,safety_revision,mode,trigger,input_digest,
+           correlation_id,causation_id,state,created_at,started_at)
+          values($1,$2,$3,$4,1,'mastra',null,$5,$6,$7,$8,$9,'automatic',
+            jsonb_build_object('kind','arrival','messageId',$10::text),$11,'arrival:'||$2::uuid::text,$2::uuid,
+            'running',now(),now())`,
+        [runId,row.activityId,row.userId,row.accountId,row.assignmentId,row.assignmentRevision,row.grantId,
+          row.grantRevision,row.safetyRevision,row.messageId,inputDigest]);
+      }
       await db.query(`update app.agent_jobs set state='running', agent_run_id=$2,
         unavailable_reason=null, last_error_code=null, attempt=case when state='pending' then attempt+1 else attempt end, updated_at=now()
         where id=$1 and (agent_run_id is null or agent_run_id=$2)`, [jobId, runId]);
@@ -242,7 +246,7 @@ export class PostgresAgentJobStore implements AgentJobStore<ClaimedAgentJob> {
 
 /** Reads provider content only after the durable job is claimed, then passes scoped text to triage. */
 export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
-  constructor(private readonly clients: { clientForUser(userId: string): Readonly<{ initialize(): Promise<unknown>; readMessage: HypermailReadClient['readMessage']; folders: HypermailReadClient['folders']; openAttachment?: HypermailReadClient['openAttachment'] }> }, private readonly triage: Pick<TriageService, 'triage'> & Partial<Pick<TriageService, 'rememberUserInstruction'>>, private readonly store: Pick<PostgresAgentJobStore, 'deferMemory' | 'failAdapter' | 'cacheBody' | 'contextualInputs' | 'memoryContextCutoff' | 'excludeRecoveryMail'>, private readonly ownerInputs: Pick<MailboxOwnerMemoryInputs, 'prepare'>, private readonly globalConstraints: string, private readonly planner?: Pick<PostgresPolicyPlanner, 'plan'>, private readonly currentEmailRetainer?: CurrentEmailMemoryRetainer, private readonly recoveryIdentity?: Pick<RecoveryMailIdentity, 'isRecoveryMail'>) {}
+  constructor(private readonly clients: { clientForUser(userId: string): Readonly<{ initialize(): Promise<unknown>; readMessage: HypermailReadClient['readMessage']; folders: HypermailReadClient['folders']; openAttachment?: HypermailReadClient['openAttachment'] }> }, private readonly triage: Pick<TriageService, 'triage'>, private readonly store: Pick<PostgresAgentJobStore, 'deferMemory' | 'failAdapter' | 'cacheBody' | 'contextualInputs' | 'memoryContextCutoff' | 'excludeRecoveryMail'>, private readonly ownerInputs: Pick<MailboxOwnerMemoryInputs, 'prepare'>, private readonly globalConstraints: string, private readonly planner?: Pick<PostgresPolicyPlanner, 'plan'>, private readonly currentEmailRetainer?: CurrentEmailMemoryRetainer, private readonly recoveryIdentity?: Pick<RecoveryMailIdentity, 'isRecoveryMail'>) {}
   async evaluate(job: ClaimedAgentJob): Promise<void> {
     let bodyText: string;
     let message: Awaited<ReturnType<HypermailReadClient['readMessage']>>;
@@ -284,8 +288,6 @@ export class DeliverAgentConsumer implements AgentJobHandler<ClaimedAgentJob> {
     }
     let outcome: Awaited<ReturnType<TriageService['triage']>>;
     try {
-      if (job.currentUserInstruction) await this.triage.rememberUserInstruction?.({ userId: job.userId,
-        accountId: job.accountId, activityId: job.activityId, instruction: job.currentUserInstruction });
       outcome = await this.triage.triage({ activityId: job.activityId, userId: job.userId, accountId: job.accountId, attempt: job.attempt, ...(job.runId ? { runId: job.runId } : {}), ...context,
         email: { messageId: job.messageId, from: job.sender, subject: job.subject, receivedAt: new Date(job.receivedAt).toISOString(), bodyText,
           attachments: job.attachments.map(({ filename, mediaType, sizeBytes }) => ({ filename, mediaType, sizeBytes })) },
@@ -459,12 +461,34 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
   const needsNativeMemory = (!factories.createTriageService && !factories.createDecisionModel) || !factories.createConversationModel || !factories.createSourceHistory;
   const storage = needsNativeMemory ? createMastraPostgresStorage(environment.DATABASE_URL) : undefined;
   const model = needsNativeMemory ? createModel(environment) : undefined;
-  const memory = storage && model ? new Memory({ storage, options: { observationalMemory: { enabled: true, scope: 'resource', model } } }) : undefined;
+  const memory = storage && model ? new Memory({ storage, options: {
+    lastMessages: false,
+    semanticRecall: false,
+    observationalMemory: { enabled: true, scope: 'thread', model,
+      observation: { manageWorkingMemory: true, messageTokens: 1, bufferTokens: false } },
+    workingMemory: {
+      enabled: true, scope: 'resource', agentManaged: false,
+      template: `# General interaction preferences
+Extract only explicit general owner preferences for interacting with the assistant.
+Never generalize an instruction limited to a mailbox. Exclude triage rules, email signatures,
+received content, secrets, permissions and account state. Assistant replies are not preferences.
+A recent explicit correction replaces the older applicable preference. Leave unspecified fields blank.
+
+## Language
+
+## Tone
+
+## Detail level
+
+## Asking questions and presenting proposals
+`,
+    },
+  } }) : undefined;
   const sourceHistory = factories.createSourceHistory?.(environment) ?? (memory ? new MastraSourceHistory(memory) : undefined);
   if (!sourceHistory) throw new Error('SOURCE_HISTORY_REQUIRED');
   const recoveryIdentity = new RecoveryMailIdentity(database);
   let decisionSql: Sql | undefined;
-  let triage: Pick<TriageService, 'triage'> & Partial<Pick<TriageService, 'rememberUserInstruction'>>;
+  let triage: Pick<TriageService, 'triage'>;
   if (factories.createTriageService) triage = factories.createTriageService(environment);
   else {
     const decisionModel = factories.createDecisionModel?.(environment)
@@ -485,7 +509,7 @@ export function composeWorkerRuntime(environment: WorkerEnvironment, factories: 
     await Promise.allSettled([decisionSql?.end({ timeout: 5 }), storage?.close()]);
   };
   const conversationStore = new ConversationStore(database);
-  const ownerInputs = new MailboxOwnerMemoryInputs(conversationStore, sourceHistory);
+  const ownerInputs = new MailboxOwnerMemoryInputs(conversationStore, sourceHistory, database);
   const conversationConsumer = new DeliverConversationConsumer(conversationStore, conversationModel, ownerInputs, mailboxMemory, async (userId, accountId, messageId) => {
     const result = await database.query<{ accountEmail: string; providerMessageId: string; sender: string; subject: string }>(`select ac.email as "accountEmail",m.provider_message_id as "providerMessageId",
       coalesce(m.sender->>'name',m.sender->>'address','') as sender,coalesce(m.subject,'') as subject

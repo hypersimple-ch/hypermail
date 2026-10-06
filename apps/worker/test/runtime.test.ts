@@ -3,7 +3,7 @@ import { ClaimingAgentConsumer, DurableNotificationRecovery, parseQueuePayload, 
 
 const env = (): WorkerEnvironment => parseWorkerEnvironment({
   DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
-  HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: 31_001,
+  HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.10.2', MODEL_PROVIDER: 'openai', MODEL_NAME: 'test', MODEL_API_KEY: 'b'.repeat(16), VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments', HEALTH_PORT: 31_001,
 });
 class FakeBoss implements BossRuntime {
   readonly handlers = new Map<string, (job: { data: unknown }) => Promise<void>>(); readonly queues: string[] = []; started = false; stopped = false;
@@ -29,7 +29,7 @@ describe('worker runtime', () => {
     })).toThrow('HYPERMAIL_PROTOCOL_VERSION');
     expect(parseWorkerEnvironment({
       DATABASE_URL: 'postgresql://localhost/hypermail', HYPERMAIL_URL: 'https://hypermail.example/mcp', HYPERMAIL_KEY: 'a'.repeat(16), HYPERMAIL_PROTOCOL_VERSION: '2025-03-26',
-      HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.9.1', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'test', VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments',
+      HINDSIGHT_URL: 'http://hindsight:8888', HINDSIGHT_EXPECTED_VERSION: '0.10.2', MODEL_PROVIDER: 'codex-cli', MODEL_NAME: 'test', VAPID_SUBJECT: 'mailto:ops@example.test', VAPID_PUBLIC_KEY: 'c'.repeat(16), VAPID_PRIVATE_KEY: 'd'.repeat(16), PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32), AGENT_GLOBAL_CONSTRAINTS: 'Never send mail.', ATTACHMENT_TEMP_DIRECTORY: '/private/attachments',
     }).MODEL_API_KEY).toBeUndefined();
     expect(() => parseQueuePayload('agent.evaluate', { jobId: 'not-a-uuid' })).toThrow('QUEUE_PAYLOAD_INVALID');
     expect(() => parseQueuePayload('agent.evaluate', { jobId: '00000000-0000-4000-8000-000000000000', extra: true })).toThrow('QUEUE_PAYLOAD_INVALID');

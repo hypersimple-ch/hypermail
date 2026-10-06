@@ -11,7 +11,7 @@ Private, single-user, Android-first email PWA with a public web/API service, pri
 - PostgreSQL 16+ for migrations and integration work
 - Google Chrome or Chromium for the responsive UI checks in `pnpm check` (`CHROME_BIN` can point to a non-standard installation)
 
-Dependencies are pinned in the manifests and lockfiles. TypeScript stays at 6.0.3 because the current `typescript-eslint` release supports TypeScript below 6.1; TypeScript 7 is not yet compatible. The local Hypermail runtime is now 0.7.27; production image approval and the historical 0.7.26 contract evidence remain separate release gates. The Hindsight client SDK is updated independently of the approved 0.9.1 server contract.
+Dependencies are pinned in the manifests and lockfiles. TypeScript stays at 6.0.3 because the current `typescript-eslint` release supports TypeScript below 6.1; TypeScript 7 is not yet compatible. The local Hypermail runtime is now 0.7.27; production image approval and the historical 0.7.26 contract evidence remain separate release gates. The Hindsight client SDK is updated independently of the approved 0.10.2 server contract.
 
 ## Workspace
 
@@ -51,6 +51,8 @@ Open <http://localhost:8080>. Local Compose applies migrations automatically and
 `pnpm dev` validates Compose configuration before inspecting or building development images, so missing env files fail immediately. If `.env.hindsight` is missing, copy `.env.hindsight.example` and replace the placeholder API key before retrying; the host Codex login is not a Hindsight provider credential.
 
 `pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
+
+The local edge network reserves `172.30.81.2` for the trusted proxy and allocates dynamic service addresses from `172.30.81.128/25`, preventing the web service from taking the proxy address on a fresh start. Another Docker network covering `172.30.81.0/24` must be resolved before startup; do not remove another project's network without its owner's approval.
 
 Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
 
