@@ -174,9 +174,15 @@ networks:
         - subnet: 172.30.81.0/24
           # Keep dynamically assigned web addresses away from the fixed proxy .2.
           ip_range: 172.30.81.128/25
-  egress: {}
+  egress:
+    ipam:
+      config:
+        - subnet: 172.30.82.0/24
   private:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.30.83.0/24
 
 volumes:
   postgres-data: {}

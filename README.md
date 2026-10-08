@@ -54,7 +54,16 @@ Open <http://localhost:8080>. Local Compose applies migrations automatically and
 
 `pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
 
-The local edge network reserves `172.30.81.2` for the trusted proxy and allocates dynamic service addresses from `172.30.81.128/25`, preventing the web service from taking the proxy address on a fresh start. Another Docker network covering `172.30.81.0/24` must be resolved before startup; do not remove another project's network without its owner's approval.
+To start with no local user data, stop any running `pnpm dev` watcher with Ctrl+C, then run:
+
+```sh
+pnpm dev:reset
+pnpm dev
+```
+
+`pnpm dev:reset` is destructive and runs without confirmation. It stops and removes the local Compose containers/networks, then deletes only project-owned PostgreSQL, Hypermail account-state, Hindsight-memory, and temporary-attachment volumes. It preserves `.env`, `.env.hindsight`, all configuration/source files, Docker images, and the `codex-home` login volume. Provider mailbox contents are not deleted. Reset does not restart services; `pnpm dev` recreates the data volumes and applies migrations. An already-empty stack can be reset again.
+
+The local networks use explicit, non-overlapping subnets: edge `172.30.81.0/24`, egress `172.30.82.0/24`, and private `172.30.83.0/24`. This prevents Docker's automatic `/16` allocation from overlapping the edge subnet during fresh startup. The edge network reserves `172.30.81.2` for the trusted proxy and allocates dynamic service addresses from `172.30.81.128/25`, preventing the web service from taking the proxy address. Existing local networks with old subnet allocations must be recreated without deleting volumes. Another project's network overlapping these subnets must be resolved with its owner's approval.
 
 Locally, Compose builds the pinned Hypermail service from `apps/hypermail`; do not set an image name. In the app, open **More → Settings** to see projected mailboxes and start owner-driven Gmail, Outlook, or IMAP onboarding. Provider tokens and IMAP passwords stay in Hypermail's encrypted persistent state, not application environment files; the web app sends IMAP credentials only to its private owner-only API and never stores, logs, or echoes them.
 
