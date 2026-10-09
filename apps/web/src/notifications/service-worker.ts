@@ -32,7 +32,7 @@ export async function displayPushNotification(rawPayload: unknown, display: Noti
 }
 
 export async function handleNotificationClick(activityId: string, clients: NotificationClients, origin: string): Promise<string> {
-  const url = new URL(`/activities/${encodeURIComponent(activityId)}`, origin).toString();
+  const url = new URL(`/activity/${encodeURIComponent(activityId)}`, origin).toString();
   if (!(await clients.focusExisting(url))) await clients.open(url);
   return url;
 }

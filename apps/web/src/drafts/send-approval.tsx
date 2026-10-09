@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { authenticatedFetch, SessionExpiredError } from '../lib/authenticated-fetch.js';
 import { z } from 'zod';
 import { draftFieldsSchema } from '@hypermail/contracts';
 import type { DraftFields } from '@hypermail/contracts';
@@ -29,7 +30,7 @@ const preparedSendSchema = z.object({
 });
 const errorResponseSchema = z.object({ error: z.object({ code: z.string() }) });
 async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
-  const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const response = await authenticatedFetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const result: unknown = await response.json();
   if (!response.ok) {
     const error = errorResponseSchema.safeParse(result);
@@ -81,6 +82,7 @@ export function SendApprovalFlow({ target, submission, disabled = false, onRefre
   const active = React.useRef(false);
   React.useEffect(() => { setPrepared(null); setConfirmation(''); setReauth(false); setConflict(false); setUncertain(false); setError(''); }, [identity]);
   const handleError = (value: unknown, confirming = false) => {
+    if (value instanceof SessionExpiredError) { if (confirming) { setPrepared(null); setUncertain(true); } return; }
     if (value instanceof SendUiError && value.code === 'FRESH_AUTH_REQUIRED') { setPrepared(null); setUncertain(false); setReauth(true); setError('Confirm your password to prepare a new snapshot. Nothing will be confirmed automatically.'); }
     else if (value instanceof SendUiError && value.status === 409) { setPrepared(null); setUncertain(false); setConflict(true); setError('This send changed or its approval expired. Reload and review before preparing again.'); }
     else { if (confirming) { setPrepared(null); setUncertain(true); } setError(confirming ? 'The submission outcome could not be read. Do not send again. Reload, then verify the provider outcome.' : 'The operation failed. Your intention and entered content are preserved.'); }
@@ -111,7 +113,7 @@ export function SendApprovalFlow({ target, submission, disabled = false, onRefre
         <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !note.trim()} onClick={() => { void run(async () => { await api.manualReview(target, submission.approvalId, 'observed_sent', note); await onRefresh(); }); }}>I observed it in Sent</Button><Button variant="outline" disabled={busy || !note.trim()} onClick={() => { void run(async () => { await api.manualReview(target, submission.approvalId, 'not_observed', note); await onRefresh(); }); }}>I did not observe it</Button></div></>}
     </section>}
     {(conflict || uncertain) && <Button variant="outline" disabled={busy} onClick={() => { void run(async () => { await onRefresh(); setConflict(false); }); }}>Reload and review</Button>}
-    {reauth && <form className="grid gap-3" onSubmit={event => { event.preventDefault(); void run(async () => { const secret = password; setPassword(''); await api.reauthenticate(secret); await prepare(); }); }}><Field><FieldLabel htmlFor={`send-password-${target.id}`}>Confirm your password</FieldLabel><Input id={`send-password-${target.id}`} type="password" autoComplete="current-password" value={password} onChange={event => { setPassword(event.target.value); }} required /></Field><Button type="submit" disabled={busy}>Authenticate and prepare again</Button></form>}
+    {reauth && <form className="grid gap-3" onSubmit={event => { event.preventDefault(); void run(async () => { await api.reauthenticate(password); await prepare(); setPassword(''); }); }}><Field><FieldLabel htmlFor={`send-password-${target.id}`}>Confirm your password</FieldLabel><Input id={`send-password-${target.id}`} type="password" autoComplete="current-password" value={password} onChange={event => { setPassword(event.target.value); }} required /></Field><Button type="submit" disabled={busy}>Authenticate and prepare again</Button></form>}
     {prepared && !outstanding && <><SendSnapshot snapshot={prepared.snapshot} /><p>Approval expires {prepared.expiresAt}. This is the exact snapshot to be submitted.</p><Button disabled={busy || disabled || !(Date.parse(prepared.expiresAt) > Date.now())} onClick={() => { void run(async () => { setUncertain(true); await api.confirm(target, prepared.approvalId, confirmation); setPrepared(null); await onRefresh(); }, true); }}>Confirm this exact send</Button><Button variant="outline" disabled={busy} onClick={() => { setPrepared(null); }}>Cancel confirmation</Button></>}
     {!prepared && !reauth && !outstanding && !uncertain && submission?.state !== 'verified' && <Button disabled={busy || disabled || conflict} onClick={() => { void run(prepare); }}>Review and send</Button>}
     {busy && <p role="status">Working…</p>}

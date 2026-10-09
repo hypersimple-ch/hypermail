@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render as testingRender, screen, waitFor } from '@t
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Settings, type MailboxConnectionResult, type SettingsMailbox, type StartMailboxConnectionInput } from '../../src/ui/settings.js';
 import { ToastProvider, toast } from '../../src/components/heroui/toast.js';
+import { SessionExpiredError } from '../../src/lib/authenticated-fetch.js';
 
 const mailboxes: readonly SettingsMailbox[] = [
   { id: 'gmail', provider: 'gmail', email: 'me@gmail.test', displayName: 'Personal', state: 'ready' },
@@ -21,6 +22,23 @@ function render(node: React.ReactElement) { return testingRender(<>{node}<ToastP
 afterEach(() => { toast.clear(); cleanup(); });
 
 describe('Settings', () => {
+  it('keeps mailbox input and pending connection handles after session expiry without provider errors', async () => {
+    const onStartConnection = vi.fn().mockRejectedValue(new SessionExpiredError());
+    const onCompleteConnection = vi.fn().mockRejectedValue(new SessionExpiredError());
+    render(<Settings mailboxes={[]} pendingConnection={pendingOutlook} onStartConnection={onStartConnection} onCompleteConnection={onCompleteConnection} />);
+    openAddMailbox();
+    fireEvent.change(screen.getByLabelText('Email address (optional)'), { target: { value: 'keep@example.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with Gmail' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Continue with Gmail' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Email address (optional)').value).toBe('keep@example.test');
+    expect(screen.queryByText('Could not connect the mailbox. Try again.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Check connection' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Check connection' }).disabled).toBe(false); });
+    expect(screen.getByText('ABCD-EFGH')).toBeTruthy();
+    expect(screen.queryByText('Could not check the connection. Try again.')).toBeNull();
+    expect(onStartConnection).toHaveBeenCalledTimes(1);
+    expect(onCompleteConnection).toHaveBeenCalledTimes(1);
+  });
   it('renders an empty mailbox state and a back path', () => {
     const onBack = vi.fn();
     render(<Settings mailboxes={[]} onBack={onBack} />);

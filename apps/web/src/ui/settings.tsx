@@ -1,3 +1,4 @@
+import { SessionExpiredError } from '../lib/authenticated-fetch.js';
 import * as React from 'react';
 import { Link } from '@heroui/react/link';
 import { ArrowLeft, ExternalLink, Plus } from 'lucide-react';
@@ -14,6 +15,7 @@ import { Spinner } from '@/components/heroui/spinner.js';
 import { MailboxManagerSettings, type ManagerMutations } from '../mailbox-managers/index.js';
 import type { ManagerSettingsView } from '../agent-connections/contracts.js';
 import { AppPage, PageHeader, StatePanel } from '@/components/app/patterns.js';
+import { NotificationSettings } from '../notifications/settings.js';
 
 export type MailboxProvider = 'microsoft' | 'gmail' | 'imap';
 export type MailboxState = 'pending' | 'ready' | 'degraded' | 'disabled';
@@ -112,7 +114,7 @@ function AddMailboxForm({ disabled, onStart }: { disabled: boolean; onStart: (in
   setValidationError('');
   if (provider !== 'imap') {
     const email = formText(form, 'email').trim();
-    void onStart({ provider: provider === 'outlook' ? 'microsoft' : 'gmail', ...(email ? { email } : {}) }).finally(() => { formRef.current?.reset(); });
+    void onStart({ provider: provider === 'outlook' ? 'microsoft' : 'gmail', ...(email ? { email } : {}) }).then(() => { formRef.current?.reset(); }).catch((failure: unknown) => { if (!(failure instanceof SessionExpiredError)) formRef.current?.reset(); });
     return;
   }
   const email = formText(form, 'imap-email').trim();
@@ -126,7 +128,7 @@ function AddMailboxForm({ disabled, onStart }: { disabled: boolean; onStart: (in
     setValidationError('Enter the required IMAP details and a valid port.');
     return;
   }
-  void onStart({ provider: 'imap', imap: { email, imapHost, imapPort, imapTls: form.get('imap-tls') === 'on', username, password, ...(smtpHost ? { smtpHost, smtpPort: Number(smtpPortText), smtpTls: form.get('smtp-tls') === 'on' } : {}) } }).finally(() => { formRef.current?.reset(); }); };
+  void onStart({ provider: 'imap', imap: { email, imapHost, imapPort, imapTls: form.get('imap-tls') === 'on', username, password, ...(smtpHost ? { smtpHost, smtpPort: Number(smtpPortText), smtpTls: form.get('smtp-tls') === 'on' } : {}) } }).then(() => { formRef.current?.reset(); }).catch((failure: unknown) => { if (!(failure instanceof SessionExpiredError)) formRef.current?.reset(); }); };
   return <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-3"><CardTitle>Add mailbox</CardTitle><CardDescription>Choose a provider and follow its connection steps.</CardDescription></CardHeader><CardContent className="px-4 pb-4"><form ref={formRef} noValidate onSubmit={submit} className="space-y-4">
     <Field><Select id="mailbox-provider" label="Provider" value={provider} onValueChange={(selected) => { setProvider(selected as AddMailboxProvider); setValidationError(''); }} disabled={disabled} options={[{ value: 'gmail', label: 'Gmail' }, { value: 'outlook', label: 'Outlook' }, { value: 'imap', label: 'IMAP' }]} /></Field>
     {provider !== 'imap' ? <Field><FieldLabel htmlFor="provider-email">Email address (optional)</FieldLabel><Input id="provider-email" name="email" type="email" autoComplete="email" placeholder="name@example.com" disabled={disabled} /><FieldDescription>Used to identify the mailbox while you connect it.</FieldDescription></Field> : <FieldSet disabled={disabled}><Field><FieldLabel htmlFor="imap-email">Mailbox email</FieldLabel><Input id="imap-email" name="imap-email" type="email" autoComplete="email" required disabled={disabled} /></Field><div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]"><Field><FieldLabel htmlFor="imap-host">IMAP host</FieldLabel><Input id="imap-host" name="imap-host" autoComplete="off" required disabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-port">IMAP port</FieldLabel><Input id="imap-port" name="imap-port" type="number" min="1" max="65535" defaultValue="993" required disabled={disabled} /></Field></div><Field><Checkbox name="imap-tls" label="Use TLS for IMAP" defaultSelected isDisabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-username">Username</FieldLabel><Input id="imap-username" name="imap-username" autoComplete="username" required disabled={disabled} /></Field><Field><FieldLabel htmlFor="imap-password">Password</FieldLabel><Input id="imap-password" name="imap-password" type="password" autoComplete="current-password" required disabled={disabled} /><FieldDescription>Your password is used only to connect this mailbox.</FieldDescription></Field><Separator /><p className="text-sm font-medium">SMTP (optional)</p><div className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_8rem]"><Field><FieldLabel htmlFor="smtp-host">SMTP host</FieldLabel><Input id="smtp-host" name="smtp-host" autoComplete="off" disabled={disabled} /></Field><Field><FieldLabel htmlFor="smtp-port">SMTP port</FieldLabel><Input id="smtp-port" name="smtp-port" type="number" min="1" max="65535" defaultValue="587" disabled={disabled} /></Field></div><Field><Checkbox name="smtp-tls" label="Use TLS for SMTP" defaultSelected isDisabled={disabled} /></Field></FieldSet>}
@@ -149,11 +151,12 @@ export function Settings({ mailboxes, onBack, onStartConnection, onCompleteConne
     if (result.state === 'pending') setPending(result.pending);
     else if (result.state === 'ready' || result.state === 'expired') setPending(undefined);
   };
-  const start = async (input: StartMailboxConnectionInput) => { if (!onStartConnection) return; setBusy(true); try { applyResult(await onStartConnection(input)); } catch { toast.danger('Could not connect the mailbox. Try again.'); } finally { setBusy(false); } };
-  const complete = (input: CompleteMailboxConnectionInput) => { if (!onCompleteConnection) return; setBusy(true); void onCompleteConnection(input).then(applyResult).catch(() => { toast.danger('Could not check the connection. Try again.'); }).finally(() => { setBusy(false); }); };
+  const start = async (input: StartMailboxConnectionInput) => { if (!onStartConnection) return; setBusy(true); try { applyResult(await onStartConnection(input)); } catch (failure) { if (failure instanceof SessionExpiredError) throw failure; toast.danger('Could not connect the mailbox. Try again.'); } finally { setBusy(false); } };
+  const complete = (input: CompleteMailboxConnectionInput) => { if (!onCompleteConnection) return; setBusy(true); void onCompleteConnection(input).then(applyResult).catch((failure: unknown) => { if (!(failure instanceof SessionExpiredError)) toast.danger('Could not check the connection. Try again.'); }).finally(() => { setBusy(false); }); };
   return <AppPage aria-label="Settings"><PageHeader title="Settings" description="Connected mailboxes" actions={<>{onBack ? <Button type="button" variant="ghost" onClick={onBack}><ArrowLeft aria-hidden="true" />More</Button> : null}<Button type="button" onClick={() => { setAdding((value) => !value); }} disabled={busy}><Plus aria-hidden="true" />Add mailbox</Button></>} /><div className="mt-6 space-y-4">
     <section aria-labelledby="connected-mailboxes"><h2 id="connected-mailboxes" className="text-lg font-semibold">Current mailboxes</h2>{mailboxes.length ? <div className="mt-3 space-y-3">{mailboxes.map((mailbox) => <Card key={mailbox.id} className="gap-0 py-0"><CardContent className="flex min-w-0 flex-wrap items-center justify-between gap-3 px-4 py-4"><div className="min-w-0"><strong className="block truncate">{mailbox.displayName || mailbox.email}</strong><p className="mt-1 truncate text-sm text-muted-foreground">{providerLabel[mailbox.provider]} · {mailbox.email}</p></div><Badge variant={stateVariant[mailbox.state]}>{stateLabel[mailbox.state]}</Badge></CardContent></Card>)}</div> : <StatePanel className="mt-3" title="No mailboxes connected." description="Add Gmail, Outlook, or an IMAP mailbox to get started." />}</section>
     {managerSettings && managerMutations ? <MailboxManagerSettings settings={managerSettings} mutations={managerMutations} online={online} /> : null}
     {pending ? <PendingConnection pending={pending} disabled={busy || !onCompleteConnection} onComplete={complete} /> : null}{adding ? <AddMailboxForm disabled={busy || !onStartConnection} onStart={start} /> : null}
+    <NotificationSettings />
   </div></AppPage>;
 }

@@ -37,7 +37,7 @@ setTimeout(() => {
   const desktop = document.querySelector<HTMLElement>('section[aria-label="Desktop mailbox"]');
   const desktopInbox = desktop ? visible('[aria-label="Inbox"]', desktop) : undefined;
   const desktopReader = desktop ? visible('[aria-label="Message detail"]', desktop) : undefined;
-  const mobileReader = visible('main > div [aria-label="Message detail"]');
+  const mobileReader = innerWidth < 700 ? visible('section[aria-label="Desktop mailbox"] [aria-label="Message detail"]') : undefined;
   const more = visible('section[aria-label="More"]');
   const moreGrid = more ? Array.from(more.children).find((element) => getComputedStyle(element).display === 'grid') : undefined;
   const moreButtons = moreGrid ? Array.from(moreGrid.querySelectorAll<HTMLButtonElement>(':scope > button')) : [];

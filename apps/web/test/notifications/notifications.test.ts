@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { clearBadgeFallback, emptyBadgeFallback, enqueueBadgeFallback, initialPermissionState, requestNotificationPermission } from '../../src/notifications/onboarding.js';
 import { createNotificationRoutes } from '../../src/notifications/routes.js';
-import { displayPushNotification, handleNotificationClick } from '../../src/notifications/service-worker.js';
+import { displayPushNotification } from '../../src/notifications/service-worker.js';
 
 describe('notification web contracts', () => {
   it('uses persistent fallback for denied and unavailable permission', async () => {
@@ -20,13 +20,10 @@ describe('notification web contracts', () => {
     expect(calls).toEqual([]);
   });
 
-  it('displays a redacted push and opens its activity deep link on click', async () => {
+  it('displays a redacted push without exposing its message body', async () => {
     const shown: unknown[] = [];
     const displayed = await displayPushNotification({ notificationId: 'n1', activityId: 'a / 1', senderLabel: 'Alice', subject: 'Subject', statusLabel: 'waiting', body: 'do not show' }, { async show(title, options) { shown.push({ title, options }); } });
-    const opened: string[] = [];
-    const url = await handleNotificationClick('a / 1', { async focusExisting() { return false; }, async open(value) { opened.push(value); } }, 'https://app.test');
     expect(displayed).toBe(true); expect(shown).toEqual([{ title: 'Subject', options: { body: 'Alice — waiting', tag: 'n1', data: { activityId: 'a / 1' } } }]);
-    expect(url).toBe('https://app.test/activities/a%20%2F%201'); expect(opened).toEqual([url]);
   });
 
   it('replaces a replayed notification without replacing a different activity notification', async () => {

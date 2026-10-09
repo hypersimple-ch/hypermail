@@ -1,7 +1,9 @@
+import { SessionExpiredError } from '../lib/authenticated-fetch.js';
 import * as React from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Badge } from '@/components/heroui/badge.js';
 import { Button } from '@/components/heroui/button.js';
+import { Alert, AlertDescription } from '@/components/heroui/alert.js';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/heroui/card.js';
 import { Field, FieldError, FieldLabel } from '@/components/heroui/field.js';
 import { Textarea } from '@/components/heroui/textarea.js';
@@ -26,16 +28,22 @@ export type ActivityScreenProps = Readonly<{
   filter?: ActivityFilter;
   onFilterChange?: (filter: ActivityFilter) => void;
   onOpen?: (activity: ActivityRecord) => void;
+  onLoadMore?: (() => void) | undefined;
+  loadingMore?: boolean | undefined;
+  loading?: boolean | undefined;
+  error?: string | undefined;
+  onRetry?: (() => void) | undefined;
 }>;
 
 /** SSR-safe list surface: all mutations are supplied by the host, never initiated during render. */
-export function ActivityScreen({ page, filter = 'new', onFilterChange, onOpen }: ActivityScreenProps): React.JSX.Element {
+export function ActivityScreen({ page, filter = 'new', onFilterChange, onOpen, onLoadMore, loadingMore = false, loading = false, error, onRetry }: ActivityScreenProps): React.JSX.Element {
   const filters: FilterOption<ActivityFilter>[] = activityFilters.map((value) => ({ value, label: labels[value], count: page.counts[value] }));
   return <AppPage aria-label="Activity"><PageContainer measure="reading" className="grid gap-4">
     <PageHeader title="Activity" description="Agent work and exceptions" />
     <FilterGroup label="Activity filters" value={filter} options={filters} onChange={(value) => onFilterChange?.(value)} />
     <p className="sr-only" aria-live="polite">{labels[filter]} filter, {page.items.length} items shown.</p>
-    {page.items.length === 0 ? <StatePanel title={`No ${labels[filter].toLocaleLowerCase()} activity.`} /> : <ol className="grid list-none gap-3 p-0 m-0">
+    {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription>{onRetry ? <Button type="button" variant="outline" disabled={loadingMore || loading} onClick={onRetry}>Try again</Button> : null}</Alert> : null}
+    {loading && page.items.length === 0 ? <StatePanel title="Loading activity…" loading /> : page.items.length === 0 ? error ? null : <StatePanel title={`No ${labels[filter].toLocaleLowerCase()} activity.`} /> : <ol className="grid list-none gap-3 p-0 m-0">
       {page.items.map((activity) => <li key={activity.id}>
         <Card className="gap-4 py-4">
           <CardContent className="grid min-w-0 gap-3 px-4 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
@@ -46,6 +54,7 @@ export function ActivityScreen({ page, filter = 'new', onFilterChange, onOpen }:
         </Card>
       </li>)}
     </ol>}
+    {page.nextCursor ? <Button type="button" variant="outline" disabled={loadingMore || loading} onClick={onLoadMore}>{loadingMore ? 'Loading…' : 'Load more'}</Button> : null}
   </PageContainer></AppPage>;
 }
 
@@ -53,7 +62,7 @@ export type ActivityDetailProps = Readonly<{
   activity: ActivityRecord;
   onRetry?: (activity: ActivityRecord) => void;
   onAcknowledge?: (activity: ActivityRecord) => void;
-  onOpenMessage?: (messageId: string) => void;
+  onOpenMessage?: (accountId: string, messageId: string) => void;
   onDiscussMessage?: (accountId: string, messageId: string) => void;
   onAnswerQuestion?: (question: NonNullable<ActivityRecord['question']>, answer: string) => Promise<void> | void;
   onReview?: AgentUiHandlers['onReview'];
@@ -75,7 +84,7 @@ export function ActivityDetail({ activity, onRetry, onAcknowledge, onOpenMessage
     {activity.runs ? <Card aria-label="Agent work history"><CardHeader><CardTitle>Agent work history</CardTitle><CardDescription>Immutable Runs and authorized mailbox Actions.</CardDescription></CardHeader><CardContent className="min-w-0"><ol className="grid min-w-0 gap-3">{activity.runs.map((run)=><li className="min-w-0 break-words" key={run.id}><strong>Run {run.sequence}</strong> · {run.state}{run.outcome?` · ${run.outcome}`:''}<br/><span className="text-sm text-muted-foreground">{run.managerKind} · {run.mode} · assignment r{run.assignmentRevision} · grant r{run.grantRevision} · safety r{run.safetyRevision}</span><ul className="mt-1 grid gap-1 pl-5">{activity.actions?.filter((item)=>item.runId===run.id).map((item)=><li className="break-words" key={item.id}>{item.kind}: {item.state} · authorization r{item.authorizationRevision}{item.verification?` · verified by ${item.verification.verifier}`:''}</li>)}</ul></li>)}</ol></CardContent></Card> : null}
     <Card><CardHeader><CardTitle>Timeline</CardTitle></CardHeader><CardContent className="min-w-0"><ol className="grid gap-3">{activity.timeline.map((event) => <li className="min-w-0 break-words" key={event.id}><time className="block text-sm text-muted-foreground" dateTime={event.at}>{event.at}</time>{event.label}{event.detail ? `: ${event.detail}` : ''}</li>)}</ol></CardContent></Card>
     {activity.messageId && onDiscussMessage ? <Button type="button" variant="outline" onClick={() => { if (activity.messageId) onDiscussMessage(activity.accountId, activity.messageId); }}>Discuss this mail</Button> : null}
-    <Card><CardFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">{activity.messageId ? <Button type="button" variant="outline" onClick={() => onOpenMessage?.(activity.messageId as string)}>Open original message</Button> : null}<Button type="button" disabled={acknowledgementReason !== null || pendingAction === 'acknowledge'} aria-describedby={acknowledgementReason ? 'activity-acknowledgement-reason' : undefined} onClick={() => onAcknowledge?.(activity)}>{pendingAction === 'acknowledge' ? 'Acknowledging…' : 'Acknowledge'}</Button>{acknowledgementReason ? <p id="activity-acknowledgement-reason" role="status" className="w-full text-sm text-muted-foreground">{acknowledgementReason}</p> : null}</CardFooter></Card>
+    <Card><CardFooter className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">{activity.messageId ? <Button type="button" variant="outline" onClick={() => { if (activity.messageId) onOpenMessage?.(activity.accountId, activity.messageId); }}>Open original message</Button> : null}<Button type="button" disabled={acknowledgementReason !== null || pendingAction === 'acknowledge'} aria-describedby={acknowledgementReason ? 'activity-acknowledgement-reason' : undefined} onClick={() => onAcknowledge?.(activity)}>{pendingAction === 'acknowledge' ? 'Acknowledging…' : 'Acknowledge'}</Button>{acknowledgementReason ? <p id="activity-acknowledgement-reason" role="status" className="w-full text-sm text-muted-foreground">{acknowledgementReason}</p> : null}</CardFooter></Card>
   </article></PageContainer></AppPage>;
 }
 
@@ -91,8 +100,8 @@ function QuestionCard({ question, onAnswer }: { question: NonNullable<ActivityRe
   setError('');
   void Promise.resolve(onAnswer(question, answer.trim())).then(() => {
     toast.success('Answer recorded. A continuation Run will appear in Agent work history.');
-  }).catch(() => {
-    setError('Could not record the answer. Your text is still here; reconnect and try again.');
+  }).catch((failure: unknown) => {
+    if (!(failure instanceof SessionExpiredError)) setError('Could not record the answer. Your text is still here; reconnect and try again.');
   }).finally(() => {
     setPending(false);
   }); };

@@ -7,6 +7,7 @@ import type { PreparedSend, SendApprovalApi } from '../../src/drafts/send-approv
 import { DraftCompose } from '../../src/drafts/surfaces.js';
 import type { DraftComposeProps } from '../../src/drafts/surfaces.js';
 import type { DraftRecord } from '../../src/drafts/contracts.js';
+import { SessionExpiredError } from '../../src/lib/authenticated-fetch.js';
 const target = { kind: 'draft' as const, id: 'draft-1', version: 1 };
 const snapshot: PreparedSend['snapshot'] = { accountId: 'mailbox-1', recipients: [{ kind: 'to', address: 'to@example.com' }, { kind: 'bcc', address: 'hidden@example.com' }], subject: 'Exact subject', body: '<img src="https://remote.invalid/pixel">', bodyFormat: 'html' };
 const prepared: PreparedSend = { approvalId: 'approval-1', expiresAt: '2099-01-01T00:00:00Z', snapshot };
@@ -15,6 +16,58 @@ function fixture() {
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('owner send approval', () => {
+  it.each(['FRESH_AUTH_REQUIRED', 'INVALID_PASSWORD'])('keeps a valid-session HTTP 401 as the send-local %s error', async (code) => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/v1/session') return Promise.resolve(Response.json({ ownerEmail: 'owner@example.test', accounts: [] }));
+      return Promise.resolve(Response.json({ error: { code } }, { status: 401 }));
+    }));
+    const operation = code === 'FRESH_AUTH_REQUIRED'
+      ? sendApprovalHttpApi.confirm(target, prepared.approvalId, 'confirmation')
+      : sendApprovalHttpApi.reauthenticate('wrong-password');
+    await expect(operation).rejects.toMatchObject({ code, status: 401 });
+  });
+  it('never allows another confirmation or preparation after session expiry during a send', async () => {
+    const user = userEvent.setup(); const api = fixture();
+    api.confirm.mockRejectedValue(new SessionExpiredError());
+    render(<SendApprovalFlow target={target} api={api} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm this exact send' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Reload and review' }).disabled).toBe(false); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm this exact send' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review and send' })).toBeNull();
+    expect(api.confirm).toHaveBeenCalledTimes(1);
+    expect(api.prepare).toHaveBeenCalledTimes(1);
+  });
+  it.each([new SessionExpiredError(), new SendUiError('INVALID_PASSWORD', 401)])('preserves the entered reauthentication password on failure (%s)', async (failure) => {
+    const user = userEvent.setup(); const api = fixture();
+    api.prepare.mockRejectedValueOnce(new SendUiError('FRESH_AUTH_REQUIRED', 401));
+    api.reauthenticate.mockRejectedValue(failure);
+    render(<SendApprovalFlow target={target} api={api} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await user.type(await screen.findByLabelText('Confirm your password'), 'keep-this-password');
+    await user.click(screen.getByRole('button', { name: 'Authenticate and prepare again' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Authenticate and prepare again' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Confirm your password').value).toBe('keep-this-password');
+    expect(Boolean(screen.queryByRole('alert'))).toBe(!(failure instanceof SessionExpiredError));
+    expect(api.prepare).toHaveBeenCalledTimes(1);
+    expect(api.confirm).not.toHaveBeenCalled();
+  });
+  it('preserves composer text without a save conflict on session expiry', async () => {
+    const user = userEvent.setup();
+    const draft: DraftRecord = { ...snapshot, id: target.id, sourceMessageId: null, createdBy: 'user', state: 'editing', version: 1, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+    const save = vi.fn<NonNullable<DraftComposeProps['onAutosave']>>().mockRejectedValue(new SessionExpiredError());
+    render(<DraftCompose draft={draft} revisions={[]} onAutosave={save} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.clear(screen.getByLabelText('Subject'));
+    await user.type(screen.getByLabelText('Subject'), 'Keep this local edit');
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Save draft' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Subject').value).toBe('Keep this local edit');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reload saved version and compare' })).toBeNull();
+    expect(save).toHaveBeenCalledTimes(1);
+  });
   it.each([
     null,
     { ...prepared, snapshot: null },
