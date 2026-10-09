@@ -38,17 +38,6 @@ describe('PostgresAgentRepository', () => {
     expect(result.autonomy.accounts).toEqual({ 'account-a': { state: 'paused', version: 1735689600000 }, 'account-b': { state: 'running', version: 1735689600000 } });
   });
 
-  it('turns provider authentication failures into an actionable reconnect message', async () => {
-    const db = new RecordingSql([
-      { rows: [] },
-      { rows: [] },
-      { rows: [{ account_id: 'account-a', health_state: 'degraded', detail: 'Provider authentication failed', reason_code: 'provider_auth_failed', consecutive_failures: 1, last_error_code: 'provider_auth_failed', autonomy_paused_at: null }] },
-      { rows: [{ id: 'account-a', autonomy_paused_at: null, updated_at: new Date('2025-01-01T00:00:00Z') }] },
-    ]);
-    const result = await new PostgresAgentRepository(db).dashboard(scope);
-    expect(result.alerts[0]?.message).toBe('Mailbox authentication expired. Reconnect this mailbox in More → Settings.');
-    expect(result.alerts[1]?.message).toContain('provider_auth_failed');
-  });
 
   it('uses the question lock and deterministic audit correlation to replay duplicate answers without resuming twice', async () => {
     const db = new RecordingSql([

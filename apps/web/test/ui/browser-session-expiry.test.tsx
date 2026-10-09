@@ -172,8 +172,8 @@ describe('explicit browser session-expiry recovery', () => {
   it('keeps a wrong current password local when session validation still succeeds', async () => {
     installFetch((url, init) => url.pathname === '/api/v1/auth/password' && init?.method === 'POST' ? Promise.resolve(expired()) : undefined);
     await mount();
-    fireEvent.click(screen.getAllByRole('button', { name: 'More', exact: true })[0] as HTMLElement);
-    fireEvent.click(await screen.findByRole('button', { name: /Account/ }));
+    fireEvent.click(within(screen.getByRole('complementary', { name: 'Mailbox navigation' })).getByRole('button', { name: 'Account and settings' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Account & security/ }));
     fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'wrong password' } });
     fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'new password value' } });
     fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'new password value' } });

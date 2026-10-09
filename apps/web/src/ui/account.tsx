@@ -78,8 +78,8 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
     });
   };
 
-  return <AppPage aria-label="Account"><PageContainer measure="form">
-    <PageHeader title="Account" description="Private owner settings" actions={<Button type="button" variant="ghost" size="sm" onClick={onBack} disabled={pending}><ArrowLeft aria-hidden="true" />More</Button>} />
+  return <AppPage aria-label="Account & security"><PageContainer measure="form">
+    <PageHeader title="Account & security" description="Your private owner identity and sign-in security." actions={<Button type="button" variant="ghost" size="sm" onClick={onBack} disabled={pending}><ArrowLeft aria-hidden="true" />Back to inbox</Button>} />
     <div className="mt-6 space-y-4">
       <Card className="gap-0 py-0">
         <CardHeader className="px-4 pt-4 pb-0"><CardTitle>Owner identity</CardTitle><CardDescription>This email identifies the private owner account.</CardDescription></CardHeader>

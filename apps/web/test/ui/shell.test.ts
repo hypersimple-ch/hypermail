@@ -1,21 +1,12 @@
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { destinationForScreen, Drafts, Sent } from '../../src/ui/index.js';
+import { Drafts, Sent } from '../../src/ui/index.js';
 import type { DraftRecord } from '../../src/drafts/contracts.js';
 
 const render = (node: React.ReactElement) => renderToStaticMarkup(node);
 
 describe('responsive shell rendering contracts', () => {
-
-  it('maps detail screens to their primary route families', () => {
-    expect(destinationForScreen('message')).toBe('inbox');
-    expect(destinationForScreen('activity-detail')).toBe('activity');
-    for (const screen of ['settings', 'account', 'pending-sends'] as const) expect(destinationForScreen(screen)).toBe('more');
-    expect(destinationForScreen('compose')).toBeUndefined();
-  });
-
-
   it('keeps editable drafts distinct from read-only sent records', () => {
     const draft: DraftRecord = { id: 'd1', accountId: 'a1', sourceMessageId: null, createdBy: 'user', recipients: [{ kind: 'to', address: 'person@example.test' }], subject: 'Follow up', body: '', bodyFormat: 'markdown', state: 'editing', createdAt: '', updatedAt: '', version: 4 };
     const drafts: DraftRecord[] = [draft, { ...draft, id: 's1', state: 'sent', subject: 'Delivered' }];

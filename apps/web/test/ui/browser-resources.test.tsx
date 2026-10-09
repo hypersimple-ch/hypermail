@@ -105,8 +105,7 @@ describe('browser resource generations', () => {
     });
     entryLoad = import('../../src/browser.js'); await entryLoad;
     await waitFor(() => { expect(collectionReads).toBe(1); }, { timeout: 10_000 });
-    navigate('More');
-    fireEvent.click(within(app).getByRole('button', { name: /^Pending sends/ }));
+    fireEvent.click(within(within(app).getByRole('navigation', { name: 'Primary', exact: true })).getByRole('button', { name: /^Approvals/ }));
     fireEvent.click(await within(app).findByRole('button', { name: 'Reject send request' }));
     await waitFor(() => { expect(collectionReads).toBe(2); });
     navigate('Drafts');

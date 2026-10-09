@@ -9,7 +9,7 @@ Use **Inbox-led calm utility**. Inbox is the familiar default; Activity is a sep
 
 ## Foundations
 
-- **Theme:** light only. White `#FFFFFF` surfaces on off-white `#F6F6F5` ground, with `#E2E2E0` borders and charcoal `#252525` ink. No elevation except the Compose FAB's minimal 2px shadow.
+- **Theme:** light only. White `#FFFFFF` surfaces on off-white `#F6F6F5` ground, with `#E2E2E0` borders and charcoal `#252525` ink. Explicit borders and no field, card, or action shadows; Assistant overlays use a dimmed/blurred backdrop instead of elevation.
 - **Type:** system UI stack. Message sender and selected titles use 700; subjects use 500; snippets and metadata use 400. Never use weight alone to convey state.
 - **Shape:** 8px controls, 12px cards, 999px filters. Avoid large rounded containers.
 - **Spacing:** 4px base; row padding 12px mobile / 13px desktop; 8px control gaps; 14–18px screen gutters.
@@ -47,9 +47,9 @@ Do not use blue as a primary, selected, or informational state. Green, amber, an
 
 ### App navigation
 
-**Mobile (<700px):** fixed four-item tab bar: Inbox, Activity, Drafts, More. Activity may carry a numeric badge. The Compose FAB sits above/right of the bar and has an accessible “Compose” name.
+**Mobile (<700px):** sticky brand/Compose/owner header and fixed five-item tab bar: Inbox, Drafts, Sent, Approvals, Activity. Approvals alone carries the known pending-owner count. A 56px Assistant FAB clears the bar and safe area; Compose is not floating.
 
-**Desktop (>=700px):** fixed 220px left rail with Compose and destinations. Inbox uses a 385px message list and a remaining-width reader. Compose, Activity, Drafts, Sent, and More use the full area remaining after the rail; they are never constrained to Inbox's list column.
+**Desktop (>=700px):** 240px rail with 16px padding, full-width Compose, five destinations, and owner menu footer. At 700–1023px show one mail pane; at >=1024px use a 360px list and remaining-width reader. Other screens occupy the full remaining workspace, mounted once. Assistant is a persistent centered modal, up to 960×760px with 32px desktop viewport gutters; mobile uses 12px plus safe-area gutters. Reduced motion opens immediately; backdrop blur is optional and dimming remains.
 
 ### Message row and projections
 

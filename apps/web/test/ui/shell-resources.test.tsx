@@ -41,7 +41,7 @@ it('retains successful Activity rows on a refresh failure with an explicit retry
   expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
 });
 
-it.each([['drafts', 'No drafts yet.'], ['sent', 'No sent messages.'], ['pending-sends', 'No send requests are waiting.']] as const)('does not present %s as empty while sending is unavailable and recovers after retry', async (destination, empty) => {
+it.each([['drafts', 'No drafts yet.'], ['sent', 'No sent messages.'], ['pending-sends', 'No requests need your approval.']] as const)('does not present %s as empty while sending is unavailable and recovers after retry', async (destination, empty) => {
   const user = userEvent.setup();
   const retry = vi.fn();
   const props = { data, initialScreen: destination as Screen, onRefreshSendRequests: () => Promise.resolve(), onRetrySending: retry };
@@ -69,7 +69,7 @@ it('keeps pending send review available during a collection refresh failure', ()
   expect(screen.getByRole('button', { name: 'Review and send' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Reject send request' })).toBeTruthy();
   expect(screen.getByText('Could not load sending.')).toBeTruthy();
-  expect(screen.queryByText('No send requests are waiting.')).toBeNull();
+  expect(screen.queryByText('No requests need your approval.')).toBeNull();
 });
 
 it('keeps unsaved draft fields mounted when independent resource refreshes fail or update the saved projection', async () => {
@@ -108,8 +108,10 @@ it('keeps Inbox and Settings usable when both secondary collections fail', async
   expect(screen.getByText('Select or connect a mailbox.')).toBeTruthy();
   expect(screen.queryByText('Activity unavailable.')).toBeNull();
   expect(screen.queryByText('Sending unavailable.')).toBeNull();
-  await user.click(within(screen.getByRole('navigation', { name: 'Mobile primary' })).getByRole('button', { name: 'More' }));
-  await user.click(screen.getByRole('button', { name: /^Settings/ }));
-  expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+  const ownerMenuTrigger = screen.getAllByRole('button', { name: 'Account and settings' })[0];
+  if (!ownerMenuTrigger) throw new Error('Expected the owner menu trigger');
+  await user.click(ownerMenuTrigger);
+  await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /Mailboxes & agents/ }));
+  expect(screen.getByRole('heading', { name: 'Mailboxes & agents' })).toBeTruthy();
   expect(screen.queryByText('Could not load mail.')).toBeNull();
 });

@@ -39,12 +39,9 @@ describe('Settings', () => {
     expect(onStartConnection).toHaveBeenCalledTimes(1);
     expect(onCompleteConnection).toHaveBeenCalledTimes(1);
   });
-  it('renders an empty mailbox state and a back path', () => {
-    const onBack = vi.fn();
-    render(<Settings mailboxes={[]} onBack={onBack} />);
+  it('renders an empty mailbox state', () => {
+    render(<Settings mailboxes={[]} />);
     expect(screen.getByText('No mailboxes connected.')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'More' }));
-    expect(onBack).toHaveBeenCalledOnce();
   });
 
   it('lists projected mailboxes with written ready and degraded states', () => {

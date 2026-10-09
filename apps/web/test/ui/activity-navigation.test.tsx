@@ -29,7 +29,8 @@ const ui = () => within(app);
 const activityDetail = (id: string) => ui().findByRole('article', { name: `Activity detail: Work ${id}` });
 const activityList = () => within(ui().getByRole('region', { name: 'Activity' }));
 const primary = () => within(ui().getByRole('navigation', { name: 'Primary' }));
-const backToActivity = () => fireEvent.click(within(ui().getByRole('region', { name: 'Desktop mailbox' })).getByRole('button', { name: 'Activity', exact: true }));
+const backToActivity = () => fireEvent.click(within(ui().getByRole('region', { name: 'Workspace' })).getByRole('button', { name: 'Activity', exact: true }));
+const assistant = () => within(document.body).findByRole('dialog', { name: 'Assistant' });
 
 type HttpFixture = (url: URL, init?: RequestInit) => Promise<Response> | undefined;
 function installFetch(fixture: HttpFixture): void {
@@ -53,7 +54,7 @@ function installFetch(fixture: HttpFixture): void {
 async function mount(path = '/'): Promise<void> {
   history.replaceState(null, '', path);
   entryLoad = import('../../src/browser.js'); await entryLoad;
-  await ui().findByRole('region', { name: 'Desktop mailbox' }, { timeout: 10_000 });
+  await ui().findByRole('region', { name: 'Workspace', hidden: true }, { timeout: 10_000 });
 }
 function applyHistory(path: string, state: unknown = null): void {
   act(() => { history.pushState(state, '', path); window.dispatchEvent(new PopStateEvent('popstate', { state })); });
@@ -81,7 +82,7 @@ describe('Activity detail navigation and recovery', () => {
     installFetch(() => undefined);
     await mount('/');
     applyHistory('/', { screen: 'message' });
-    expect(ui().getByText('Viewing inbox')).toBeTruthy();
+    expect(primary().getByRole('button', { name: 'Inbox' }).getAttribute('aria-current')).toBe('page');
     expect(await ui().findByText('Inbox-only message')).toBeTruthy();
   }, browserTimeout);
 
@@ -138,17 +139,28 @@ describe('Activity detail navigation and recovery', () => {
     expect(ui().getByText(`Completed ${id}`)).toBeTruthy();
   }, browserTimeout);
 
-  it('applies every canonical route, unknown paths, and root history screen state', async () => {
+  it('applies canonical routes and root screen state while preserving the minimized Assistant', async () => {
     installFetch(url => url.pathname === '/api/v1/activities/route' ? Promise.resolve(detail(record('route'))) : undefined);
     await mount('/chat/thread');
-    expect(await ui().findByText('Conversation body thread')).toBeTruthy();
-    applyHistory('/'); expect(await ui().findByRole('region', { name: 'Inbox' })).toBeTruthy();
-    expect(ui().queryByRole('region', { name: 'Chat' })).toBeNull();
+    const dialog = within(await assistant());
+    expect(await dialog.findByText('Conversation body thread')).toBeTruthy();
+    const composer = dialog.getByRole('textbox', { name: 'Votre message' });
+    fireEvent.change(composer, { target: { value: 'Keep this unsent text' } });
+    applyHistory('/');
+    expect(await ui().findByRole('region', { name: 'Inbox' })).toBeTruthy();
+    await waitFor(() => { expect(within(document.body).queryByRole('dialog', { name: 'Assistant' })).toBeNull(); });
     applyHistory('/activity'); expect(await ui().findByText('No new activity.')).toBeTruthy();
     applyHistory('/activity/route'); await activityDetail('route');
-    applyHistory('/chat'); expect(await ui().findByRole('region', { name: 'Chat' })).toBeTruthy();
-    expect(ui().queryByText('Conversation body thread')).toBeNull();
+    fireEvent.click(ui().getByRole('button', { name: 'Open Assistant' }));
+    applyHistory('/chat', history.state);
+    const reopened = within(await assistant());
+    expect(reopened.getByText('Conversation body thread')).toBeTruthy();
+    expect(reopened.getByRole<HTMLTextAreaElement>('textbox', { name: 'Votre message' }).value).toBe('Keep this unsent text');
+    applyHistory('/activity/route');
+    await activityDetail('route');
+    await waitFor(() => { expect(within(document.body).queryByRole('dialog', { name: 'Assistant' })).toBeNull(); });
     applyHistory('/', { screen: 'sent' }); expect(await ui().findByText('No sent messages.')).toBeTruthy();
+    expect(primary().getByRole('button', { name: 'Sent' }).getAttribute('aria-current')).toBe('page');
     applyHistory('/', { screen: 'activity-detail' }); expect(await ui().findByRole('region', { name: 'Inbox' })).toBeTruthy();
     applyHistory('/unknown'); expect(ui().getByRole('region', { name: 'Inbox' })).toBeTruthy();
   }, browserTimeout);
@@ -167,12 +179,32 @@ describe('Activity detail navigation and recovery', () => {
     expect(ui().queryByRole('article', { name: 'Activity detail: Work history' })).toBeNull();
   }, browserTimeout);
 
-  it.each(['/activity/%E0%A4%A', '/chat/%E0%A4%A'])('recovers an invalid encoded link at %s to Inbox', async path => {
-    installFetch(() => undefined); await mount(path);
+  it('recovers an invalid encoded Activity link to Inbox', async () => {
+    installFetch(() => undefined); await mount('/activity/%E0%A4%A');
     await ui().findByText('This link is invalid.');
     fireEvent.click(ui().getByRole('button', { name: 'Back to Inbox' }));
     expect(await ui().findByRole('region', { name: 'Inbox' })).toBeTruthy();
     expect(ui().queryByText('This link is invalid.')).toBeNull();
+    expect(await ui().findByRole('button', { name: 'Open message from Inbox sender: Inbox-only message' })).toBeTruthy();
+  }, browserTimeout);
+
+  it('opens a malformed chat link without crashing and retries its failed conversation load', async () => {
+    let attempts = 0;
+    const conversationPath = `/api/v1/conversations/${encodeURIComponent('%E0%A4%A')}/messages`;
+    installFetch(url => url.pathname === conversationPath && ++attempts === 1 ? Promise.resolve(failure()) : undefined);
+    await mount('/chat/%E0%A4%A');
+    const dialog = within(await assistant());
+    await dialog.findByRole('alert');
+    expect(dialog.queryByRole('textbox', { name: 'Votre message' })).toBeNull();
+    expect(attempts).toBe(1);
+    fireEvent.click(dialog.getByRole('button', { name: 'Recharger la conversation' }));
+    expect(await dialog.findByText('Conversation body %E0%A4%A')).toBeTruthy();
+    expect(attempts).toBe(2);
+    expect(dialog.queryByRole('alert')).toBeNull();
+    fireEvent.click(dialog.getByRole('button', { name: 'Minimize Assistant' }));
+    expect(await ui().findByRole('region', { name: 'Inbox' })).toBeTruthy();
+    await waitFor(() => { expect(within(document.body).queryByRole('dialog', { name: 'Assistant' })).toBeNull(); });
+    expect(location.pathname).toBe('/');
     expect(await ui().findByRole('button', { name: 'Open message from Inbox sender: Inbox-only message' })).toBeTruthy();
   }, browserTimeout);
 

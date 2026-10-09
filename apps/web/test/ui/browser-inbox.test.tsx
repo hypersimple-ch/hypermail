@@ -76,9 +76,10 @@ describe('provider-backed browser Inbox', () => {
     }, url => url.pathname === '/api/v1/activities' ? activities.promise : url.pathname === '/api/v1/drafts' ? sending.promise : undefined);
     entryLoad = import('../../src/browser.js'); await entryLoad;
     await waitFor(() => { expect(inbox().getByRole('button', { name: 'Open message from Sender: Independent Inbox' })).toBeTruthy(); }, { timeout: 10_000 });
-    fireEvent.click(within(app).getAllByRole('button', { name: 'More' })[0] as HTMLElement);
-    fireEvent.click(within(app).getByRole('button', { name: /^Settings/ }));
-    expect(await within(app).findByText('Connected mailboxes')).toBeTruthy();
+    fireEvent.click(within(within(app).getByRole('complementary', { name: 'Mailbox navigation' })).getByRole('button', { name: 'Account and settings' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Mailboxes & agents/ }));
+    fireEvent.click(await within(app).findByRole('button', { name: 'Add mailbox', exact: true }));
+    expect(within(app).getByRole<HTMLButtonElement>('button', { name: 'Continue with Gmail', exact: true }).disabled).toBe(false);
     await act(() => { activities.resolve(new Response(null, { status: 503 })); sending.resolve(new Response(null, { status: 503 })); return Promise.all([activities.promise, sending.promise]); });
     expect(within(app).queryByText('Could not load your session.')).toBeNull();
     fireEvent.click(within(app).getAllByRole('button', { name: 'Inbox' })[0] as HTMLElement);
@@ -90,9 +91,11 @@ describe('provider-backed browser Inbox', () => {
     installFetch(provider, url => url.pathname === '/api/v1/session' ? Promise.resolve(Response.json({ user: { id: 'owner', email: 'owner@example.test' }, accounts: [] })) : ['/api/v1/activities', '/api/v1/drafts', '/api/v1/send-requests'].includes(url.pathname) ? Promise.resolve(new Response(null, { status: 503 })) : undefined);
     entryLoad = import('../../src/browser.js'); await entryLoad;
     await within(app).findByText('Select or connect a mailbox.', {}, { timeout: 10_000 });
-    fireEvent.click(within(app).getAllByRole('button', { name: 'More' })[0] as HTMLElement);
-    fireEvent.click(within(app).getByRole('button', { name: /^Settings/ }));
-    expect(await within(app).findByText('Connected mailboxes')).toBeTruthy();
+    fireEvent.click(within(within(app).getByRole('complementary', { name: 'Mailbox navigation' })).getByRole('button', { name: 'Account and settings' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Mailboxes & agents/ }));
+    expect(within(app).getByText('No mailboxes connected.')).toBeTruthy();
+    fireEvent.click(await within(app).findByRole('button', { name: 'Add mailbox', exact: true }));
+    expect(within(app).getByRole<HTMLButtonElement>('button', { name: 'Continue with Gmail', exact: true }).disabled).toBe(false);
     expect(provider).not.toHaveBeenCalled();
     expect(within(app).queryByText(/mail provider is unavailable/i)).toBeNull();
   }, browserTimeout);

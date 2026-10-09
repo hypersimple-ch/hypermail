@@ -10,7 +10,7 @@ import type {
 const text = (value: unknown): string => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
 const healthMessage = (row: SqlRow): string => {
   const reason = text(row['reason_code']) || text(row['last_error_code']);
-  if (reason === 'provider_auth_failed') return 'Mailbox authentication expired. Reconnect this mailbox in More → Settings.';
+  if (reason === 'provider_auth_failed') return 'Mailbox authentication expired. Reconnect this mailbox in the owner menu → Mailboxes & agents.';
   if (reason === 'provider_rate_limited') return 'The mail provider is rate limiting requests. Hypermail will retry automatically.';
   if (reason === 'provider_unavailable') return 'The mail provider is temporarily unavailable. Hypermail will retry automatically.';
   return text(row['detail']) || reason || 'Account connection needs attention.';

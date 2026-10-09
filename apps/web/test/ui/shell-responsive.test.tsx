@@ -35,20 +35,18 @@ describe('single responsive shell', () => {
     await waitFor(() => { expect(saved).toEqual([{ ...draft, subject: 'Edited subject', body: 'Unsaved body through resizing' }]); });
   });
 
-  it.each([false, true])('opens Sent through mobile More with sent records present=%s', async (hasSent) => {
+  it.each([false, true])('opens Sent directly on mobile with sent records present=%s', async (hasSent) => {
     const user = userEvent.setup();
     vi.stubGlobal('innerWidth', 390);
     const records: DraftRecord[] = hasSent ? [draft, { ...draft, id: 'sent1', state: 'sent', subject: 'Delivered report' }] : [draft];
     render(<HypermailShell data={mockShellData} drafts={records} />);
     const mobile = within(screen.getByRole('navigation', { name: 'Mobile primary' }));
-    await user.click(mobile.getByRole('button', { name: 'More' }));
-    const more = within(screen.getByRole('region', { name: 'More' }));
-    await user.click(more.getByRole('button', { name: /^Sent/ }));
+    await user.click(mobile.getByRole('button', { name: 'Sent' }));
     expect(screen.getByRole('heading', { name: 'Sent' })).toBeTruthy();
     if (hasSent) expect(screen.getByText('Delivered report')).toBeTruthy();
     else expect(screen.getByText('No sent messages.')).toBeTruthy();
     expect(screen.queryByText('Follow up')).toBeNull();
-    expect(mobile.queryByRole('button', { name: 'Sent' })).toBeNull();
+    expect(mobile.getByRole('button', { name: 'Sent' }).getAttribute('aria-current')).toBe('page');
     await user.click(mobile.getByRole('button', { name: 'Drafts' }));
     expect(screen.getByRole('button', { name: 'Open draft Follow up' })).toBeTruthy();
   });
