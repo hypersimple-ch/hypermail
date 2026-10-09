@@ -38,11 +38,47 @@ if (!planOnly) {
     process.stderr.write(configuration.stderr);
     process.exit(configuration.status ?? 1);
   }
-  const services = JSON.parse(configuration.stdout).services;
+  const config = JSON.parse(configuration.stdout);
+  const services = config.services;
   const serverVersion = services.hindsight.image.match(/:(\d+\.\d+\.\d+)$/)?.[1];
   if (!serverVersion || services.worker.environment.HINDSIGHT_EXPECTED_VERSION !== serverVersion) {
     process.stderr.write('Hindsight worker/server versions differ. Validate native retain/recall, then either migrate a cold-backup copy or explicitly discard disposable local memory before updating HINDSIGHT_EXPECTED_VERSION in .env. Never start the new image against an unprotected existing volume.\n');
     process.exit(1);
+  }
+  // Docker can retain running endpoints after the host brings their bridge down.
+  // Compose's normal `up` reuses them; recreate only this project's topology.
+  if (process.platform === 'linux') {
+    const networks = spawnSync('docker', ['network', 'ls', '--filter', `label=com.docker.compose.project=${config.name}`, '--format', '{{.ID}}'],
+      { cwd: root, encoding: 'utf8' });
+    if (networks.error) throw networks.error;
+    if (networks.status !== 0) {
+      process.stderr.write(networks.stderr);
+      process.exit(networks.status ?? 1);
+    }
+    const ids = networks.stdout.trim().split(/\s+/).filter(Boolean);
+    if (ids.length > 0) {
+      const inspection = spawnSync('docker', ['network', 'inspect', ...ids], { cwd: root, encoding: 'utf8' });
+      if (inspection.error) throw inspection.error;
+      if (inspection.status !== 0) {
+        process.stderr.write(inspection.stderr);
+        process.exit(inspection.status ?? 1);
+      }
+      const broken = JSON.parse(inspection.stdout).filter((network) => {
+        if (network.Driver !== 'bridge' || Object.keys(network.Containers ?? {}).length === 0) return false;
+        const bridge = network.Options?.['com.docker.network.bridge.name'] ?? `br-${network.Id.slice(0, 12)}`;
+        try {
+          return (Number(readFileSync(`/sys/class/net/${bridge}/flags`, 'utf8')) & 1) === 0;
+        } catch (error) {
+          // A remote Docker daemon has no corresponding local sysfs interface.
+          if (error?.code === 'ENOENT') return false;
+          throw error;
+        }
+      });
+      if (broken.length > 0) {
+        process.stdout.write(`Recreating inactive development networks (${broken.map((network) => network.Name).join(', ')}); preserving all data volumes.\n`);
+        run(['down']);
+      }
+    }
   }
 }
 const images = ['hypermail-local-dev-web', 'hypermail-local-dev-worker', 'hypermail-local-dev-migrate'];

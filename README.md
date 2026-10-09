@@ -54,6 +54,8 @@ Open <http://localhost:8080>. Local Compose applies migrations automatically and
 
 `pnpm dev` uses Compose Watch. It keeps healthy containers running, synchronizes source changes, recompiles TypeScript and browser assets, and restarts only the changed web or worker process. It rebuilds the development images only when dependency manifests, the lockfile, or the development Dockerfile changes. Use `pnpm dev:rebuild` only to force that image rebuild while troubleshooting.
 
+On Linux, `pnpm dev` also checks active project networks for a down Docker bridge. If the host has disabled a bridge (for example, around suspend/resume), it recreates the local Compose containers and networks before starting. Database, account, memory, attachment, and Codex-login volumes are preserved; healthy networks are left alone. This recovery is not a data reset.
+
 To start with no local user data, stop any running `pnpm dev` watcher with Ctrl+C, then run:
 
 ```sh
