@@ -246,6 +246,9 @@ await closeAssistant();
 
 await run('inbox', 1024, { path: '/chat/11111111-1111-4111-8111-111111111111' });
 await until('document.querySelector("#chat-message")', 'direct conversation link');
+await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+await until('!document.querySelector("#assistant-dialog").getAnimations({ subtree: true }).some(animation => animation.playState === "running" || animation.pending)', 'direct conversation entry animation completion');
+await until('document.querySelector("#assistant-dialog").contains(document.activeElement)', 'direct conversation focus readiness');
 if (await evaluate('document.querySelectorAll("#assistant-dialog").length') !== 1) fail('deep link created more than one Assistant');
 await click('button[aria-label="Minimize Assistant"]');
 await until('location.pathname === "/" && !document.querySelector("#assistant-dialog")', 'direct conversation minimize');
