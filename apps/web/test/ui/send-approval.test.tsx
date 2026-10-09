@@ -9,13 +9,14 @@ import type { DraftComposeProps } from '../../src/drafts/surfaces.js';
 import type { DraftRecord } from '../../src/drafts/contracts.js';
 import { PendingSendReview } from '../../src/send-requests/surfaces.js';
 import type { OwnerSendRequest } from '../../src/send-requests/contracts.js';
+import { SessionExpiredError } from '../../src/lib/authenticated-fetch.js';
 const target = { kind: 'draft' as const, id: 'draft-1', version: 1 };
 const snapshot: PreparedSend['snapshot'] = { accountId: 'mailbox-1', recipients: [{ kind: 'to', address: 'to@example.com' }, { kind: 'bcc', address: 'hidden@example.com' }], subject: 'Exact subject', body: '<img src="https://remote.invalid/pixel">', bodyFormat: 'html' };
 const prepared: PreparedSend = { approvalId: 'approval-1', expiresAt: '2099-01-01T00:00:00Z', snapshot };
 function fixture() {
   return { prepare: vi.fn<SendApprovalApi['prepare']>().mockResolvedValue(prepared), confirm: vi.fn<SendApprovalApi['confirm']>().mockResolvedValue(), reauthenticate: vi.fn<SendApprovalApi['reauthenticate']>().mockResolvedValue(), reconcile: vi.fn<SendApprovalApi['reconcile']>().mockResolvedValue(), manualReview: vi.fn<SendApprovalApi['manualReview']>().mockResolvedValue() };
 }
-function requestFixture(id: string, state: OwnerSendRequest['state'] = 'pending_owner_approval'): OwnerSendRequest {
+function requestFixture(id: string, state: OwnerSendRequest['state'] = 'pending_owner_approval'): OwnerSendRequest & { snapshot: DraftRecord } {
   return {
     id, accountId: snapshot.accountId, draftId: `draft-${id}`, draftVersion: 1, state,
     approvalId: null, actionId: null, providerMessageId: null, expiresAt: '2099-01-01T00:00:00Z',
@@ -25,6 +26,58 @@ function requestFixture(id: string, state: OwnerSendRequest['state'] = 'pending_
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('owner send approval', () => {
+  it.each(['FRESH_AUTH_REQUIRED', 'INVALID_PASSWORD'])('keeps a valid-session HTTP 401 as the send-local %s error', async (code) => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/v1/session') return Promise.resolve(Response.json({ ownerEmail: 'owner@example.test', accounts: [] }));
+      return Promise.resolve(Response.json({ error: { code } }, { status: 401 }));
+    }));
+    const operation = code === 'FRESH_AUTH_REQUIRED'
+      ? sendApprovalHttpApi.confirm(target, prepared.approvalId, 'confirmation')
+      : sendApprovalHttpApi.reauthenticate('wrong-password');
+    await expect(operation).rejects.toMatchObject({ code, status: 401 });
+  });
+  it('never allows another confirmation or preparation after session expiry during a send', async () => {
+    const user = userEvent.setup(); const api = fixture();
+    api.confirm.mockRejectedValue(new SessionExpiredError());
+    render(<SendApprovalFlow target={target} api={api} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm this exact send' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Reload and review' }).disabled).toBe(false); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm this exact send' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review and send' })).toBeNull();
+    expect(api.confirm).toHaveBeenCalledTimes(1);
+    expect(api.prepare).toHaveBeenCalledTimes(1);
+  });
+  it.each([new SessionExpiredError(), new SendUiError('INVALID_PASSWORD', 401)])('preserves the entered reauthentication password on failure (%s)', async (failure) => {
+    const user = userEvent.setup(); const api = fixture();
+    api.prepare.mockRejectedValueOnce(new SendUiError('FRESH_AUTH_REQUIRED', 401));
+    api.reauthenticate.mockRejectedValue(failure);
+    render(<SendApprovalFlow target={target} api={api} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await user.type(await screen.findByLabelText('Confirm your password'), 'keep-this-password');
+    await user.click(screen.getByRole('button', { name: 'Authenticate and prepare again' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Authenticate and prepare again' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Confirm your password').value).toBe('keep-this-password');
+    expect(Boolean(screen.queryByRole('alert'))).toBe(!(failure instanceof SessionExpiredError));
+    expect(api.prepare).toHaveBeenCalledTimes(1);
+    expect(api.confirm).not.toHaveBeenCalled();
+  });
+  it('preserves composer text without a save conflict on session expiry', async () => {
+    const user = userEvent.setup();
+    const draft: DraftRecord = { ...snapshot, id: target.id, sourceMessageId: null, createdBy: 'user', state: 'editing', version: 1, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+    const save = vi.fn<NonNullable<DraftComposeProps['onAutosave']>>().mockRejectedValue(new SessionExpiredError());
+    render(<DraftCompose draft={draft} revisions={[]} onAutosave={save} onRefresh={vi.fn().mockResolvedValue(undefined)} />);
+    await user.clear(screen.getByLabelText('Subject'));
+    await user.type(screen.getByLabelText('Subject'), 'Keep this local edit');
+    await user.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Save draft' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Subject').value).toBe('Keep this local edit');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reload saved version and compare' })).toBeNull();
+    expect(save).toHaveBeenCalledTimes(1);
+  });
   it.each([
     null,
     { ...prepared, snapshot: null },
@@ -136,7 +189,9 @@ describe('approvals review surface', () => {
   it('separates actionable requests from rejected and uncertain outcomes without duplicating represented drafts', async () => {
     const user = userEvent.setup();
     const api = fixture();
-    const pending = [requestFixture('first'), requestFixture('second')];
+    const firstPending = requestFixture('first');
+    const secondPending = requestFixture('second');
+    const pending = [firstPending, secondPending];
     const rejected = requestFixture('rejected', 'rejected');
     const unknownDraft: DraftRecord = {
       ...snapshot, id: 'unknown-draft', subject: 'Uncertain owner send', sourceMessageId: null,
@@ -145,7 +200,7 @@ describe('approvals review surface', () => {
       submission: { approvalId: 'unknown-approval', state: 'unknown', reasonCode: 'PROVIDER_SENT_ID_UNVERIFIABLE', manualReview: null, dispatchMayHaveOccurred: true },
     };
     const refresh = vi.fn().mockResolvedValue(undefined);
-    const view = render(<PendingSendReview requests={[rejected, ...pending]} drafts={[pending[0]!.snapshot!, unknownDraft]} onRefresh={refresh} api={api} />);
+    const view = render(<PendingSendReview requests={[rejected, ...pending]} drafts={[firstPending.snapshot, unknownDraft]} onRefresh={refresh} api={api} />);
     const awaiting = within(screen.getByRole('region', { name: 'Awaiting approval' }));
     const outcomes = within(screen.getByRole('region', { name: 'Sending outcomes' }));
     expect(awaiting.getAllByRole('button', { name: 'Reject send request' })).toHaveLength(2);
@@ -158,10 +213,12 @@ describe('approvals review surface', () => {
     expect(api.prepare).not.toHaveBeenCalled();
     expect(api.confirm).not.toHaveBeenCalled();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 })));
-    await user.click(awaiting.getAllByRole('button', { name: 'Reject send request' })[0]!);
+    const firstRejectButton = awaiting.getAllByRole('button', { name: 'Reject send request' })[0];
+    if (!firstRejectButton) throw new Error('Expected a pending request rejection control');
+    await user.click(firstRejectButton);
     await waitFor(() => { expect(refresh).toHaveBeenCalledTimes(2); });
     expect(fetch).toHaveBeenCalledWith('/api/v1/send-requests/first/reject', expect.objectContaining({ method: 'POST' }));
-    view.rerender(<PendingSendReview requests={[rejected, { ...pending[0]!, state: 'rejected' }, pending[1]!]} drafts={[unknownDraft]} onRefresh={refresh} api={api} />);
+    view.rerender(<PendingSendReview requests={[rejected, { ...firstPending, state: 'rejected' }, secondPending]} drafts={[unknownDraft]} onRefresh={refresh} api={api} />);
     expect(within(screen.getByRole('region', { name: 'Awaiting approval' })).getAllByRole('button', { name: 'Reject send request' })).toHaveLength(1);
     expect(within(screen.getByRole('region', { name: 'Sending outcomes' })).getAllByRole('heading', { name: 'Subject first' })[0]).toBeTruthy();
     view.rerender(<PendingSendReview requests={[]} drafts={[unknownDraft]} onRefresh={refresh} api={api} />);
@@ -172,7 +229,7 @@ describe('approvals review surface', () => {
 
   it('keeps loaded cards during pending refresh and a failure, then allows a successful retry', async () => {
     const user = userEvent.setup();
-    let rejectRefresh!: (reason: Error) => void;
+    let rejectRefresh: ((reason: Error) => void) | undefined;
     const refresh = vi.fn<() => Promise<void>>()
       .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectRefresh = reject; }))
       .mockResolvedValue(undefined);
@@ -182,7 +239,11 @@ describe('approvals review surface', () => {
     expect(screen.getAllByRole('heading', { name: 'Subject loaded' })[0]).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Refreshing…' }));
     expect(refresh).toHaveBeenCalledTimes(1);
-    await act(async () => { rejectRefresh(new Error('offline')); });
+    await act(async () => {
+      if (!rejectRefresh) throw new Error('Expected a pending refresh request');
+      rejectRefresh(new Error('offline'));
+      await Promise.resolve();
+    });
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not refresh approvals. Try again.');
     expect(screen.getAllByRole('heading', { name: 'Subject loaded' })[0]).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
@@ -190,10 +251,57 @@ describe('approvals review surface', () => {
     expect(screen.getByRole('button', { name: 'Refresh' }).disabled).toBe(false);
   });
 
+  it('invalidates a prepared request snapshot when its draft version changes and requires fresh review', async () => {
+    const user = userEvent.setup();
+    const api = fixture();
+    const request = requestFixture('updated');
+    api.prepare.mockResolvedValueOnce(prepared).mockResolvedValue({
+      ...prepared, approvalId: 'approval-new-version', snapshot: { ...snapshot, subject: 'Updated request snapshot' },
+    });
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const view = render(<PendingSendReview requests={[request]} onRefresh={refresh} api={api} />);
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await screen.findByRole('button', { name: 'Confirm this exact send' });
+    view.rerender(<PendingSendReview requests={[{ ...request, draftVersion: 2 }]} onRefresh={refresh} api={api} />);
+    expect(screen.queryByRole('button', { name: 'Confirm this exact send' })).toBeNull();
+    expect(api.confirm).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Review and send' }));
+    await screen.findByText('Updated request snapshot');
+    await user.click(screen.getByRole('button', { name: 'Confirm this exact send' }));
+    await waitFor(() => {
+      expect(api.confirm).toHaveBeenCalledWith(
+        { kind: 'send_request', id: request.id, version: 2 }, 'approval-new-version', expect.any(String),
+      );
+    });
+    expect(api.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a request actionable after failed rejection without reporting a refreshed state', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', { status: 500 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    render(<PendingSendReview requests={[requestFixture('retry-rejection')]} onRefresh={refresh} api={fixture()} />);
+    await user.click(screen.getByRole('button', { name: 'Reject send request' }));
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent', 'Could not reject this request. Reload to check its current state.',
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Reject send request' }).disabled).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Reject send request' }));
+    await waitFor(() => { expect(refresh).toHaveBeenCalledTimes(1); });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('uses a snapshot subject or an explicit fallback while retaining snapshot content and review actions', () => {
     const noSubject = requestFixture('empty');
-    const { snapshot: _snapshot, ...noSnapshot } = requestFixture('missing');
-    render(<PendingSendReview requests={[{ ...noSubject, snapshot: { ...noSubject.snapshot!, subject: '' } }, noSnapshot]} onRefresh={vi.fn().mockResolvedValue(undefined)} api={fixture()} />);
+    const noSnapshot: OwnerSendRequest = { ...requestFixture('missing') };
+    const { snapshot: missingSnapshot, ...requestWithoutSnapshot } = noSnapshot;
+    if (!missingSnapshot) throw new Error('Expected the request fixture to include a snapshot');
+    render(<PendingSendReview requests={[{ ...noSubject, snapshot: { ...noSubject.snapshot, subject: '' } }, requestWithoutSnapshot]} onRefresh={vi.fn().mockResolvedValue(undefined)} api={fixture()} />);
     expect(screen.getAllByRole('heading', { name: '(No subject)' })[0]).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Draft draft-missing' })).toBeTruthy();
     expect(screen.getByText('hidden@example.com')).toBeTruthy();

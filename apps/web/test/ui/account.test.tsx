@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Account, type AccountProps } from '../../src/ui/account.js';
 import { ToastProvider, toast } from '../../src/components/heroui/toast.js';
+import { SessionExpiredError } from '../../src/lib/authenticated-fetch.js';
 
 afterEach(() => { toast.clear(); cleanup(); });
 
@@ -25,6 +26,22 @@ afterEach(() => {
 });
 
 describe('Account', () => {
+  it('retains password edits and releases actions on session expiry without a local failure toast', async () => {
+    changePassword.mockRejectedValue(new SessionExpiredError());
+    signOut.mockRejectedValue(new SessionExpiredError());
+    renderAccount();
+    fillPasswords('current-password', 'a-valid-password');
+    fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Change password' }).disabled).toBe(false); });
+    expect(screen.getByLabelText('Current password').value).toBe('current-password');
+    expect(screen.getByLabelText('New password').value).toBe('a-valid-password');
+    expect(screen.getByLabelText('Confirm new password').value).toBe('a-valid-password');
+    expect(screen.queryByText('Could not change your password. Try again.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Sign out' }).disabled).toBe(false); });
+    expect(screen.queryByText('Could not sign out. Try again.')).toBeNull();
+    expect(screen.getByLabelText('New password').value).toBe('a-valid-password');
+  });
   it('shows the authenticated owner email as read-only identity', () => {
     renderAccount();
     const email = screen.getByLabelText('Email');

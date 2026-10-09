@@ -1,3 +1,4 @@
+import { authenticatedFetch, SessionExpiredError } from '../lib/authenticated-fetch.js';
 import * as React from 'react';
 import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
 import { Button } from '@/components/heroui/button.js';
@@ -13,10 +14,10 @@ function SendRequestReview({ request, onRefresh, api }: Readonly<{ request: Owne
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const response = await fetch(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const response = await authenticatedFetch(`/api/v1/send-requests/${encodeURIComponent(request.id)}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
       if (!response.ok) throw new Error('Rejected request');
       await onRefresh();
-    } catch { setError('Could not reject this request. Reload to check its current state.'); }
+    } catch (failure) { if (!(failure instanceof SessionExpiredError)) setError('Could not reject this request. Reload to check its current state.'); }
     finally { setBusy(false); }
   };
   return <Card><CardHeader><CardTitle>{request.snapshot ? request.snapshot.subject || '(No subject)' : `Draft ${request.draftId}`}</CardTitle><CardDescription>Mailbox {request.accountId} · draft revision {request.draftVersion} · {request.state}</CardDescription></CardHeader><CardContent className="grid gap-4">

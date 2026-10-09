@@ -20,7 +20,17 @@ function setSecurityHeaders(response: ServerResponse): void {
 }
 const cacheControl = (path: string) => path.endsWith('.html') || path.endsWith('.js') || path.endsWith('.css') || path.endsWith('manifest.webmanifest') ? 'no-cache' : path.endsWith('.png') ? 'public, max-age=604800' : 'public, max-age=300';
 function staticFile(pathname: string): string | null { try { const candidate = resolve(staticRoot, `.${decodeURIComponent(pathname)}`); const within = relative(staticRoot, candidate); return within.startsWith('..') || within === '' || within.includes('\0') ? null : candidate; } catch { return null; } }
-async function sendFile(response: ServerResponse, file: string, method: string): Promise<void> { try { if (!(await stat(file)).isFile()) throw new Error('not a file'); response.setHeader('Content-Type', contentTypes[extname(file)] ?? 'application/octet-stream'); response.setHeader('Cache-Control', cacheControl(file)); if (file.endsWith('service-worker.js')) response.setHeader('Service-Worker-Allowed', '/'); response.statusCode = 200; response.end(method === 'HEAD' ? undefined : await readFile(file)); } catch { response.statusCode = 404; response.setHeader('Cache-Control', 'no-store'); response.setHeader('Content-Type', 'text/plain; charset=utf-8'); response.end(method === 'HEAD' ? undefined : 'Not found'); } }
+async function sendFile(response: ServerResponse, file: string, method: string, cachePolicy?: 'no-store'): Promise<void> { try { if (!(await stat(file)).isFile()) throw new Error('not a file'); response.setHeader('Content-Type', contentTypes[extname(file)] ?? 'application/octet-stream'); response.setHeader('Cache-Control', cachePolicy ?? cacheControl(file)); if (file.endsWith('service-worker.js')) response.setHeader('Service-Worker-Allowed', '/'); response.statusCode = 200; response.end(method === 'HEAD' ? undefined : await readFile(file)); } catch { response.statusCode = 404; response.setHeader('Cache-Control', 'no-store'); response.setHeader('Content-Type', 'text/plain; charset=utf-8'); response.end(method === 'HEAD' ? undefined : 'Not found'); } }
+function explicitlyAccepts(accept: string | undefined, mediaType: string): boolean {
+  return (accept ?? '').split(',').some((entry) => {
+    const [type, ...parameters] = entry.split(';');
+    if (type?.trim().toLowerCase() !== mediaType) return false;
+    const quality = parameters.find((parameter) => parameter.trim().toLowerCase().startsWith('q='));
+    if (quality === undefined) return true;
+    const value = quality.trim().slice(2);
+    return /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(value) && Number(value) > 0;
+  });
+}
 async function body(request: IncomingMessage, timeoutMs: number): Promise<Readonly<Record<string, unknown>>> {
   const raw = await readRequestBytes(request, requestBodyLimit(request), timeoutMs);
   if (!raw.length) return {};
@@ -49,12 +59,19 @@ function streamResponse(request: IncomingMessage, response: ServerResponse, resu
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse, throttle: RequestThrottle, id: string, clientIp: string, bodyTimeoutMs: number, runtime?: WebRuntime): Promise<void> {
   setSecurityHeaders(response); response.setHeader('X-Correlation-ID', id);
+  const method = request.method ?? 'GET'; const url = new URL(request.url ?? '/', 'http://localhost'); const pathname = url.pathname;
+  const consent = pathname === '/oauth/authorize';
+  if (consent) { response.setHeader('Vary', 'Accept'); response.setHeader('Cache-Control', 'no-store'); }
   // Apply the global IP quota before MCP; its raw transport retains its own 512 KiB bound.
   const limited = requestLimit(request, throttle, clientIp);
   if (limited) { closeRejectedBody(request, response); respond(response, limited.status, { error: limited.message, correlationId: id }); return; }
   if (runtime?.publicMcp && await runtime.publicMcp.handle(request, response)) return;
-  const method = request.method ?? 'GET'; const url = new URL(request.url ?? '/', 'http://localhost'); const pathname = url.pathname;
   if (pathname === '/health/live' && (method === 'GET' || method === 'HEAD')) { respond(response, 200, method === 'HEAD' ? undefined : { status: 'ok' }); return; }
+  if (pathname === '/oauth/gmail/callback') {
+    if (method !== 'GET' && method !== 'HEAD') { response.setHeader('Allow', 'GET, HEAD'); respond(response, 405); return; }
+    return sendFile(response, shellPath, method);
+  }
+  if (consent && (method === 'GET' || method === 'HEAD') && explicitlyAccepts(request.headers.accept, 'text/html')) return sendFile(response, shellPath, method, 'no-store');
   if (runtime && (pathname.startsWith('/api/') || pathname.startsWith('/oauth/') || pathname.startsWith('/.well-known/'))) {
     const query = Object.fromEntries(url.searchParams.entries()); const controller = new AbortController(); request.once('aborted', () => { controller.abort(); });
     let requestBody: Readonly<Record<string, unknown>> = {};
@@ -63,7 +80,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       catch (error) { if (error instanceof RequestBodyError) { closeRejectedBody(request, response); respond(response, error.status, { error: 'invalid_request' }); return; } throw error; }
     }
     const result = await runtime.dispatch({ method, pathname, query, origin: typeof request.headers.origin === 'string' ? request.headers.origin : null, cookie: typeof request.headers.cookie === 'string' ? request.headers.cookie : null, remoteAddress: clientIp, correlationId: id, contentType: request.headers['content-type']?.split(';')[0]?.trim() ?? null, apiVersion: typeof request.headers['x-api-version'] === 'string' ? request.headers['x-api-version'] : null, body: requestBody, signal: controller.signal });
-    if (result) { streamResponse(request, response, result); return; }
+    if (result) {
+      if (consent && method === 'POST' && explicitlyAccepts(request.headers.accept, 'application/json') && result.status === 303) {
+        const location = Object.entries(result.headers ?? {}).find(([name]) => name.toLowerCase() === 'location')?.[1];
+        if (location) {
+          const headers = Object.fromEntries(Object.entries(result.headers ?? {}).filter(([name]) => name.toLowerCase() !== 'location'));
+          respond(response, 200, { redirectUrl: location }, result.setCookie, { ...headers, 'Cache-Control': 'no-store', Vary: 'Accept' });
+          return;
+        }
+      }
+      streamResponse(request, response, result); return;
+    }
     respond(response, 404, { error: 'Not found', correlationId: id }); return;
   }
   if (pathname.startsWith('/api/')) { respond(response, 404, { error: 'Not found', correlationId: id }); return; }

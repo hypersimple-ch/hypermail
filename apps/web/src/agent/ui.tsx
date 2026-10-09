@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { SessionExpiredError } from '../lib/authenticated-fetch.js';
 import { Alert, AlertDescription, AlertTitle } from '@/components/heroui/alert.js';
 import { Badge } from '@/components/heroui/badge.js';
 import { Link } from '@heroui/react/link';
@@ -95,6 +96,7 @@ export function AgentProposalCard({ proposal, proposalFolders = [], onReview, on
       await onReview(input);
       setRecorded(true);
     } catch (failure) {
+      if (failure instanceof SessionExpiredError) return;
       const stale = failure instanceof Error && 'status' in failure && failure.status === 409;
       setConflict(stale);
       setError(stale ? 'This proposal changed. Your edits are preserved. Reload and inspect its current revision before submitting again.' : failure instanceof Error ? failure.message : 'Review could not be recorded. Your edits are preserved; retry safely.');
@@ -111,8 +113,8 @@ export function AgentProposalCard({ proposal, proposalFolders = [], onReview, on
       await onReloadProposals();
       setConflict(false);
       setError('');
-    } catch {
-      setError('Could not reload the proposal. Your edits are still here.');
+    } catch (failure) {
+      if (!(failure instanceof SessionExpiredError)) setError('Could not reload the proposal. Your edits are still here.');
     } finally {
       inFlight.current = false;
       setPending(false);

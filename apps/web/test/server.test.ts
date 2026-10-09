@@ -2,10 +2,11 @@ import type { Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { createWebServer, startWebServer } from '../src/server.js';
-import type { WebRuntime } from '../src/runtime.js';
+import { createWebRuntimeFromEnvironment, type WebRuntime } from '../src/runtime.js';
 import { RequestThrottle } from '../src/security/limits.js';
 
 let server: Server | undefined;
+let runtime: WebRuntime | undefined;
 
 async function request(path: string, init?: RequestInit, throttle?: RequestThrottle, runtime?: WebRuntime): Promise<Response> {
   server = createWebServer(throttle, runtime);
@@ -16,9 +17,13 @@ async function request(path: string, init?: RequestInit, throttle?: RequestThrot
 }
 
 afterEach(async () => {
-  if (!server) return;
-  await new Promise<void>((resolve, reject) => { server?.close((error) => { if (error) reject(error); else resolve(); }); });
-  server = undefined;
+  try {
+    if (server) await new Promise<void>((resolve, reject) => { server?.close((error) => { if (error) reject(error); else resolve(); }); });
+  } finally {
+    server = undefined;
+    await runtime?.close();
+    runtime = undefined;
+  }
 });
 
 describe('web static host', () => {
@@ -49,6 +54,93 @@ describe('web static host', () => {
     expect(live.headers.get('x-correlation-id')).toBe('valid-request-123');
     const missing = await fetch(new URL('/../package.json', live.url));
     expect(missing.status).toBe(404);
+  });
+
+  it('serves only the Gmail callback document while preserving OAuth endpoint contracts', async () => {
+    // No authenticated or valid token request is made; the unreachable fixture URL cannot reach user data.
+    runtime = createWebRuntimeFromEnvironment({
+      NODE_ENV: 'development',
+      ATTACHMENT_TEMP_DIRECTORY: '/var/tmp',
+      DATABASE_URL: 'postgresql://synthetic:synthetic-only@127.0.0.1:1/hypermail-server-fixture',
+      APP_ORIGIN: 'https://mail.example.test',
+      AUTH_SECRET: 'a'.repeat(32),
+      OAUTH_TOKEN_HASH_KEY: 'o'.repeat(32),
+      HYPERMAIL_URL: 'https://hypermail.internal/mcp',
+      HYPERMAIL_KEY: 'b'.repeat(16),
+      HYPERMAIL_PROTOCOL_VERSION: 'deployment-negotiated',
+      VAPID_SUBJECT: 'mailto:owner@example.test',
+      VAPID_PUBLIC_KEY: 'c'.repeat(16),
+      VAPID_PRIVATE_KEY: 'd'.repeat(16),
+      PUSH_SUBSCRIPTION_ENCRYPTION_KEY: 'e'.repeat(32),
+    });
+    const callback = await request('/oauth/gmail/callback?error=access_denied', undefined, undefined, runtime);
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get('content-type')).toContain('text/html');
+    expect(new URL(callback.url).searchParams.get('error')).toBe('access_denied');
+    await expect(callback.text()).resolves.toContain('rel="manifest"');
+
+    const head = await fetch(callback.url, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-type')).toContain('text/html');
+    await expect(head.text()).resolves.toBe('');
+
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+      const unsupported = await fetch(callback.url, { method });
+      expect(unsupported.status).toBe(405);
+      expect(unsupported.headers.get('allow')).toBe('GET, HEAD');
+    }
+
+    for (const path of ['/oauth/unknown', '/oauth/gmail/callback/extra', '/oauth/gmail/callback/']) {
+      const unknown = await fetch(new URL(path, callback.url));
+      expect(unknown.status).toBe(404);
+      expect(unknown.headers.get('content-type')).toContain('application/json');
+      await expect(unknown.json()).resolves.toMatchObject({ error: 'Not found' });
+    }
+
+    const tokenUrl = new URL('/oauth/token', callback.url);
+    const wrongMethod = await fetch(tokenUrl);
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get('allow')).toBe('POST');
+    expect(wrongMethod.headers.get('content-type')).toContain('application/json');
+
+    const wrongContentType = await fetch(tokenUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(wrongContentType.status).toBe(415);
+    await expect(wrongContentType.json()).resolves.toEqual({ error: 'invalid_request' });
+
+    const invalidForm = await fetch(tokenUrl, { method: 'POST', body: new URLSearchParams({ grant_type: 'authorization_code' }) });
+    expect(invalidForm.status).toBe(400);
+    await expect(invalidForm.json()).resolves.toEqual({ error: 'invalid_request' });
+
+    const authorizeUrl = new URL('/oauth/authorize?client_id=unknown&state=preserved%2Bstate', callback.url);
+    for (const accept of ['text/html', 'application/xhtml+xml, TEXT/HTML; charset=utf-8; q=0.9']) {
+      const document = await fetch(authorizeUrl, { headers: { Accept: accept } });
+      expect(document.status).toBe(200);
+      expect(document.headers.get('content-type')).toContain('text/html');
+      expect(document.headers.get('cache-control')).toBe('no-store');
+      expect(document.headers.get('vary')).toBe('Accept');
+      await expect(document.text()).resolves.toContain('rel="manifest"');
+    }
+    const consentHead = await fetch(authorizeUrl, { method: 'HEAD', headers: { Accept: 'text/html' } });
+    expect(consentHead.status).toBe(200);
+    expect(consentHead.headers.get('cache-control')).toBe('no-store');
+    expect(consentHead.headers.get('vary')).toBe('Accept');
+    await expect(consentHead.text()).resolves.toBe('');
+
+    // Wildcards, substrings and explicitly unacceptable HTML must not turn OAuth responses into documents.
+    for (const accept of ['application/json', '*/*', 'text/*', 'text/html;q=0', 'text/html-extra']) {
+      const consent = await fetch(authorizeUrl, { headers: { Accept: accept }, redirect: 'manual' });
+      expect(consent.status).toBe(302);
+      expect(consent.headers.get('location')).toBe('https://mail.example.test/login');
+      expect(consent.headers.get('content-type')).toContain('application/json');
+      expect(consent.headers.get('cache-control')).toBe('no-store');
+      expect(consent.headers.get('vary')).toBe('Accept');
+    }
+    const rejectedDecision = await fetch(authorizeUrl, { method: 'POST', headers: { Accept: 'application/json', Origin: 'https://foreign.example.test', 'Content-Type': 'application/json' }, body: '{"request_token":"untrusted","decision":"deny"}', redirect: 'manual' });
+    expect(rejectedDecision.status).toBe(403);
+    expect(rejectedDecision.headers.get('location')).toBeNull();
+    expect(rejectedDecision.headers.get('vary')).toBe('Accept');
+    expect(rejectedDecision.headers.get('cache-control')).toBe('no-store');
+    await expect(rejectedDecision.json()).resolves.toEqual({ error: 'forbidden' });
   });
 
   it('adapts same-origin API JSON requests without exposing the static host as an API fallback', async () => {

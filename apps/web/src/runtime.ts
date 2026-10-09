@@ -218,6 +218,7 @@ export function createWebRuntimeFromEnvironment(environment: NodeJS.ProcessEnv):
     const agentAction = /^\/api\/v1\/agent\/actions\/([^/]+)\/retry$/.exec(request.pathname); if (agentAction?.[1]) return agentRoutes.retry({ method: request.method, auth: scope, origin: request.origin, apiVersion: request.apiVersion, body: request.body }, agentAction[1]);
     if (request.pathname === '/api/v1/agent/autonomy') return agentRoutes.autonomy({ method: request.method, auth: scope, origin: request.origin, apiVersion: request.apiVersion, body: request.body });
     const ownerRequest = { method: request.method, auth: scope, origin: request.origin, body: request.body };
+    if (request.pathname === '/api/v1/send-requests') return sendRequestRoutes.list(ownerRequest);
     const sendRequest = /^\/api\/v1\/send-requests\/([^/]+)(?:\/(reject|approval|reconcile|manual-send-review)|\/approvals\/([^/]+)\/confirm)?$/.exec(request.pathname);
     if (sendRequest?.[1]) {
       if (!sendRequest[2] && !sendRequest[3]) return sendRequestRoutes.detail(ownerRequest, sendRequest[1]);

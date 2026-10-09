@@ -23,7 +23,7 @@ function request(id: string, state: OwnerSendRequest['state'] = 'pending_owner_a
 const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
 function httpFixture(overrides?: (url: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
-    const url = String(input);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const overridden = overrides?.(url, init);
     if (overridden !== undefined) return await overridden;
     if (url.startsWith('/api/v1/conversations?')) return json({ conversations: [], nextCursor: null });
@@ -38,8 +38,16 @@ function httpFixture(overrides?: (url: string, init?: RequestInit) => Response |
 function mount(props: Partial<React.ComponentProps<typeof HypermailShell>> = {}) {
   return render(<><HypermailShell data={data} ownerEmail="owner@example.test" {...props} /><ToastProvider /></>);
 }
-const primary = () => within(screen.getAllByRole('navigation', { name: 'Primary' })[0]!);
-const ownerTrigger = () => screen.getAllByRole('button', { name: 'Account and settings' })[0]!;
+const primary = () => {
+  const navigation = screen.getAllByRole('navigation', { name: 'Primary' })[0];
+  if (!navigation) throw new Error('Primary navigation missing');
+  return within(navigation);
+};
+const ownerTrigger = () => {
+  const trigger = screen.getAllByRole('button', { name: 'Account and settings' })[0];
+  if (!trigger) throw new Error('Owner trigger missing');
+  return trigger;
+};
 async function openOwner(user: UserEvent) {
   ownerTrigger().focus();
   await user.keyboard('{ArrowDown}');
@@ -69,7 +77,7 @@ describe('shell owner navigation', () => {
   });
 
   it('allows only one sign-out while pending and permits retry after rejection', async () => {
-    const user = userEvent.setup(); const pending = Promise.withResolvers<void>();
+    const user = userEvent.setup(); const pending = Promise.withResolvers<undefined>();
     const onSignOut = vi.fn<() => Promise<void>>().mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
     mount({ onSignOut });
     await user.click((await openOwner(user)).getByRole('menuitem', { name: 'Sign out' }));
@@ -93,7 +101,7 @@ describe('Approvals navigation and counts', () => {
     httpFixture((url, init) => { if (url === '/api/v1/send-requests/first/reject' && init?.method === 'POST') { rejected(); return json({}); } return undefined; });
     function LoadedShell() {
       const [loaded, setLoaded] = React.useState(requests);
-      return <HypermailShell data={data} sendRequests={loaded} drafts={[draft]} onRefreshSendRequests={async () => { setLoaded(current => current.map(item => item.id === 'first' ? { ...item, state: 'rejected' } : item)); }} />;
+      return <HypermailShell data={data} sendRequests={loaded} drafts={[draft]} onRefreshSendRequests={() => { setLoaded(current => current.map(item => item.id === 'first' ? { ...item, state: 'rejected' } : item)); return Promise.resolve(); }} />;
     }
     render(<LoadedShell />);
     expect(primary().getByLabelText('2 pending approvals')).toBeTruthy();
@@ -107,14 +115,16 @@ describe('Approvals navigation and counts', () => {
     expect(outcomes.getByText('Uncertain owner send')).toBeTruthy();
     expect(outcomes.getByRole('button', { name: 'Verify provider outcome' })).toBeTruthy();
     expect(outcomes.queryByRole('button', { name: 'Confirm this exact send' })).toBeNull();
-    await user.click(awaiting.getAllByRole('button', { name: 'Reject send request' })[0]!);
+    const reject = awaiting.getAllByRole('button', { name: 'Reject send request' })[0];
+    if (!reject) throw new Error('Pending approval missing rejection action');
+    await user.click(reject);
     await waitFor(() => { expect(primary().getByLabelText('1 pending approvals')).toBeTruthy(); });
     expect(rejected).toHaveBeenCalledTimes(1);
     expect(within(screen.getByRole('region', { name: 'Sending outcomes' })).getAllByText('Subject first')[0]?.textContent).toBe('Subject first');
   });
 
   it('keeps unknown outcomes visible at zero approvals and never offers an automatic resend', async () => {
-    const user = userEvent.setup(); mount({ drafts: [draft], onRefreshSendRequests: async () => undefined });
+    const user = userEvent.setup(); mount({ drafts: [draft], onRefreshSendRequests: () => Promise.resolve() });
     expect(primary().queryByLabelText(/pending approvals/)).toBeNull();
     await user.click(primary().getByRole('button', { name: 'Approvals' }));
     expect(screen.getByText('No requests need your approval.')).toBeTruthy();
@@ -124,8 +134,8 @@ describe('Approvals navigation and counts', () => {
     expect(outcomes.queryByRole('button', { name: /Review and send|Confirm this exact send|Resend/ })).toBeNull();
   });
 
-  it.each(['loading', 'error'] as const)('does not advertise a loaded approval count during %s', async initialState => {
-    mount({ initialState, sendRequests: [request('first')], onRefreshSendRequests: async () => undefined });
+  it.each(['loading', 'error'] as const)('does not advertise a loaded approval count during %s', sendingState => {
+    mount({ sendingState, sendRequests: [request('first')], onRefreshSendRequests: () => Promise.resolve() });
     expect(primary().queryByLabelText(/pending approvals/)).toBeNull();
     expect(primary().getByRole('button', { name: 'Approvals' })).toBeTruthy();
   });
@@ -164,11 +174,11 @@ describe('Assistant shell history', () => {
     expect(screen.getByRole('region', { name: 'Inbox' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Open Assistant' }));
     await screen.findByLabelText('Votre message');
-    expect(fetcher.mock.calls.filter(([url]) => String(url) === `/api/v1/conversations/${conversation.id}/messages`)).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/conversations/${conversation.id}/messages`)).toHaveLength(1);
   });
 
   it('restores the exact Reader on Back and reopens the same conversation and unsent text on Forward', async () => {
-    const user = userEvent.setup(); const fetcher = httpFixture(); mount({ onOpenMessage: async () => mail });
+    const user = userEvent.setup(); const fetcher = httpFixture(); mount({ onOpenMessage: () => Promise.resolve(mail) });
     await user.click(screen.getByRole('button', { name: `Open message from ${mail.sender}: ${mail.subject}` }));
     await user.click(await screen.findByRole('button', { name: 'Discuss this mail' }));
     await screen.findByRole('dialog', { name: 'Assistant' });
@@ -181,22 +191,24 @@ describe('Assistant shell history', () => {
     act(() => { history.forward(); });
     await screen.findByRole('dialog', { name: 'Assistant' });
     expect((await screen.findByLabelText('Votre message')).value).toBe('Preserve this unsent question');
-    expect(fetcher.mock.calls.filter(([url]) => String(url) === `/api/v1/conversations/${conversation.id}/messages`)).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/conversations/${conversation.id}/messages`)).toHaveLength(1);
   });
 
-  it('restores Compose and its unsaved subject when the background URL still points at Activity', async () => {
+  it('restores Compose, its history route, and its unsaved subject after leaving Activity', async () => {
     const user = userEvent.setup();
     history.replaceState(null, '', `/activity/${activity.id}`);
     httpFixture(url => url === `/api/v1/activities/${activity.id}` ? json({ activity }) : undefined);
     mount();
     await screen.findByRole('article', { name: `Activity detail: ${activity.title}` });
-    await user.click(screen.getAllByRole('button', { name: 'Compose' })[0]!);
+    const composeAction = screen.getAllByRole('button', { name: 'Compose' })[0];
+    if (!composeAction) throw new Error('Compose action missing');
+    await user.click(composeAction);
     await user.type(screen.getByLabelText('Subject'), 'Keep the unsaved Compose subject');
-    expect(location.pathname).toBe(`/activity/${activity.id}`);
+    expect(location.pathname).toBe('/'); expect(history.state).toMatchObject({ screen: 'compose' });
     await user.click(screen.getByRole('button', { name: 'Open Assistant' }));
     await screen.findByRole('dialog', { name: 'Assistant' });
     await user.click(screen.getByRole('button', { name: 'Minimize Assistant' }));
-    await waitFor(() => { expect(location.pathname).toBe(`/activity/${activity.id}`); expect(screen.queryByRole('dialog')).toBeNull(); });
+    await waitFor(() => { expect(location.pathname).toBe('/'); expect(history.state).toMatchObject({ screen: 'compose' }); expect(screen.queryByRole('dialog')).toBeNull(); });
     const compose = within(screen.getByRole('region', { name: 'Compose message' }));
     expect(compose.getByLabelText('Subject').value).toBe('Keep the unsaved Compose subject');
     expect(screen.queryByRole('article', { name: `Activity detail: ${activity.title}` })).toBeNull();
@@ -249,7 +261,7 @@ describe('Assistant shell history', () => {
     await screen.findByText(message.content);
     expect(screen.getAllByText(message.content)).toHaveLength(1);
     expect(screen.getByLabelText('Votre message').value).toBe('');
-    expect(fetcher.mock.calls.filter(([url, init]) => String(url) === `/api/v1/conversations/${conversation.id}/messages` && init?.method === 'POST')).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url, init]) => url === `/api/v1/conversations/${conversation.id}/messages` && init?.method === 'POST')).toHaveLength(1);
   });
 
   it('shows the existing load error for an invalid conversation deep link without throwing', async () => {

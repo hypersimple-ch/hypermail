@@ -8,6 +8,9 @@ import { ChatSurface as ConversationSurface } from '../../src/conversations/ui.j
 import type { ChatSurfaceProps, ConversationApi } from '../../src/conversations/ui.js';
 import { ConversationHttpError } from '../../src/conversations/contracts.js';
 import type { ConversationMessages } from '../../src/conversations/contracts.js';
+import { SessionExpiredError } from '../../src/lib/authenticated-fetch.js';
+import { HypermailShell } from '../../src/ui/index.js';
+import { mockShellData } from '../../src/ui/fixtures.js';
 const accountId = '33333333-3333-4333-8333-333333333333';
 const conversation: Conversation = { id: '11111111-1111-4111-8111-111111111111', userId: '22222222-2222-4222-8222-222222222222', scope: 'mailbox', accountId, contextMessageId: null, version: 1, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z' };
 const turn: ConversationTurn = { id: '44444444-4444-4444-8444-444444444444', userMessageId: '55555555-5555-4555-8555-555555555555', state: 'pending', attempt: 0, availableAt: conversation.createdAt, errorCode: null, claimExpiresAt: null };
@@ -28,8 +31,21 @@ function ChatSurface({ onConversationOpened, ...props }: Omit<ChatSurfaceProps, 
   const launcherRef = useRef<HTMLButtonElement>(null);
   return <><button ref={launcherRef} onClick={() => { setOpen(true); }}>Open Assistant</button><ConversationSurface {...props} conversationId={props.conversationId ?? rememberedId} isOpen={isOpen} onOpenChange={setOpen} launcherRef={launcherRef} onConversationOpened={(id) => { setRememberedId(id); onConversationOpened?.(id); }} /></>;
 }
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); history.replaceState(null, '', '/'); });
 describe('durable ChatSurface', () => {
+  it('preserves an expired-session message without a conflict, local error, or automatic resend', async () => {
+    const api = fixture(); const user = userEvent.setup();
+    api.post.mockRejectedValue(new SessionExpiredError());
+    render(<ChatSurface accounts={accounts} conversationId={conversation.id} api={api} />);
+    const editor = await screen.findByLabelText<HTMLTextAreaElement>('Votre message');
+    await user.type(editor, 'Keep my unsaved question');
+    await user.click(screen.getByRole('button', { name: 'Envoyer' }));
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Envoyer' }).disabled).toBe(false); });
+    expect(editor.value).toBe('Keep my unsaved question');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Recharger et relire' })).toBeNull();
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
   it('freezes an in-flight owner message and cannot create a duplicate post', async () => {
     const api = fixture(); const user = userEvent.setup();
     const deferred = Promise.withResolvers<undefined>();
@@ -279,5 +295,51 @@ describe('durable ChatSurface', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
     await waitFor(() => { expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open Assistant' })); });
+  });
+  it('keeps one shell chat editor and the selected conversation through mobile/desktop resizing', async () => {
+    const user = userEvent.setup();
+    const created: Conversation[] = [];
+    const posted: ConversationMessage[] = [];
+    vi.stubGlobal('innerWidth', 390);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
+      if (url.pathname === '/api/v1/conversations' && init?.method === 'POST') {
+        created.push(conversation);
+        return Promise.resolve(Response.json({ conversation }));
+      }
+      if (url.pathname === '/api/v1/conversations') return Promise.resolve(Response.json({ conversations: created, nextCursor: null }));
+      if (url.pathname === `/api/v1/conversations/${conversation.id}/messages`) {
+        if (init?.method === 'POST') {
+          if (typeof init.body !== 'string') throw new Error('Expected a JSON message body');
+          const body: unknown = JSON.parse(init.body);
+          if (!body || typeof body !== 'object' || !('content' in body) || typeof body.content !== 'string' || !('requestId' in body) || typeof body.requestId !== 'string') throw new Error('Invalid message body');
+          const saved = { ...message, content: body.content, requestId: body.requestId, turn: { ...turn, state: 'completed' as const } };
+          posted.push(saved);
+          return Promise.resolve(Response.json({ conversation: { ...conversation, version: 2 }, message: saved, turn: saved.turn, replayed: false }));
+        }
+        return Promise.resolve(Response.json({ conversation, messages: posted, nextCursor: null }));
+      }
+      throw new Error(`Unexpected request: ${url.href}`);
+    }));
+    const data = { ...mockShellData, accounts: [{ id: accountId, label: 'Personal', address: 'owner@example.test' }] };
+    history.replaceState(null, '', '/chat');
+    const view = render(<HypermailShell data={data} initialScreen="inbox" />);
+    await user.click(screen.getByRole('button', { name: 'Nouveau chat' }));
+    const editor = await screen.findByLabelText<HTMLTextAreaElement>('Votre message');
+    await user.type(editor, 'Keep this question through resizing');
+    act(() => { vi.stubGlobal('innerWidth', 1000); window.dispatchEvent(new Event('resize')); });
+    view.rerender(<HypermailShell data={data} initialScreen="inbox" />);
+    expect(screen.getByLabelText('Votre message')).toBe(editor);
+    expect(editor.value).toBe('Keep this question through resizing');
+    expect(location.pathname).toBe(`/chat/${conversation.id}`);
+    act(() => { vi.stubGlobal('innerWidth', 390); window.dispatchEvent(new Event('resize')); });
+    view.rerender(<HypermailShell data={data} initialScreen="inbox" />);
+    expect(screen.getByLabelText('Votre message')).toBe(editor);
+    expect(editor.value).toBe('Keep this question through resizing');
+    await user.click(screen.getByRole('button', { name: 'Envoyer' }));
+    await screen.findByText('Keep this question through resizing');
+    expect(created).toEqual([conversation]);
+    expect(posted.map(item => item.content)).toEqual(['Keep this question through resizing']);
+    expect(editor.value).toBe('');
   });
 });

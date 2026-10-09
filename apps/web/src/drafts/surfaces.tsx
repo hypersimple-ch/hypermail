@@ -1,3 +1,4 @@
+import { SessionExpiredError } from '../lib/authenticated-fetch.js';
 import * as React from 'react';
 import type { DraftRecord, DraftRevision } from './contracts.js';
 import type { DraftFields } from '@hypermail/contracts';
@@ -37,7 +38,7 @@ export function DraftCompose({ draft, revisions, onAutosave, onRequestSend, onRe
     if (!onAutosave || busy) return;
     setBusy(true); setError('');
     try { await onAutosave({ ...draft, ...fields }); setConflict(false); }
-    catch { setConflict(true); setError('The draft could not be saved. Your edits are preserved. Reload the saved version, compare, and save explicitly before sending.'); }
+    catch (failure) { if (!(failure instanceof SessionExpiredError)) { setConflict(true); setError('The draft could not be saved. Your edits are preserved. Reload the saved version, compare, and save explicitly before sending.'); } }
     finally { setBusy(false); }
   };
   const versionText = `Version ${String(draft.version)} · ${draft.createdBy === 'agent' ? 'Agent-created draft' : 'User-created draft'}`;
@@ -64,7 +65,7 @@ export function DraftCompose({ draft, revisions, onAutosave, onRequestSend, onRe
         <Textarea id={`draft-message-${draft.id}`} value={fields.body} onChange={event => { setFields(current => ({ ...current, body: event.target.value })); }} rows={12} readOnly={busy || isSendDisabled(draft.state)} />
       </Field>
       {error && <p role="alert">{error}</p>}
-      {conflict && onRefresh && <Button variant="outline" disabled={busy} onClick={() => { void onRefresh().then(() => { setConflict(false); }).catch(() => { setError('Could not reload. Your edits are still preserved.'); }); }}>Reload saved version and compare</Button>}
+      {conflict && onRefresh && <Button variant="outline" disabled={busy} onClick={() => { void onRefresh().then(() => { setConflict(false); }).catch((failure: unknown) => { if (!(failure instanceof SessionExpiredError)) setError('Could not reload. Your edits are still preserved.'); }); }}>Reload saved version and compare</Button>}
       {dirty && <div className="grid gap-3"><Button type="button" variant="outline" aria-expanded={comparisonOpen} aria-controls={`draft-comparison-${draft.id}`} onClick={() => { setComparisonOpen(!comparisonOpen); }}>Saved version for comparison</Button>{comparisonOpen && <div id={`draft-comparison-${draft.id}`} className="grid gap-3"><SendSnapshot snapshot={draft} /><Button type="button" variant="outline" disabled={busy} onClick={() => {
         setFields({ recipients: draft.recipients, subject: draft.subject, body: draft.body, bodyFormat: draft.bodyFormat });
         setRecipientText(Object.fromEntries((['to', 'cc', 'bcc'] as const).map(kind => [kind, draft.recipients.filter(recipient => recipient.kind === kind).map(recipient => recipient.address).join(', ')])));
@@ -73,7 +74,7 @@ export function DraftCompose({ draft, revisions, onAutosave, onRequestSend, onRe
       {dirty && <p role="status">Unsaved changes — save before preparing a send.</p>}
       {onRefresh && <SendApprovalFlow target={{ kind: 'draft', id: draft.id, version: draft.version }} submission={draft.submission ?? null} disabled={sendDisabled} onRefresh={onRefresh} />}
       <FieldDescription>{revisions ? `${String(revisions.length)} saved version${revisions.length === 1 ? '' : 's'}` : 'Draft history has not been loaded.'}</FieldDescription>
-      {!revisions && onRefresh && <Button type="button" variant="outline" disabled={busy} onClick={() => { void onRefresh().catch(() => { setError('Could not load draft history. Your edits are preserved.'); }); }}>Load saved history</Button>}
+      {!revisions && onRefresh && <Button type="button" variant="outline" disabled={busy} onClick={() => { void onRefresh().catch((failure: unknown) => { if (!(failure instanceof SessionExpiredError)) setError('Could not load draft history. Your edits are preserved.'); }); }}>Load saved history</Button>}
     </CardContent>
     <CardFooter className="flex-wrap justify-between gap-3">
       <Button type="button" variant="outline" disabled={busy || !onAutosave || isSendDisabled(draft.state)} onClick={() => { void save(); }}>Save draft</Button>

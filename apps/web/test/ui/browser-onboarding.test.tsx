@@ -35,7 +35,7 @@ afterEach(async () => {
 }, browserTimeout);
 
 describe('browser Gmail callback', () => {
-  it('resumes from opaque session metadata, cleans the URL and reloads projections', async () => {
+  it.each([false, true])('resumes Gmail and reloads projections with secondary resources unavailable=%s', async unavailable => {
     window.history.replaceState({}, '', '/oauth/gmail/callback?code=callback-code&state=callback-state');
     const authorizationResponse = window.location.href;
     sessionStorage.setItem('hypermail.pending-mailbox.v1', JSON.stringify({ provider: 'gmail', handle: 'opaque-handle', expiresAt: new Date(Date.now() + 60_000).toISOString() }));
@@ -49,9 +49,9 @@ describe('browser Gmail callback', () => {
         return Promise.resolve(Response.json({ user: { id: 'owner', email: 'owner@example.test' }, accounts: sessionLoads > 1 ? [{ id: 'gmail', provider: 'gmail', email: 'mail@example.test', displayName: 'Personal Gmail', state: 'ready' }] : [], sendEnabled: false }));
       }
       if (url.startsWith('/api/v1/inbox?')) return Promise.resolve(Response.json({ messages: [], nextCursor: null }));
-      if (url.startsWith('/api/v1/activities')) return Promise.resolve(Response.json({ items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } }));
-      if (url === '/api/v1/drafts') return Promise.resolve(Response.json({ drafts: [] }));
-      if (url === '/api/v1/send-requests') return Promise.resolve(Response.json({ requests: [] }));
+      if (url.startsWith('/api/v1/activities')) return Promise.resolve(unavailable ? new Response(null, { status: 503 }) : Response.json({ items: [], nextCursor: null, counts: { new: 0, questions: 0, failed: 0, history: 0 } }));
+      if (url === '/api/v1/drafts') return Promise.resolve(unavailable ? new Response(null, { status: 503 }) : Response.json({ drafts: [] }));
+      if (url === '/api/v1/send-requests') return Promise.resolve(unavailable ? new Response(null, { status: 503 }) : Response.json({ requests: [] }));
       if (url === '/api/v1/agent' || url === '/api/v1/agent/folders' || url === '/api/v1/agent-connections') return Promise.resolve(new Response(null, { status: 503 }));
       if (url === '/api/v1/mailboxes/complete') {
         if (typeof init?.body !== 'string') throw new Error('Expected completion JSON.');

@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "node infra/dev.mjs",
     "dev:rebuild": "node infra/dev.mjs --rebuild",
+    "dev:reset": "node infra/dev-reset.mjs",
     "build": "pnpm -r build",
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",

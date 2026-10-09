@@ -19,10 +19,11 @@ const message = (id: string, account: string, subject: string): MessageRowApi =>
 const page = (messages: MessageRowApi[], nextCursor: string | null = null) => Response.json({ messages, nextCursor });
 const inbox = () => within(within(app).getAllByRole('region', { name: 'Inbox' })[0] as HTMLElement);
 const reader = () => within(within(app).getAllByRole('article', { name: 'Message detail' })[0] as HTMLElement);
-function installFetch(mail: (url: URL) => Promise<Response>): void {
+function installFetch(mail: (url: URL) => Promise<Response>, resource?: (url: URL) => Promise<Response> | undefined): void {
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
     const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(path, window.location.origin);
+    const override = resource?.(url); if (override) return override;
     if (url.pathname === '/api/v1/session') return Promise.resolve(Response.json({ user: { id: 'owner', email: 'owner@example.test' }, accounts: [{ id: a, email: 'a@example.test', displayName: 'Mailbox A', provider: 'gmail', state: 'ready' }, { id: b, email: 'b@example.test', displayName: 'Mailbox B', provider: 'gmail', state: 'ready' }] }));
     if (url.pathname === '/api/v1/drafts') return Promise.resolve(Response.json({ drafts: [] }));
     if (url.pathname === '/api/v1/send-requests') return Promise.resolve(Response.json({ requests: [] }));
@@ -54,6 +55,51 @@ afterEach(async () => {
 }, browserTimeout);
 
 describe('provider-backed browser Inbox', () => {
+  it('retries a failed session without mistaking it for a provider failure', async () => {
+    let attempts = 0;
+    installFetch(url => {
+      if (url.pathname === '/api/v1/inbox') return Promise.resolve(page([message('recovered', a, 'Recovered Inbox')]));
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    }, url => url.pathname === '/api/v1/session' && ++attempts === 1 ? Promise.resolve(new Response(null, { status: 503 })) : undefined);
+    entryLoad = import('../../src/browser.js'); await entryLoad;
+    expect(await within(app).findByText('Could not load your session.', {}, { timeout: 10_000 })).toBeTruthy();
+    expect(within(app).queryByText(/mail provider is unavailable/i)).toBeNull();
+    fireEvent.click(within(app).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => { expect(inbox().getByRole('button', { name: 'Open message from Sender: Recovered Inbox' })).toBeTruthy(); });
+  }, browserTimeout);
+
+  it('starts settings and Inbox while Activity and sending are still pending', async () => {
+    const activities = Promise.withResolvers<Response>(), sending = Promise.withResolvers<Response>();
+    installFetch(url => {
+      if (url.pathname === '/api/v1/inbox') return Promise.resolve(page([message('independent', a, 'Independent Inbox')]));
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    }, url => url.pathname === '/api/v1/activities' ? activities.promise : url.pathname === '/api/v1/drafts' ? sending.promise : undefined);
+    entryLoad = import('../../src/browser.js'); await entryLoad;
+    await waitFor(() => { expect(inbox().getByRole('button', { name: 'Open message from Sender: Independent Inbox' })).toBeTruthy(); }, { timeout: 10_000 });
+    fireEvent.click(within(within(app).getByRole('complementary', { name: 'Mailbox navigation' })).getByRole('button', { name: 'Account and settings' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Mailboxes & agents/ }));
+    fireEvent.click(await within(app).findByRole('button', { name: 'Add mailbox', exact: true }));
+    expect(within(app).getByRole<HTMLButtonElement>('button', { name: 'Continue with Gmail', exact: true }).disabled).toBe(false);
+    await act(() => { activities.resolve(new Response(null, { status: 503 })); sending.resolve(new Response(null, { status: 503 })); return Promise.all([activities.promise, sending.promise]); });
+    expect(within(app).queryByText('Could not load your session.')).toBeNull();
+    fireEvent.click(within(app).getAllByRole('button', { name: 'Inbox' })[0] as HTMLElement);
+    expect(inbox().getByRole('button', { name: 'Open message from Sender: Independent Inbox' })).toBeTruthy();
+  }, browserTimeout);
+
+  it('opens onboarding with zero mailboxes even when secondary collections fail', async () => {
+    const provider = vi.fn(() => Promise.resolve(page([])));
+    installFetch(provider, url => url.pathname === '/api/v1/session' ? Promise.resolve(Response.json({ user: { id: 'owner', email: 'owner@example.test' }, accounts: [] })) : ['/api/v1/activities', '/api/v1/drafts', '/api/v1/send-requests'].includes(url.pathname) ? Promise.resolve(new Response(null, { status: 503 })) : undefined);
+    entryLoad = import('../../src/browser.js'); await entryLoad;
+    await within(app).findByText('Select or connect a mailbox.', {}, { timeout: 10_000 });
+    fireEvent.click(within(within(app).getByRole('complementary', { name: 'Mailbox navigation' })).getByRole('button', { name: 'Account and settings' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Mailboxes & agents/ }));
+    expect(within(app).getByText('No mailboxes connected.')).toBeTruthy();
+    fireEvent.click(await within(app).findByRole('button', { name: 'Add mailbox', exact: true }));
+    expect(within(app).getByRole<HTMLButtonElement>('button', { name: 'Continue with Gmail', exact: true }).disabled).toBe(false);
+    expect(provider).not.toHaveBeenCalled();
+    expect(within(app).queryByText(/mail provider is unavailable/i)).toBeNull();
+  }, browserTimeout);
+
   it('discards old-mailbox and pre-refresh pages, and deduplicates overlapping provider pages', async () => {
     const oldMailbox = Promise.withResolvers<Response>(), oldMore = Promise.withResolvers<Response>();
     let bLoads = 0, moreLoads = 0;

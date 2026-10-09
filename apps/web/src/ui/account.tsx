@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { SessionExpiredError } from '../lib/authenticated-fetch.js';
 import { ArrowLeft } from 'lucide-react';
 import { AppPage, PageContainer, PageHeader } from '@/components/app/patterns.js';
 import { toast } from '@/components/heroui/toast.js';
@@ -58,8 +59,8 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
     setNewPassword('');
     setConfirmation('');
     toast.success('Password changed.');
-  }).catch(() => {
-    toast.danger('Could not change your password. Try again.');
+  }).catch((failure: unknown) => {
+    if (!(failure instanceof SessionExpiredError)) toast.danger('Could not change your password. Try again.');
   }).finally(() => {
     setPasswordPending(false);
   }); };
@@ -70,8 +71,8 @@ export function Account({ ownerEmail, onChangePassword, onSignOut, onBack }: Acc
     setSignOutPending(true);
     void onSignOut().then(() => {
       toast.success('Signed out.');
-    }).catch(() => {
-      toast.danger('Could not sign out. Try again.');
+    }).catch((failure: unknown) => {
+      if (!(failure instanceof SessionExpiredError)) toast.danger('Could not sign out. Try again.');
     }).finally(() => {
       setSignOutPending(false);
     });

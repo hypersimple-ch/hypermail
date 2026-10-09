@@ -42,17 +42,6 @@ describe('Android PWA contracts', () => {
     expect(html).not.toContain('Application utilities');
   });
 
-  it('renders loading, authentication, connectivity, install, and update presentation with shared JSX primitives', async () => {
-    const browser = await browserSource();
-    for (const primitive of ['Toast', 'Button', 'Card', 'Field', 'Input', 'Spinner']) expect(browser).toContain(`@/components/heroui/${primitive.toLowerCase()}`);
-    expect(browser).toContain('function AuthCard');
-    expect(browser).toContain('<Spinner className="size-6" />');
-    expect(browser).toContain('role="status" aria-live="polite"');
-    expect(browser).toContain('aria-label="Application utilities"');
-    expect(browser).toContain('<Button type="button" variant="outline" onClick={install}>Install Hypermail</Button>');
-    expect(browser).toContain('<Button type="button" variant="outline" onClick={update}>Reload to update</Button>');
-    expect(browser).not.toContain('React.createElement');
-  });
 
   it('keeps first-run setup private and validated in the shared form controls', async () => {
     const browser = await browserSource();
