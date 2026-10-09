@@ -12,6 +12,7 @@ import { Spinner } from '@/components/heroui/spinner.js';
 import { activateWaitingUpdate, registerPwaWorker, type ServiceWorkerRegistrationLike } from './pwa/registration.js';
 import { initialPwaState } from './pwa/state.js';
 import { HypermailShell, type DraftSaveInput, type Screen, type ShellData } from './ui/index.js';
+import { PwaUtilities } from '@/components/app/pwa-utilities.js';
 import type { DraftRecord, DraftRevision } from './drafts/contracts.js';
 import type { OwnerSendRequest } from './send-requests/contracts.js';
 import { ForgotPasswordSurface, ResetPasswordSurface, consumeRecoveryFragment, type RecoveryApi } from './auth/recovery-ui.js';
@@ -94,7 +95,7 @@ function PwaPresentation(): React.JSX.Element {
   React.useEffect(() => { if (!('serviceWorker' in navigator)) return; let reloading = false; const reload = () => { if (!reloading) { reloading = true; location.reload(); } }; navigator.serviceWorker.addEventListener('controllerchange', reload); void registerPwaWorker(navigator.serviceWorker, (pwaState) => { setUpdateAvailable(pwaState.update === 'available'); }, initialPwaState).then((value) => { registration.current = value; }).catch(() => {}); return () => { navigator.serviceWorker.removeEventListener('controllerchange', reload); }; }, []);
   const install = () => { void deferredInstall.current?.prompt(); };
   const update = () => { if (registration.current) activateWaitingUpdate(registration.current); };
-  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p>{installAvailable || updateAvailable ? <aside aria-label="Application utilities" className="fixed inset-x-0 bottom-20 z-10 flex flex-wrap justify-center gap-2 px-4 [@media(min-width:700px)]:bottom-3"><Card className="flex-row items-center gap-2 p-2">{installAvailable ? <Button type="button" variant="outline" onClick={install}>Install Hypermail</Button> : null}{updateAvailable ? <Button type="button" variant="outline" onClick={update}>Reload to update</Button> : null}</Card></aside> : null}</>;
+  return <><p role="status" aria-live="polite" className="sr-only">{online ? 'Online' : 'Offline — reconnect to use Hypermail.'}</p><PwaUtilities installAvailable={installAvailable} updateAvailable={updateAvailable} onInstall={install} onUpdate={update} /></>;
 }
 
 function App(): React.JSX.Element {
@@ -110,7 +111,7 @@ function App(): React.JSX.Element {
   const [managerSettings, setManagerSettings] = React.useState<ManagerSettingsView>();
   const [ownerEmail, setOwnerEmail] = React.useState(''); const [settingsMailboxes, setSettingsMailboxes] = React.useState<readonly SettingsMailbox[]>([]);
   const [pendingMailbox, setPendingMailbox] = React.useState<PendingMailboxConnection | undefined>(readPendingMailbox);
-  const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : /^\/chat(?:\/|$)/.test(location.pathname) ? 'chat' : 'inbox'); const callbackHandled = React.useRef(false);
+  const [initialScreen] = React.useState<Screen>(() => location.pathname === '/oauth/gmail/callback' ? 'settings' : 'inbox'); const callbackHandled = React.useRef(false);
   const loadInbox = React.useCallback(async (accountId: string, more = false): Promise<void> => {
     if (more && (!inboxCursor.current || loadingMoreEpoch.current === inboxEpoch.current)) return;
     const generation = more ? inboxEpoch.current : ++inboxEpoch.current;

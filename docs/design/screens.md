@@ -1,6 +1,6 @@
 # Hypermail screen specifications
 
-**Status:** approved for implementation
+**Status:** implemented; automated behavior and responsive checks accompany the current surfaces
 
 ## Design bet
 
@@ -14,7 +14,7 @@
 - Show only API-backed filters. Do not promise starred, archive, read/unread, folder, or search behavior when unavailable.
 - Group mail by time with stable `TODAY` / `YESTERDAY` labels where data supports it.
 - Each row has account/avatar, sender, subject, snippet, and time. Rows are 79px minimum. Sender, subject, and snippet truncate within the central column; timestamp remains readable; the document never scrolls horizontally at 360px.
-- Bottom navigation remains present. Compose FAB remains reachable without obscuring a tab target.
+- Sticky mobile header contains the brand, labeled Compose action, and owner-avatar menu. The 66px bottom bar plus safe-area inset exposes Inbox, Drafts, Sent, Approvals, and Activity. Assistant is the only FAB; content scroll padding clears both floating action and tabs.
 - Any control that is unsupported is omitted or disabled with a clear reason. No enabled control is a no-op.
 
 ## Mobile: Activity
@@ -35,8 +35,10 @@
 - Agent suggestions never send casually. A send requires explicit user approval at the point of sending.
 - “Agent details,” when available, opens an accessible bottom sheet with rationale and affected actions; it has visible close control, focus containment, and Escape/back dismissal.
 - Do not show archive, reply, or other message actions unless the API supports them. Unsupported actions are absent or honestly disabled, never enabled no-ops.
-- “Discuss this mail” opens durable mailbox chat with explicitly attached, immutable email context. The email remains an untrusted document, not an owner message. Chat is available from More and the desktop rail without adding a fifth mobile tab.
-- Chat labels mailbox versus explicitly global scope, distinguishes owner and assistant messages, and shows pending/failed turns with retry of the original message. Conflict preserves typed text and requires reload; no automatic resubmission. Global chat never implicitly reads mailbox email.
+- “Discuss this mail” opens the centered Assistant over the current reader and attaches that exact message as next-new-chat context without clearing the current conversation or unsent text. Explicit New chat creates a scoped conversation; opening or minimizing never creates one.
+- Assistant labels mailbox versus explicitly global scope, distinguishes owner and assistant messages, and shows pending/failed turns with retry of the original request identity. Conflict preserves typed text and requires reload; no automatic resubmission. Global chat never implicitly reads mailbox email.
+- A single state-owning Assistant remains mounted across mail navigation and minimization, including pending-response polling. A blurred/dimmed backdrop, focus containment, Escape/backdrop dismissal, visible Minimize control, and restored launcher focus come from the HeroUI modal. History starts collapsed; transcript scrolls independently of composer and header.
+- `/chat` and `/chat/{id}` open Assistant over Inbox on direct entry. In-app opening preserves the exact background URL/screen; Back minimizes and Forward reopens without resetting chat. Conversation changes replace the Assistant history entry; completion while minimized cannot reopen it or change the background URL. Motion is optional and respects reduced motion.
 
 ## Mobile: Compose and authentication
 
@@ -49,37 +51,38 @@
 - Compose preserves unsaved To/Cc/Bcc, subject and body through save failures and version conflicts; sending stays disabled until the saved snapshot matches the editor. Reloading for comparison must not silently overwrite the owner’s edits.
 - Send preparation displays the server’s exact mailbox, every recipient (including Bcc), subject, body and format. HTML snapshots are shown as literal text, not executable markup. Confirmation is a separate explicit action bound to that snapshot and approval expiry.
 - A fresh-auth challenge preserves the send intention, asks for the current password, then prepares a new approval and displays the new snapshot. Authentication never automatically confirms either the old or new approval.
-- Pending sends include owner drafts and agent send requests. Reported submissions, unknown outcomes and technical reasons remain visible; an unreadable confirmation response must not claim that nothing was sent. “Verify provider outcome” is read-only, never a retry send.
+- **Approvals** is a direct destination. Its neutral badge counts only known `pending_owner_approval` requests across authorized mailboxes; loading/error/unavailable review suppresses the badge. Awaiting approval precedes Sending outcomes, which retains rejected requests, reported submissions and unknown outcomes. Refresh failures retain the last-loaded cards. “Verify provider outcome” is read-only, never a retry send.
 - Manual observations are separate append-only reviews: “verified by you” is not provider proof, and “not observed” is not evidence of non-submission. No resend control is offered for an ambiguous submission.
 - Authentication is compact and viewport-stable, with clear loading, error, and retry/next-step feedback.
 
-## Settings and Account
+## Mailboxes & agents and Account & security
 
-**Purpose:** let the single owner manage mailbox onboarding and their current session without turning More into a fifth mobile tab.
+**Purpose:** separate connected-mailbox automation from the private owner's identity and current session.
 
-- **More** is a hub that links to Settings and Account. Mobile navigation keeps its four tabs; Settings and Account are pushed full-page screens and remain usable without horizontal scrolling at 360px. On desktop they use the full area after the rail, not the Inbox list column.
-- **Settings** lists projected mailboxes and offers explicit owner-initiated Gmail, Outlook, and IMAP onboarding. Gmail shows the OAuth handoff and a written pending, ready, expired, or error state. Outlook shows the device code and an explicit status-check action; it does not imply background completion. IMAP uses a labeled credential form and reports synchronous completion or failure.
-- **Account** shows the owner email as read-only, provides a current-password-verified password rotation form, and exposes sign out. Do not offer owner-email editing, account deletion, mailbox removal, or unimplemented preferences.
+- The owner-avatar menu opens **Mailboxes & agents**, **Account & security**, and Sign out. Desktop shows the truncated email and written Online/Offline state; the menu repeats the full wrapping email with Private owner context. Navigation closes the menu; pending sign-out is guarded against duplicates and failure allows retry.
+- **Mailboxes & agents** lists projected mailboxes and offers explicit owner-initiated Gmail, Outlook, and IMAP onboarding. Gmail shows the OAuth handoff and a written pending, ready, expired, or error state. Outlook shows the device code and an explicit status-check action; it does not imply background completion. IMAP uses a labeled credential form and reports synchronous completion or failure.
+- **Account & security** shows the owner email as read-only, provides a current-password-verified password rotation form, and retains sign out. Both pages return to Inbox. Do not offer owner-email editing, account deletion, mailbox removal, or unimplemented preferences.
 - Forms use the repository’s calm HeroUI-backed components and Tailwind v4 utilities. Every interactive control has a 44px minimum target, visible focus, associated labels/errors, keyboard operation, and written status in addition to color. OAuth/device-code handoffs, pending states, and errors must give a clear next step and expose changing status through an appropriate live region.
 
 ## Desktop: shell (>=700px)
 
 **Purpose:** retain navigation and context without squeezing non-Inbox work into a message-list column.
 
-- **Rail (220px):** brand, Compose, Inbox, Activity, Drafts, Sent, More, account/online indicator.
-- **Inbox:** a 385px list with All Accounts header and only API-backed filters; remaining width is the reader. Selected rows use neutral off-white fill and a charcoal keyline/indicator, plus semantic selected state.
+- **Rail (240px, 16px padding):** compact brand, full-width 44px charcoal Compose, Inbox, Drafts, Sent, then separated Approvals and Activity, and owner menu footer. Selected destinations use neutral fill, stronger text and `aria-current`.
+- **Inbox:** at 700–1023px, show list or selected reader, not both. At >=1024px, a 360px list precedes the remaining-width reader. One mounted instance of each uses responsive visibility. Mail surfaces are white with 1px dividers.
 - **Reader:** toolbar and actions only where supported, then subject, sender, body, and contextual agent card. Reader content measures no wider than ~850px.
-- **Compose, Activity, Drafts, Sent, More, Settings, and Account:** use the full area after the 220px rail, with their content sized for readability rather than constrained to 385px.
+- **Compose, Activity, Drafts, Sent, Approvals, Mailboxes & agents, and Account & security:** mount once and use the full area after the rail, sized for readability. The Assistant modal never changes the underlying reader geometry.
 - **Drafts:** distinct editable saved-message projection. **Sent:** distinct read-only sent-message projection.
 - Below 700px, use the mobile screens—not a squeezed desktop shell.
 
 ## Acceptance checks
 
-1. Inbox, Activity, message detail with agent card, Compose, authentication, More, Settings, Account, Drafts, Sent, and desktop shell follow this contract.
+1. Inbox, Activity, message detail with agent card, Compose, authentication, Approvals, owner settings/security, Drafts, Sent, Assistant, and desktop shell follow this contract.
 2. At 360px, `scrollWidth` equals `clientWidth`; essential Compose/auth controls remain visible and usable.
-3. At 1440px, Inbox shows rail/list/reader; non-Inbox desktop screens use all remaining space after the 220px rail.
+3. At 700px only one mail pane is visible; at 1024px and above Inbox shows rail/list/reader. Other desktop screens use all remaining space after the 240px rail.
 4. Activity shows all four specified filter names, visible non-color status labels, and pending/error/conflict feedback.
 5. No unsupported behavior is promised or presented as an enabled control; no enabled control is a no-op.
 6. Send remains explicitly user-approved. Settings and Account show written/live onboarding and form states; reduced motion, keyboard, focus, contrast, labels, and 44px touch-target requirements satisfy the system specification.
 7. Current React surfaces use the shared components in `apps/web/src/components/` and Tailwind utilities; no feature imports a legacy component stylesheet or styles a raw button, input, textarea, or select.
 8. The production build emits the complete Tailwind bundle at `/app.css`, and the static shell references no parallel PWA stylesheet.
+9. Automated Chromium checks cover 360, 700, 1024, 1440, and 1800px plus 20px mobile text: overlay containment/centering, FAB/utility clearance, five tabs, full-width Compose, focus/escape, reduced motion, draft persistence, history return, and approval count transitions. Human aesthetic review remains separate.
