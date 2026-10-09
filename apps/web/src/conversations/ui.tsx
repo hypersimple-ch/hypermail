@@ -123,11 +123,20 @@ export function ChatSurface({ isOpen, onOpenChange, launcherRef, accounts, conve
   useEffect(() => () => { generation.current++; activeId.current = null; }, []);
   useEffect(() => {
     if (isOpen) return;
-    // React Aria restores the invoker; direct URL entry has no focused invoker.
-    const timer = window.setTimeout(() => {
-      if (document.activeElement === document.body || !document.activeElement?.isConnected) launcherRef.current?.focus();
-    }, 150);
-    return () => { clearTimeout(timer); };
+    // React Aria restores the invoker; fall back only after the exiting overlay
+    // is removed and its focus scope has had a frame to restore focus.
+    let frame = 0;
+    const restoreAfterExit = (): void => {
+      if (document.getElementById('assistant-dialog')) return;
+      observer.disconnect();
+      frame = requestAnimationFrame(() => {
+        if (document.activeElement === document.body || !document.activeElement?.isConnected) launcherRef.current?.focus();
+      });
+    };
+    const observer = new MutationObserver(restoreAfterExit);
+    observer.observe(document.body, { childList: true, subtree: true });
+    restoreAfterExit();
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [isOpen, launcherRef]);
 
   const create = async () => {
