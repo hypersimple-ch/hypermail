@@ -27,6 +27,8 @@ Located in `apps/web/src/components/heroui/`. Button, Card, Alert, Chip-backed B
 
 HeroUI-backed controls expose HeroUI `data-slot` markers. The Button and Badge adapters translate Hypermail variants to HeroUI variants; caller utilities are merged through `cn()` while preserving focus, disabled, invalid, and 44px target behavior. Outlined buttons, form fields, select triggers, and cards use the white surface token so they remain distinct from the light-gray page background.
 
+The Button adapter blocks pointer-down propagation while disabled, before React Aria's press handling. A gesture made while disabled must never become an action after the button is re-enabled, including a delayed fallback click. Enabled buttons retain normal pointer, keyboard, and caller capture-handler behavior.
+
 Input and Textarea use explicit `border border-input` and `shadow-none` utilities to match the flat, bordered Select trigger. Keep their white surface, rounded corners, and visible focus rings; reserve elevation for floating popovers rather than text fields.
 
 ### Application components

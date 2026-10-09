@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SendApprovalFlow, SendUiError, sendApprovalHttpApi } from '../../src/drafts/send-approval.js';
@@ -237,17 +237,29 @@ describe('approvals review surface', () => {
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(screen.getByRole('button', { name: 'Refreshing…' }).disabled).toBe(true);
     expect(screen.getAllByRole('heading', { name: 'Subject loaded' })[0]).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Refreshing…' }));
-    expect(refresh).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      if (!rejectRefresh) throw new Error('Expected a pending refresh request');
-      rejectRefresh(new Error('offline'));
-      await Promise.resolve();
-    });
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not refresh approvals. Try again.');
-    expect(screen.getAllByRole('heading', { name: 'Subject loaded' })[0]).toBeTruthy();
+    vi.useFakeTimers();
+    try {
+      // Disabled buttons receive pointer events but no native click. Let their
+      // queued fallback run only after the failed refresh enables the button.
+      const disabled = screen.getByRole('button', { name: 'Refreshing…' });
+      const pointer = { button: 0, pointerId: 1, pointerType: 'mouse', width: 1, height: 1, clientX: 0, clientY: 0 };
+      fireEvent.pointerDown(disabled, pointer);
+      fireEvent.pointerUp(disabled, pointer);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        if (!rejectRefresh) throw new Error('Expected a pending refresh request');
+        rejectRefresh(new Error('offline'));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('alert')).toHaveProperty('textContent', 'Could not refresh approvals. Try again.');
+      expect(screen.getAllByRole('heading', { name: 'Subject loaded' })[0]).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('alert')).toBeTruthy();
+    } finally { vi.useRealTimers(); }
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => { expect(refresh).toHaveBeenCalledTimes(2); expect(screen.queryByRole('alert')).toBeNull(); });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByRole('button', { name: 'Refresh' }).disabled).toBe(false);
   });
 
